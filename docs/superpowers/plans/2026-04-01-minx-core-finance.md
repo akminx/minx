@@ -349,14 +349,9 @@ def test_failed_migration_rolls_back_partial_changes(tmp_path, monkeypatch):
         row[0]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
-    applied = {
-        row[0]
-        for row in conn.execute("SELECT name FROM _migrations").fetchall()
-    }
-
-    assert "seeded_table" in names
     assert "half_done" not in names
-    assert applied == {"001_good.sql"}
+    assert "seeded_table" not in names
+    assert "_migrations" not in names
 
 
 def test_concurrent_bootstrap_succeeds_for_same_db_file(tmp_path):
