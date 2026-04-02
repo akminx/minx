@@ -148,14 +148,52 @@ class FinanceService:
     def generate_weekly_report(self, period_start: str, period_end: str) -> dict[str, object]:
         summary = build_weekly_report(self.conn, period_start, period_end)
         template = Template(self._template_path("finance-weekly-summary.md").read_text())
-        category_lines = "\n".join(
-            f"- {item['category_name']}: {item['total_amount']}"
-            for item in summary["categories"]
-        ) or "- No transactions"
+        top_category_lines = self._format_lines(
+            summary["top_categories"],
+            lambda item: f"- {item['category_name']}: {self._format_amount(item['total_outflow'])}",
+        )
+        merchant_lines = self._format_lines(
+            summary["notable_merchants"],
+            (
+                lambda item: (
+                    f"- {item['merchant']}: {self._format_amount(item['total_outflow'])} "
+                    f"across {item['transaction_count']} transaction(s)"
+                )
+            ),
+        )
+        category_change_lines = self._format_lines(
+            summary["category_changes"],
+            (
+                lambda item: (
+                    f"- {item['category_name']}: current {self._format_amount(item['current_outflow'])}, "
+                    f"prior {self._format_amount(item['prior_outflow'])}, "
+                    f"delta {self._format_amount(item['delta_outflow'])}"
+                )
+            ),
+        )
+        anomaly_lines = self._format_lines(
+            summary["anomalies"],
+            lambda item: f"- {item['description']}: {self._format_amount(item['amount'])}",
+        )
+        uncategorized_lines = self._format_lines(
+            summary["uncategorized_transactions"],
+            (
+                lambda item: (
+                    f"- {item['posted_at']} {item['description']}: "
+                    f"{self._format_amount(item['amount'])}"
+                )
+            ),
+        )
         content = template.substitute(
             period_start=period_start,
             period_end=period_end,
-            category_lines=category_lines,
+            inflow=self._format_amount(summary["totals"]["inflow"]),
+            outflow=self._format_amount(summary["totals"]["outflow"]),
+            top_category_lines=top_category_lines,
+            merchant_lines=merchant_lines,
+            category_change_lines=category_change_lines,
+            anomaly_lines=anomaly_lines,
+            uncategorized_lines=uncategorized_lines,
         )
         relative_path = f"Finance/weekly-{period_start}.md"
         path = self.vault_writer.write_markdown(relative_path, content)
@@ -165,14 +203,50 @@ class FinanceService:
     def generate_monthly_report(self, period_start: str, period_end: str) -> dict[str, object]:
         summary = build_monthly_report(self.conn, period_start, period_end)
         template = Template(self._template_path("finance-monthly-summary.md").read_text())
-        account_lines = "\n".join(
-            f"- {item['account_name']}: {item['total_amount']}"
-            for item in summary["accounts"]
-        ) or "- No transactions"
+        account_rollup_lines = self._format_lines(
+            summary["account_rollups"],
+            lambda item: f"- {item['account_name']}: {self._format_amount(item['total_amount'])}",
+        )
+        category_lines = self._format_lines(
+            summary["category_totals"],
+            lambda item: f"- {item['category_name']}: {self._format_amount(item['total_amount'])}",
+        )
+        change_lines = self._format_lines(
+            summary["changes_vs_prior_month"],
+            (
+                lambda item: (
+                    f"- {item['account_name']}: current {self._format_amount(item['current_total'])}, "
+                    f"prior {self._format_amount(item['prior_total'])}, "
+                    f"delta {self._format_amount(item['delta_total'])}"
+                )
+            ),
+        )
+        recurring_lines = self._format_lines(
+            summary["recurring_charge_highlights"],
+            (
+                lambda item: (
+                    f"- {item['merchant']}: current {self._format_amount(item['current_outflow'])}, "
+                    f"prior {self._format_amount(item['prior_outflow'])}"
+                )
+            ),
+        )
+        anomaly_lines = self._format_lines(
+            summary["anomalies"],
+            lambda item: f"- {item['description']}: {self._format_amount(item['amount'])}",
+        )
+        review_lines = self._format_lines(
+            summary["uncategorized_or_new_merchants"],
+            self._format_monthly_review_item,
+        )
         content = template.substitute(
             period_start=period_start,
             period_end=period_end,
-            account_lines=account_lines,
+            account_rollup_lines=account_rollup_lines,
+            category_lines=category_lines,
+            change_lines=change_lines,
+            recurring_lines=recurring_lines,
+            anomaly_lines=anomaly_lines,
+            review_lines=review_lines,
         )
         relative_path = f"Finance/monthly-{period_start[:7]}.md"
         path = self.vault_writer.write_markdown(relative_path, content)
@@ -236,3 +310,22 @@ class FinanceService:
 
     def _template_path(self, name: str) -> Path:
         return Path(__file__).resolve().parents[2] / "templates" / name
+
+    def _format_lines(self, items: list[dict[str, object]], render) -> str:
+        if not items:
+            return "- None"
+        return "\n".join(render(item) for item in items)
+
+    def _format_monthly_review_item(self, item: dict[str, object]) -> str:
+        if item["kind"] == "new_merchant":
+            return (
+                f"- new merchant {item['merchant']} first seen {item['first_seen_at']}: "
+                f"{self._format_amount(item['total_amount'])}"
+            )
+        return (
+            f"- uncategorized {item['posted_at']} {item['description']}: "
+            f"{self._format_amount(item['amount'])}"
+        )
+
+    def _format_amount(self, value: object) -> str:
+        return f"{float(value):.2f}"
