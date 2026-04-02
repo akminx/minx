@@ -40,4 +40,12 @@ class VaultWriter:
             raise ValueError("vault paths must be relative")
         if not normalized.parts or normalized.parts[0] not in self.allowed_roots:
             raise ValueError("outside allowed vault roots")
-        return self.vault_root / normalized
+
+        vault_root = self.vault_root.resolve()
+        allowed_root = (vault_root / normalized.parts[0]).resolve()
+        resolved = (vault_root / normalized).resolve()
+        try:
+            resolved.relative_to(allowed_root)
+        except ValueError as exc:
+            raise ValueError("outside allowed vault roots") from exc
+        return resolved

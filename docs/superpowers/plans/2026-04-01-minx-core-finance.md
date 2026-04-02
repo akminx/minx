@@ -916,6 +916,16 @@ def test_vault_writer_rejects_paths_outside_allowed_dirs(tmp_path):
         raise AssertionError("expected ValueError")
 
 
+def test_vault_writer_rejects_path_traversal_within_allowed_root(tmp_path):
+    writer = VaultWriter(tmp_path, ("Finance",))
+    try:
+        writer.write_markdown("Finance/../bad.md", "nope")
+    except ValueError as exc:
+        assert "outside allowed vault roots" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_replace_section_updates_named_heading(tmp_path):
     writer = VaultWriter(tmp_path, ("Finance",))
     writer.write_markdown(
@@ -1246,7 +1256,7 @@ cd /Users/akmini/Documents/minx-mcp && pytest tests/test_jobs.py tests/test_pref
 Expected:
 
 ```text
-8 passed
+9 passed
 ```
 
 - [ ] **Step 7: Commit the shared helpers**
