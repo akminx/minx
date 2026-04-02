@@ -13,7 +13,7 @@ from minx_mcp.finance.reports import (
     build_weekly_report,
     persist_report_run,
 )
-from minx_mcp.jobs import mark_completed, mark_failed, mark_running, submit_job
+from minx_mcp.jobs import get_job, mark_completed, mark_failed, mark_running, submit_job
 from minx_mcp.vault_writer import VaultWriter
 
 
@@ -178,6 +178,9 @@ class FinanceService:
         path = self.vault_writer.write_markdown(relative_path, content)
         persist_report_run(self.conn, "monthly", period_start, period_end, str(path), summary)
         return {"vault_path": str(path), "summary": summary}
+
+    def get_job(self, job_id: str) -> dict[str, object | None] | None:
+        return get_job(self.conn, job_id)
 
     def _account_id(self, account_name: str) -> int:
         row = self.conn.execute(

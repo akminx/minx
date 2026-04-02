@@ -1,12 +1,24 @@
 # minx-mcp
 
-Scaffold for the Minx MCP platform and finance domain.
+Shared Minx MCP platform and finance domain.
 
-This repository currently includes:
+## Setup
 
-- package metadata and environment examples
-- shared settings scaffolding
-- a safe placeholder finance entry point
-- smoke tests for the initial core package
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+```
 
-Later tasks in the plan add the database layer, finance domain behavior, reporting, and MCP transport.
+## Run finance over stdio
+
+```bash
+.venv/bin/python -m minx_mcp.finance --transport stdio
+```
+
+## Run finance over HTTP
+
+```bash
+.venv/bin/python -m minx_mcp.finance --transport http --host 127.0.0.1 --port 8000
+```
+
+The HTTP transport uses FastMCP streamable HTTP and is intended as the runtime seam for later dashboard work.

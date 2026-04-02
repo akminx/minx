@@ -1,4 +1,5 @@
 import importlib.metadata
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -130,7 +131,20 @@ def test_concurrent_bootstrap_succeeds_for_same_db_file(tmp_path):
 
 def test_built_wheel_includes_packaged_migrations(tmp_path):
     project_root = Path(__file__).resolve().parent.parent
+    source_root = tmp_path / "source"
     wheel_dir = tmp_path / "wheelhouse"
+    shutil.copytree(
+        project_root,
+        source_root,
+        ignore=shutil.ignore_patterns(
+            ".git",
+            ".venv",
+            ".pytest_cache",
+            "build",
+            "*.egg-info",
+            "__pycache__",
+        ),
+    )
     wheel_dir.mkdir()
 
     subprocess.run(
@@ -146,7 +160,7 @@ def test_built_wheel_includes_packaged_migrations(tmp_path):
             str(wheel_dir),
         ],
         check=True,
-        cwd=project_root,
+        cwd=source_root,
         capture_output=True,
         text=True,
     )
