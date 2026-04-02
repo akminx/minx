@@ -1,10 +1,12 @@
 # minx-mcp
 
-Shared Minx MCP platform and domain services.
+Scaffold for the Minx MCP platform and finance domain.
 
-This first slice implements:
+This repository currently includes:
 
-- shared platform foundations
-- finance MCP domain
-- vault-compatible finance summaries
-- stdio and HTTP-capable MCP transport
+- package metadata and environment examples
+- shared settings scaffolding
+- a safe placeholder finance entry point
+- smoke tests for the initial core package
+
+Later tasks in the plan add the database layer, finance domain behavior, reporting, and MCP transport.
