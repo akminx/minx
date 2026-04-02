@@ -931,6 +931,9 @@ def test_replace_section_updates_named_heading(tmp_path):
 Create `/Users/akmini/Documents/minx-mcp/tests/test_transport.py`:
 
 ```python
+from pathlib import Path
+
+from minx_mcp import document_text
 from minx_mcp.transport import build_transport_config
 
 
@@ -939,6 +942,42 @@ def test_transport_config_supports_stdio_and_http():
     http = build_transport_config("http", "127.0.0.1", 8000)
     assert stdio["transport"] == "stdio"
     assert http["transport"] == "streamable-http"
+
+
+def test_extract_text_uses_configured_liteparse_binary(monkeypatch, tmp_path):
+    calls = {}
+
+    class Settings:
+        liteparse_bin = "custom-lit"
+
+    class CompletedProcess:
+        stdout = "parsed text"
+
+    def fake_get_settings():
+        return Settings()
+
+    def fake_run(args, capture_output, check, text):
+        calls["args"] = args
+        calls["capture_output"] = capture_output
+        calls["check"] = check
+        calls["text"] = text
+        return CompletedProcess()
+
+    monkeypatch.setattr(document_text, "get_settings", fake_get_settings)
+    monkeypatch.setattr(document_text.subprocess, "run", fake_run)
+
+    source = tmp_path / "statement.pdf"
+    source.write_text("placeholder")
+
+    result = document_text.extract_text(Path(source))
+
+    assert result == "parsed text"
+    assert calls == {
+        "args": ["custom-lit", str(source)],
+        "capture_output": True,
+        "check": True,
+        "text": True,
+    }
 ```
 
 - [ ] **Step 2: Implement jobs and job events**
@@ -1207,7 +1246,7 @@ cd /Users/akmini/Documents/minx-mcp && pytest tests/test_jobs.py tests/test_pref
 Expected:
 
 ```text
-7 passed
+8 passed
 ```
 
 - [ ] **Step 7: Commit the shared helpers**
