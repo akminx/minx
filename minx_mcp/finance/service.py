@@ -29,7 +29,8 @@ class FinanceService:
         source_kind: str | None = None,
         mapping: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        idempotency_key = hashlib.sha256(f"{account_name}|{source_ref}".encode()).hexdigest()
+        content_hash = hashlib.sha256(Path(source_ref).read_bytes()).hexdigest()
+        idempotency_key = hashlib.sha256(f"{account_name}|{source_ref}|{content_hash}".encode()).hexdigest()
         job = submit_job(self.conn, "finance_import", "system", source_ref, idempotency_key)
         if job["status"] == "completed":
             return {"job_id": job["id"], "status": job["status"], "result": job["result"]}
@@ -113,7 +114,7 @@ class FinanceService:
                 """
                 UPDATE finance_transactions
                 SET category_id = ?, category_source = 'rule'
-                WHERE merchant LIKE ?
+                WHERE merchant LIKE ? AND category_source != 'manual'
                 """,
                 (rule["category_id"], f"%{rule['pattern']}%"),
             )
