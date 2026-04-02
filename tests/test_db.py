@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 
 import pytest
 
@@ -92,11 +93,27 @@ def test_failed_migration_rolls_back_partial_changes(tmp_path, monkeypatch):
         row[0]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
-    applied = {
-        row[0]
-        for row in conn.execute("SELECT name FROM _migrations").fetchall()
-    }
 
-    assert "seeded_table" in names
     assert "half_done" not in names
-    assert applied == {"001_good.sql"}
+    assert "seeded_table" not in names
+    assert "_migrations" not in names
+
+
+def test_concurrent_bootstrap_succeeds_for_same_db_file(tmp_path):
+    db_path = tmp_path / "shared.db"
+    errors: list[Exception] = []
+
+    def bootstrap() -> None:
+        try:
+            conn = get_connection(db_path)
+            conn.close()
+        except Exception as exc:  # pragma: no cover - failure path asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=bootstrap) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []

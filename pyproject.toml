@@ -24,9 +24,5 @@ minx-finance = "minx_mcp.finance.__main__:main"
 [tool.setuptools.packages.find]
 include = ["minx_mcp*"]
 
-[tool.setuptools.data-files]
-"schema/migrations" = [
-  "schema/migrations/001_platform.sql",
-  "schema/migrations/002_finance.sql",
-  "schema/migrations/003_finance_views.sql",
-]
+[tool.setuptools.package-data]
+"minx_mcp.schema.migrations" = ["*.sql"]
