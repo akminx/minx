@@ -259,7 +259,10 @@ Create `/Users/akmini/Documents/minx-mcp/tests/test_db.py`:
 ```python
 import importlib.metadata
 import sqlite3
+import subprocess
+import sys
 import threading
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -381,12 +384,31 @@ def test_concurrent_bootstrap_succeeds_for_same_db_file(tmp_path):
 
 
 def test_built_wheel_includes_packaged_migrations(tmp_path):
-    del tmp_path
+    project_root = Path(__file__).resolve().parent.parent
+    wheel_dir = tmp_path / "wheelhouse"
+    wheel_dir.mkdir()
 
-    names = {
-        str(path)
-        for path in importlib.metadata.files("minx-mcp") or []
-    }
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            ".",
+            "--no-deps",
+            "--no-build-isolation",
+            "-w",
+            str(wheel_dir),
+        ],
+        check=True,
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+
+    wheel_path = next(wheel_dir.glob("minx_mcp-*.whl"))
+    with zipfile.ZipFile(wheel_path) as archive:
+        names = set(archive.namelist())
 
     assert "minx_mcp/schema/migrations/001_platform.sql" in names
     assert "minx_mcp/schema/migrations/002_finance.sql" in names
@@ -405,6 +427,31 @@ def test_missing_migrations_preserve_row_factory(tmp_path, monkeypatch):
 
     assert conn.row_factory is original_row_factory
     assert not conn.in_transaction
+
+
+def test_partial_migration_set_fails_closed(tmp_path, monkeypatch):
+    migration_root = tmp_path / "migrations"
+    migration_root.mkdir()
+    (migration_root / "001_platform.sql").write_text(
+        "CREATE TABLE one_table (id INTEGER PRIMARY KEY);"
+    )
+    (migration_root / "003_finance_views.sql").write_text(
+        "CREATE TABLE three_table (id INTEGER PRIMARY KEY);"
+    )
+    conn = sqlite3.connect(str(tmp_path / "gap.db"))
+
+    monkeypatch.setattr("minx_mcp.db.migration_dir", lambda: migration_root)
+
+    with pytest.raises(FileNotFoundError):
+        apply_migrations(conn)
+
+    names = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    assert "one_table" not in names
+    assert "three_table" not in names
+    assert "_migrations" not in names
 
 
 def test_unreadable_migration_rolls_back_and_restores_connection(tmp_path, monkeypatch):
@@ -472,6 +519,7 @@ Create `/Users/akmini/Documents/minx-mcp/minx_mcp/db.py`:
 ```python
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -507,6 +555,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         paths = sorted(migration_dir().glob("*.sql"))
         if not paths:
             raise FileNotFoundError(f"No migration files found in {migration_dir()}")
+        _validate_migration_paths(paths)
 
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -555,11 +604,35 @@ def _split_sql_script(script: str) -> list[str]:
         raise sqlite3.DatabaseError("Incomplete migration statement")
 
     return statements
+
+
+def _validate_migration_paths(paths: list[Path]) -> None:
+    numbers = []
+
+    for path in paths:
+        match = re.match(r"(?P<number>\d{3})_.+\.sql$", path.name)
+        if not match:
+            raise ValueError(f"Unexpected migration filename: {path.name}")
+        numbers.append(int(match.group("number")))
+
+    expected = list(range(1, len(numbers) + 1))
+    if numbers != expected:
+        raise FileNotFoundError(
+            f"Incomplete migration set. Expected numbered migrations {expected}, found {numbers}."
+        )
 ```
 
 Modify `/Users/akmini/Documents/minx-mcp/pyproject.toml` to package migration SQL from the package directory:
 
 ```toml
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.24.0",
+  "setuptools>=69",
+  "wheel",
+]
+
 [tool.setuptools.package-data]
 "minx_mcp.schema.migrations" = ["*.sql"]
 ```
@@ -732,7 +805,7 @@ cd /Users/akmini/Documents/minx-mcp && pytest tests/test_db.py -v
 Expected:
 
 ```text
-11 passed
+12 passed
 ```
 
 - [ ] **Step 6: Commit the schema layer**

@@ -1,6 +1,9 @@
-import sqlite3
 import importlib.metadata
+import sqlite3
+import subprocess
+import sys
 import threading
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -126,12 +129,31 @@ def test_concurrent_bootstrap_succeeds_for_same_db_file(tmp_path):
 
 
 def test_built_wheel_includes_packaged_migrations(tmp_path):
-    del tmp_path  # unused; kept for pytest tmp_path fixture symmetry with other artifact tests
+    project_root = Path(__file__).resolve().parent.parent
+    wheel_dir = tmp_path / "wheelhouse"
+    wheel_dir.mkdir()
 
-    names = {
-        str(path)
-        for path in importlib.metadata.files("minx-mcp") or []
-    }
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            ".",
+            "--no-deps",
+            "--no-build-isolation",
+            "-w",
+            str(wheel_dir),
+        ],
+        check=True,
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+
+    wheel_path = next(wheel_dir.glob("minx_mcp-*.whl"))
+    with zipfile.ZipFile(wheel_path) as archive:
+        names = set(archive.namelist())
 
     assert "minx_mcp/schema/migrations/001_platform.sql" in names
     assert "minx_mcp/schema/migrations/002_finance.sql" in names
@@ -150,6 +172,31 @@ def test_missing_migrations_preserve_row_factory(tmp_path, monkeypatch):
 
     assert conn.row_factory is original_row_factory
     assert not conn.in_transaction
+
+
+def test_partial_migration_set_fails_closed(tmp_path, monkeypatch):
+    migration_root = tmp_path / "migrations"
+    migration_root.mkdir()
+    (migration_root / "001_platform.sql").write_text(
+        "CREATE TABLE one_table (id INTEGER PRIMARY KEY);"
+    )
+    (migration_root / "003_finance_views.sql").write_text(
+        "CREATE TABLE three_table (id INTEGER PRIMARY KEY);"
+    )
+    conn = sqlite3.connect(str(tmp_path / "gap.db"))
+
+    monkeypatch.setattr(db_module, "migration_dir", lambda: migration_root)
+
+    with pytest.raises(FileNotFoundError):
+        db_module.apply_migrations(conn)
+
+    names = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    assert "one_table" not in names
+    assert "three_table" not in names
+    assert "_migrations" not in names
 
 
 def test_unreadable_migration_rolls_back_and_restores_connection(tmp_path, monkeypatch):

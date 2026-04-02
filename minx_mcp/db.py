@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -35,6 +36,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         paths = sorted(migration_dir().glob("*.sql"))
         if not paths:
             raise FileNotFoundError(f"No migration files found in {migration_dir()}")
+        _validate_migration_paths(paths)
 
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -86,3 +88,19 @@ def _split_sql_script(script: str) -> list[str]:
         raise sqlite3.DatabaseError("Incomplete migration statement")
 
     return statements
+
+
+def _validate_migration_paths(paths: list[Path]) -> None:
+    numbers: list[int] = []
+
+    for path in paths:
+        match = re.match(r"(?P<number>\d{3})_.+\.sql$", path.name)
+        if not match:
+            raise ValueError(f"Unexpected migration filename: {path.name}")
+        numbers.append(int(match.group("number")))
+
+    expected = list(range(1, len(numbers) + 1))
+    if numbers != expected:
+        raise FileNotFoundError(
+            f"Incomplete migration set. Expected numbered migrations {expected}, found {numbers}."
+        )
