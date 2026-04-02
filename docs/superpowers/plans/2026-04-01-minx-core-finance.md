@@ -257,8 +257,10 @@ cd /Users/akmini/Documents/minx-mcp && git add pyproject.toml README.md .env.exa
 Create `/Users/akmini/Documents/minx-mcp/tests/test_db.py`:
 
 ```python
+import importlib.metadata
 import sqlite3
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -320,12 +322,14 @@ def test_connection_enables_required_pragmas(tmp_path):
 def test_apply_migrations_handles_plain_sqlite_connections(tmp_path):
     db_path = tmp_path / "plain.db"
     conn = sqlite3.connect(str(db_path))
+    original_row_factory = conn.row_factory
 
     apply_migrations(conn)
     apply_migrations(conn)
 
     count = conn.execute("SELECT COUNT(*) FROM _migrations").fetchone()[0]
     assert count == 3
+    assert conn.row_factory is original_row_factory
 
 
 def test_failed_migration_rolls_back_partial_changes(tmp_path, monkeypatch):
@@ -372,6 +376,32 @@ def test_concurrent_bootstrap_succeeds_for_same_db_file(tmp_path):
         thread.join()
 
     assert errors == []
+
+
+def test_built_wheel_includes_packaged_migrations(tmp_path):
+    del tmp_path
+
+    names = {
+        str(path)
+        for path in importlib.metadata.files("minx-mcp") or []
+    }
+
+    assert "minx_mcp/schema/migrations/001_platform.sql" in names
+    assert "minx_mcp/schema/migrations/002_finance.sql" in names
+    assert "minx_mcp/schema/migrations/003_finance_views.sql" in names
+
+
+def test_source_and_packaged_migrations_match():
+    project_root = Path(__file__).resolve().parent.parent
+    source_root = project_root / "schema" / "migrations"
+    packaged_root = project_root / "minx_mcp" / "schema" / "migrations"
+
+    for filename in [
+        "001_platform.sql",
+        "002_finance.sql",
+        "003_finance_views.sql",
+    ]:
+        assert (source_root / filename).read_text().strip() == (packaged_root / filename).read_text().strip()
 ```
 
 - [ ] **Step 2: Run the database tests to verify they fail**
@@ -396,6 +426,7 @@ Create `/Users/akmini/Documents/minx-mcp/minx_mcp/db.py`:
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 
 
@@ -405,15 +436,25 @@ def migration_dir() -> Path:
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    apply_migrations(conn)
+    for attempt in range(5):
+        try:
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            apply_migrations(conn)
+            break
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower() or attempt == 4:
+                conn.close()
+                raise
+            time.sleep(0.05 * (attempt + 1))
     return conn
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
+    original_row_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
     paths = sorted(migration_dir().glob("*.sql"))
     if not paths:
@@ -444,6 +485,8 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     except sqlite3.DatabaseError:
         conn.rollback()
         raise
+    finally:
+        conn.row_factory = original_row_factory
 
 
 def _split_sql_script(script: str) -> list[str]:
@@ -641,7 +684,7 @@ cd /Users/akmini/Documents/minx-mcp && pytest tests/test_db.py -v
 Expected:
 
 ```text
-7 passed
+9 passed
 ```
 
 - [ ] **Step 6: Commit the schema layer**

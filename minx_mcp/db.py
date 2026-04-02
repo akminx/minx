@@ -11,7 +11,7 @@ def migration_dir() -> Path:
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30.0)
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
     conn.row_factory = sqlite3.Row
     for attempt in range(5):
         try:
@@ -29,6 +29,7 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
+    original_row_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
     paths = sorted(migration_dir().glob("*.sql"))
     if not paths:
@@ -62,6 +63,8 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     except sqlite3.DatabaseError:
         conn.rollback()
         raise
+    finally:
+        conn.row_factory = original_row_factory
 
 
 def _split_sql_script(script: str) -> list[str]:

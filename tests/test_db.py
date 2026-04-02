@@ -1,5 +1,7 @@
 import sqlite3
+import importlib.metadata
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -64,12 +66,14 @@ def test_connection_enables_required_pragmas(tmp_path):
 def test_apply_migrations_handles_plain_sqlite_connections(tmp_path):
     db_path = tmp_path / "plain.db"
     conn = sqlite3.connect(str(db_path))
+    original_row_factory = conn.row_factory
 
     db_module.apply_migrations(conn)
     db_module.apply_migrations(conn)
 
     count = conn.execute("SELECT COUNT(*) FROM _migrations").fetchone()[0]
     assert count == 3
+    assert conn.row_factory is original_row_factory
 
 
 def test_failed_migration_rolls_back_partial_changes(tmp_path, monkeypatch):
@@ -117,3 +121,29 @@ def test_concurrent_bootstrap_succeeds_for_same_db_file(tmp_path):
         thread.join()
 
     assert errors == []
+
+
+def test_built_wheel_includes_packaged_migrations(tmp_path):
+    del tmp_path  # unused; kept for pytest tmp_path fixture symmetry with other artifact tests
+
+    names = {
+        str(path)
+        for path in importlib.metadata.files("minx-mcp") or []
+    }
+
+    assert "minx_mcp/schema/migrations/001_platform.sql" in names
+    assert "minx_mcp/schema/migrations/002_finance.sql" in names
+    assert "minx_mcp/schema/migrations/003_finance_views.sql" in names
+
+
+def test_source_and_packaged_migrations_match():
+    project_root = Path(__file__).resolve().parent.parent
+    source_root = project_root / "schema" / "migrations"
+    packaged_root = project_root / "minx_mcp" / "schema" / "migrations"
+
+    for filename in [
+        "001_platform.sql",
+        "002_finance.sql",
+        "003_finance_views.sql",
+    ]:
+        assert (source_root / filename).read_text().strip() == (packaged_root / filename).read_text().strip()
