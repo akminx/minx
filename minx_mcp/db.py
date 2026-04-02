@@ -30,12 +30,12 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
     original_row_factory = conn.row_factory
-    conn.row_factory = sqlite3.Row
-    paths = sorted(migration_dir().glob("*.sql"))
-    if not paths:
-        raise FileNotFoundError(f"No migration files found in {migration_dir()}")
-
     try:
+        conn.row_factory = sqlite3.Row
+        paths = sorted(migration_dir().glob("*.sql"))
+        if not paths:
+            raise FileNotFoundError(f"No migration files found in {migration_dir()}")
+
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             """
@@ -60,8 +60,9 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
             )
             applied.add(path.name)
         conn.commit()
-    except sqlite3.DatabaseError:
-        conn.rollback()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
         raise
     finally:
         conn.row_factory = original_row_factory

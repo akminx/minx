@@ -361,9 +361,11 @@ def test_failed_migration_rolls_back_partial_changes(tmp_path, monkeypatch):
 def test_concurrent_bootstrap_succeeds_for_same_db_file(tmp_path):
     db_path = tmp_path / "shared.db"
     errors = []
+    barrier = threading.Barrier(2)
 
     def bootstrap():
         try:
+            barrier.wait()
             conn = get_connection(db_path)
             conn.close()
         except Exception as exc:
@@ -391,16 +393,61 @@ def test_built_wheel_includes_packaged_migrations(tmp_path):
     assert "minx_mcp/schema/migrations/003_finance_views.sql" in names
 
 
+def test_missing_migrations_preserve_row_factory(tmp_path, monkeypatch):
+    missing_root = tmp_path / "missing"
+    conn = sqlite3.connect(str(tmp_path / "plain.db"))
+    original_row_factory = conn.row_factory
+
+    monkeypatch.setattr("minx_mcp.db.migration_dir", lambda: missing_root)
+
+    with pytest.raises(FileNotFoundError):
+        apply_migrations(conn)
+
+    assert conn.row_factory is original_row_factory
+    assert not conn.in_transaction
+
+
+def test_unreadable_migration_rolls_back_and_restores_connection(tmp_path, monkeypatch):
+    migration_root = tmp_path / "migrations"
+    migration_root.mkdir()
+    target = migration_root / "001_platform.sql"
+    target.write_text("CREATE TABLE should_not_exist (id INTEGER PRIMARY KEY);")
+    conn = sqlite3.connect(str(tmp_path / "broken.db"))
+    original_row_factory = conn.row_factory
+    original_read_text = Path.read_text
+
+    def broken_read_text(self: Path, *args, **kwargs):
+        if self == target:
+            raise OSError("cannot read migration")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr("minx_mcp.db.migration_dir", lambda: migration_root)
+    monkeypatch.setattr(Path, "read_text", broken_read_text)
+
+    with pytest.raises(OSError):
+        apply_migrations(conn)
+
+    names = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    assert "should_not_exist" not in names
+    assert "_migrations" not in names
+    assert conn.row_factory is original_row_factory
+    assert not conn.in_transaction
+
+
 def test_source_and_packaged_migrations_match():
     project_root = Path(__file__).resolve().parent.parent
     source_root = project_root / "schema" / "migrations"
     packaged_root = project_root / "minx_mcp" / "schema" / "migrations"
 
-    for filename in [
-        "001_platform.sql",
-        "002_finance.sql",
-        "003_finance_views.sql",
-    ]:
+    source_files = sorted(path.name for path in source_root.glob("*.sql"))
+    packaged_files = sorted(path.name for path in packaged_root.glob("*.sql"))
+
+    assert source_files == packaged_files
+
+    for filename in source_files:
         assert (source_root / filename).read_text().strip() == (packaged_root / filename).read_text().strip()
 ```
 
@@ -455,12 +502,12 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
     original_row_factory = conn.row_factory
-    conn.row_factory = sqlite3.Row
-    paths = sorted(migration_dir().glob("*.sql"))
-    if not paths:
-        raise FileNotFoundError(f"No migration files found in {migration_dir()}")
-
     try:
+        conn.row_factory = sqlite3.Row
+        paths = sorted(migration_dir().glob("*.sql"))
+        if not paths:
+            raise FileNotFoundError(f"No migration files found in {migration_dir()}")
+
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             """
@@ -482,8 +529,9 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
             conn.execute("INSERT INTO _migrations (name) VALUES (?)", (path.name,))
             applied.add(path.name)
         conn.commit()
-    except sqlite3.DatabaseError:
-        conn.rollback()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
         raise
     finally:
         conn.row_factory = original_row_factory
@@ -684,7 +732,7 @@ cd /Users/akmini/Documents/minx-mcp && pytest tests/test_db.py -v
 Expected:
 
 ```text
-9 passed
+11 passed
 ```
 
 - [ ] **Step 6: Commit the schema layer**
