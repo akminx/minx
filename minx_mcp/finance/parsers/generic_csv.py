@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 from datetime import datetime
 from pathlib import Path
 
@@ -37,6 +38,6 @@ def parse_generic_csv(
         "account_name": account_name,
         "source_type": "csv",
         "source_ref": str(path),
-        "raw_fingerprint": f"path:{path.name}",
+        "raw_fingerprint": hashlib.sha256(path.read_bytes()).hexdigest(),
         "transactions": transactions,
     }

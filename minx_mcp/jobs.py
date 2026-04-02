@@ -4,6 +4,8 @@ import json
 import uuid
 from sqlite3 import Connection, Row
 
+STUCK_JOB_TIMEOUT_MINUTES = 30
+
 
 def submit_job(
     conn: Connection,
@@ -18,7 +20,27 @@ def submit_job(
             (idempotency_key,),
         ).fetchone()
         if existing:
-            return _row_to_job(existing)
+            job = _row_to_job(existing)
+            if job["status"] == "running":
+                stuck = conn.execute(
+                    """
+                    SELECT 1 FROM jobs
+                    WHERE id = ? AND status = 'running'
+                      AND updated_at < datetime('now', ?)
+                    """,
+                    (job["id"], f"-{STUCK_JOB_TIMEOUT_MINUTES} minutes"),
+                ).fetchone()
+                if stuck:
+                    _set_status(conn, str(job["id"]), "failed", None, commit=True)
+                    conn.execute(
+                        "INSERT INTO job_events (job_id, status, message) VALUES (?, 'failed', ?)",
+                        (job["id"], f"Auto-recovered: stuck in running for >{STUCK_JOB_TIMEOUT_MINUTES}m"),
+                    )
+                    conn.commit()
+                else:
+                    return job
+            else:
+                return job
 
     job_id = str(uuid.uuid4())
     conn.execute(
@@ -36,15 +58,15 @@ def submit_job(
     return get_job(conn, job_id)
 
 
-def mark_running(conn: Connection, job_id: str) -> None:
-    _set_status(conn, job_id, "running", None)
+def mark_running(conn: Connection, job_id: str, *, commit: bool = True) -> None:
+    _set_status(conn, job_id, "running", None, commit=commit)
 
 
-def mark_completed(conn: Connection, job_id: str, result: dict[str, object]) -> None:
-    _set_status(conn, job_id, "completed", json.dumps(result))
+def mark_completed(conn: Connection, job_id: str, result: dict[str, object], *, commit: bool = True) -> None:
+    _set_status(conn, job_id, "completed", json.dumps(result), commit=commit)
 
 
-def mark_failed(conn: Connection, job_id: str, message: str) -> None:
+def mark_failed(conn: Connection, job_id: str, message: str, *, commit: bool = True) -> None:
     conn.execute(
         """
         UPDATE jobs
@@ -57,7 +79,8 @@ def mark_failed(conn: Connection, job_id: str, message: str) -> None:
         "INSERT INTO job_events (job_id, status, message) VALUES (?, 'failed', ?)",
         (job_id, message),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_job(conn: Connection, job_id: str) -> dict[str, object | None] | None:
@@ -65,7 +88,7 @@ def get_job(conn: Connection, job_id: str) -> dict[str, object | None] | None:
     return _row_to_job(row) if row else None
 
 
-def _set_status(conn: Connection, job_id: str, status: str, result_json: str | None) -> None:
+def _set_status(conn: Connection, job_id: str, status: str, result_json: str | None, *, commit: bool = True) -> None:
     conn.execute(
         """
         UPDATE jobs
@@ -78,7 +101,8 @@ def _set_status(conn: Connection, job_id: str, status: str, result_json: str | N
         "INSERT INTO job_events (job_id, status, message) VALUES (?, ?, ?)",
         (job_id, status, f"Job moved to {status}"),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def _row_to_job(row: Row) -> dict[str, object | None]:

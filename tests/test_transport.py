@@ -32,6 +32,7 @@ def test_extract_text_uses_configured_liteparse_binary(monkeypatch, tmp_path):
         return CompletedProcess()
 
     monkeypatch.setattr(document_text, "get_settings", fake_get_settings)
+    monkeypatch.setattr(document_text.shutil, "which", lambda _: "/usr/local/bin/custom-lit")
     monkeypatch.setattr(document_text.subprocess, "run", fake_run)
 
     source = tmp_path / "statement.pdf"

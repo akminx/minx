@@ -8,6 +8,7 @@ SAFE_TOOLS = [
     "safe_finance_accounts",
     "finance_import",
     "finance_categorize",
+    "finance_add_category_rule",
     "finance_anomalies",
     "finance_job_status",
     "finance_generate_weekly_report",
@@ -26,10 +27,7 @@ def create_finance_server(service: object) -> FastMCP:
 
     @mcp.tool(name="safe_finance_accounts")
     def safe_finance_accounts() -> dict[str, object]:
-        rows = service.conn.execute(
-            "SELECT name, account_type, last_imported_at FROM finance_accounts ORDER BY name"
-        ).fetchall()
-        return {"accounts": [dict(row) for row in rows]}
+        return service.list_accounts()
 
     @mcp.tool(name="finance_import")
     def finance_import(
@@ -43,6 +41,15 @@ def create_finance_server(service: object) -> FastMCP:
     def finance_categorize(transaction_ids: list[int], category_name: str) -> dict[str, int]:
         service.finance_categorize(transaction_ids, category_name)
         return {"updated": len(transaction_ids)}
+
+    @mcp.tool(name="finance_add_category_rule")
+    def finance_add_category_rule(
+        category_name: str,
+        match_kind: str,
+        pattern: str,
+    ) -> dict[str, str]:
+        service.add_category_rule(category_name, match_kind, pattern)
+        return {"status": "created", "category": category_name, "pattern": pattern}
 
     @mcp.tool(name="finance_anomalies")
     def finance_anomalies() -> dict[str, object]:

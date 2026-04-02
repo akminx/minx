@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from pathlib import Path
 from sqlite3 import Connection
-from string import Template
 
+from minx_mcp.db import get_connection
 from minx_mcp.finance.analytics import find_anomalies, sensitive_query, summarize_finances
 from minx_mcp.finance.dedupe import fingerprint_transaction
 from minx_mcp.finance.importers import parse_source_file
@@ -12,15 +13,26 @@ from minx_mcp.finance.reports import (
     build_monthly_report,
     build_weekly_report,
     persist_report_run,
+    render_monthly_markdown,
+    render_weekly_markdown,
 )
 from minx_mcp.jobs import get_job, mark_completed, mark_failed, mark_running, submit_job
 from minx_mcp.vault_writer import VaultWriter
 
 
 class FinanceService:
-    def __init__(self, conn: Connection, vault_root: Path) -> None:
-        self.conn = conn
+    def __init__(self, db_path: Path, vault_root: Path) -> None:
+        self._db_path = db_path
+        self._local = threading.local()
         self.vault_writer = VaultWriter(vault_root, ("Finance",))
+
+    @property
+    def conn(self) -> Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = get_connection(self._db_path)
+            self._local.conn = conn
+        return conn
 
     def finance_import(
         self,
@@ -36,7 +48,7 @@ class FinanceService:
             return {"job_id": job["id"], "status": job["status"], "result": job["result"]}
 
         try:
-            mark_running(self.conn, str(job["id"]))
+            mark_running(self.conn, str(job["id"]), commit=False)
             self.conn.execute("SAVEPOINT finance_import")
 
             parsed = parse_source_file(Path(source_ref), account_name, source_kind, mapping)
@@ -46,7 +58,7 @@ class FinanceService:
             skipped = 0
 
             for txn in parsed["transactions"]:
-                fingerprint = fingerprint_transaction(account_name, txn)
+                fingerprint = fingerprint_transaction(account_id, txn)
                 existing = self.conn.execute(
                     "SELECT transaction_id FROM finance_transaction_dedupe WHERE fingerprint = ?",
                     (fingerprint,),
@@ -72,7 +84,6 @@ class FinanceService:
             )
             self.apply_category_rules(commit=False)
             self.conn.execute("RELEASE SAVEPOINT finance_import")
-            self.conn.commit()
 
             result = {"batch_id": batch_id, "inserted": inserted, "skipped": skipped}
             mark_completed(self.conn, str(job["id"]), result)
@@ -81,7 +92,6 @@ class FinanceService:
             if self.conn.in_transaction:
                 self.conn.execute("ROLLBACK TO SAVEPOINT finance_import")
                 self.conn.execute("RELEASE SAVEPOINT finance_import")
-                self.conn.commit()
             mark_failed(self.conn, str(job["id"]), str(exc))
             raise
 
@@ -137,65 +147,24 @@ class FinanceService:
         )
         self.conn.commit()
 
+    def list_accounts(self) -> dict[str, object]:
+        rows = self.conn.execute(
+            "SELECT name, account_type, last_imported_at FROM finance_accounts ORDER BY name"
+        ).fetchall()
+        return {"accounts": [dict(row) for row in rows]}
+
     def safe_finance_summary(self) -> dict[str, object]:
         return summarize_finances(self.conn)
 
     def finance_anomalies(self) -> dict[str, object]:
-        return find_anomalies(self.conn)
+        return {"items": find_anomalies(self.conn)}
 
     def sensitive_finance_query(self, limit: int = 50, session_ref: str | None = None) -> dict[str, object]:
         return sensitive_query(self.conn, limit=limit, session_ref=session_ref)
 
     def generate_weekly_report(self, period_start: str, period_end: str) -> dict[str, object]:
         summary = build_weekly_report(self.conn, period_start, period_end)
-        template = Template(self._template_path("finance-weekly-summary.md").read_text())
-        top_category_lines = self._format_lines(
-            summary["top_categories"],
-            lambda item: f"- {item['category_name']}: {self._format_amount(item['total_outflow'])}",
-        )
-        merchant_lines = self._format_lines(
-            summary["notable_merchants"],
-            (
-                lambda item: (
-                    f"- {item['merchant']}: {self._format_amount(item['total_outflow'])} "
-                    f"across {item['transaction_count']} transaction(s)"
-                )
-            ),
-        )
-        category_change_lines = self._format_lines(
-            summary["category_changes"],
-            (
-                lambda item: (
-                    f"- {item['category_name']}: current {self._format_amount(item['current_outflow'])}, "
-                    f"prior {self._format_amount(item['prior_outflow'])}, "
-                    f"delta {self._format_amount(item['delta_outflow'])}"
-                )
-            ),
-        )
-        anomaly_lines = self._format_lines(
-            summary["anomalies"],
-            lambda item: f"- {item['description']}: {self._format_amount(item['amount'])}",
-        )
-        uncategorized_lines = self._format_lines(
-            summary["uncategorized_transactions"],
-            (
-                lambda item: (
-                    f"- {item['posted_at']} {item['description']}: "
-                    f"{self._format_amount(item['amount'])}"
-                )
-            ),
-        )
-        content = template.substitute(
-            period_start=period_start,
-            period_end=period_end,
-            inflow=self._format_amount(summary["totals"]["inflow"]),
-            outflow=self._format_amount(summary["totals"]["outflow"]),
-            top_category_lines=top_category_lines,
-            merchant_lines=merchant_lines,
-            category_change_lines=category_change_lines,
-            anomaly_lines=anomaly_lines,
-            uncategorized_lines=uncategorized_lines,
-        )
+        content = render_weekly_markdown(summary, period_start, period_end)
         relative_path = f"Finance/weekly-{period_start}.md"
         path = self.vault_writer.write_markdown(relative_path, content)
         persist_report_run(self.conn, "weekly", period_start, period_end, str(path), summary)
@@ -203,52 +172,7 @@ class FinanceService:
 
     def generate_monthly_report(self, period_start: str, period_end: str) -> dict[str, object]:
         summary = build_monthly_report(self.conn, period_start, period_end)
-        template = Template(self._template_path("finance-monthly-summary.md").read_text())
-        account_rollup_lines = self._format_lines(
-            summary["account_rollups"],
-            lambda item: f"- {item['account_name']}: {self._format_amount(item['total_amount'])}",
-        )
-        category_lines = self._format_lines(
-            summary["category_totals"],
-            lambda item: f"- {item['category_name']}: {self._format_amount(item['total_amount'])}",
-        )
-        change_lines = self._format_lines(
-            summary["changes_vs_prior_month"],
-            (
-                lambda item: (
-                    f"- {item['account_name']}: current {self._format_amount(item['current_total'])}, "
-                    f"prior {self._format_amount(item['prior_total'])}, "
-                    f"delta {self._format_amount(item['delta_total'])}"
-                )
-            ),
-        )
-        recurring_lines = self._format_lines(
-            summary["recurring_charge_highlights"],
-            (
-                lambda item: (
-                    f"- {item['merchant']}: current {self._format_amount(item['current_outflow'])}, "
-                    f"prior {self._format_amount(item['prior_outflow'])}"
-                )
-            ),
-        )
-        anomaly_lines = self._format_lines(
-            summary["anomalies"],
-            lambda item: f"- {item['description']}: {self._format_amount(item['amount'])}",
-        )
-        review_lines = self._format_lines(
-            summary["uncategorized_or_new_merchants"],
-            self._format_monthly_review_item,
-        )
-        content = template.substitute(
-            period_start=period_start,
-            period_end=period_end,
-            account_rollup_lines=account_rollup_lines,
-            category_lines=category_lines,
-            change_lines=change_lines,
-            recurring_lines=recurring_lines,
-            anomaly_lines=anomaly_lines,
-            review_lines=review_lines,
-        )
+        content = render_monthly_markdown(summary, period_start, period_end)
         relative_path = f"Finance/monthly-{period_start[:7]}.md"
         path = self.vault_writer.write_markdown(relative_path, content)
         persist_report_run(self.conn, "monthly", period_start, period_end, str(path), summary)
@@ -293,8 +217,9 @@ class FinanceService:
         cursor = self.conn.execute(
             """
             INSERT INTO finance_transactions (
-                account_id, batch_id, posted_at, description, merchant, amount, category_id, external_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                account_id, batch_id, posted_at, description, merchant, amount,
+                category_id, category_source, external_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'uncategorized', ?)
             """,
             (
                 account_id,
@@ -309,24 +234,3 @@ class FinanceService:
         )
         return int(cursor.lastrowid)
 
-    def _template_path(self, name: str) -> Path:
-        return Path(__file__).resolve().parents[2] / "templates" / name
-
-    def _format_lines(self, items: list[dict[str, object]], render) -> str:
-        if not items:
-            return "- None"
-        return "\n".join(render(item) for item in items)
-
-    def _format_monthly_review_item(self, item: dict[str, object]) -> str:
-        if item["kind"] == "new_merchant":
-            return (
-                f"- new merchant {item['merchant']} first seen {item['first_seen_at']}: "
-                f"{self._format_amount(item['total_amount'])}"
-            )
-        return (
-            f"- uncategorized {item['posted_at']} {item['description']}: "
-            f"{self._format_amount(item['amount'])}"
-        )
-
-    def _format_amount(self, value: object) -> str:
-        return f"{float(value):.2f}"

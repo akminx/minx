@@ -2,14 +2,13 @@ import argparse
 
 from mcp.server.fastmcp import FastMCP
 
-from minx_mcp.db import get_connection
 from minx_mcp.finance import __main__ as finance_main
 from minx_mcp.finance.server import SAFE_TOOLS, SENSITIVE_TOOLS, create_finance_server
 from minx_mcp.finance.service import FinanceService
 
 
 def test_finance_server_registers_expected_tool_names(tmp_path):
-    service = FinanceService(get_connection(tmp_path / "minx.db"), tmp_path / "vault")
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
     assert isinstance(server, FastMCP)
     assert SAFE_TOOLS == [
@@ -17,6 +16,7 @@ def test_finance_server_registers_expected_tool_names(tmp_path):
         "safe_finance_accounts",
         "finance_import",
         "finance_categorize",
+        "finance_add_category_rule",
         "finance_anomalies",
         "finance_job_status",
         "finance_generate_weekly_report",
@@ -26,7 +26,7 @@ def test_finance_server_registers_expected_tool_names(tmp_path):
 
 
 def test_streamable_http_app_is_available(tmp_path):
-    service = FinanceService(get_connection(tmp_path / "minx.db"), tmp_path / "vault")
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
     app = server.streamable_http_app()
     assert callable(app)
@@ -44,7 +44,6 @@ def test_build_parser_accepts_transport_host_and_port():
 
 def test_main_wires_cli_and_settings_into_run_server(monkeypatch, tmp_path):
     calls = {}
-    fake_conn = object()
     fake_server = object()
 
     class Settings:
@@ -57,10 +56,6 @@ def test_main_wires_cli_and_settings_into_run_server(monkeypatch, tmp_path):
     def fake_get_settings():
         return Settings()
 
-    def fake_get_connection(db_path):
-        calls["db_path"] = db_path
-        return fake_conn
-
     def fake_create_finance_server(service):
         calls["service"] = service
         return fake_server
@@ -72,7 +67,6 @@ def test_main_wires_cli_and_settings_into_run_server(monkeypatch, tmp_path):
         calls["port"] = port
 
     monkeypatch.setattr(finance_main, "get_settings", fake_get_settings)
-    monkeypatch.setattr(finance_main, "get_connection", fake_get_connection)
     monkeypatch.setattr(finance_main, "create_finance_server", fake_create_finance_server)
     monkeypatch.setattr(finance_main, "run_server", fake_run_server)
     monkeypatch.setattr(
@@ -88,7 +82,6 @@ def test_main_wires_cli_and_settings_into_run_server(monkeypatch, tmp_path):
 
     finance_main.main()
 
-    assert calls["db_path"] == tmp_path / "minx.db"
     assert isinstance(calls["service"], FinanceService)
     assert calls["server"] is fake_server
     assert calls["transport"] == "http"

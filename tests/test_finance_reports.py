@@ -1,6 +1,5 @@
 from pathlib import Path
 
-from minx_mcp.db import get_connection
 from minx_mcp.finance.service import FinanceService
 
 
@@ -16,7 +15,7 @@ def test_weekly_report_includes_required_sections(tmp_path):
         "2026-03-05,Unknown Merchant,Withdrawal,-500.00\n"
     )
     vault_root = tmp_path / "vault"
-    service = FinanceService(get_connection(tmp_path / "minx.db"), vault_root)
+    service = FinanceService(tmp_path / "minx.db", vault_root)
     service.finance_import(str(source), account_name="DCU")
     service.add_category_rule("Groceries", "merchant_contains", "H-E-B")
     service.add_category_rule("Dining Out", "merchant_contains", "CAFE")
@@ -56,7 +55,7 @@ def test_monthly_report_includes_required_sections(tmp_path):
         "2026-03-12,NEW SHOP,Withdrawal,-20.00\n"
     )
     vault_root = tmp_path / "vault"
-    service = FinanceService(get_connection(tmp_path / "minx.db"), vault_root)
+    service = FinanceService(tmp_path / "minx.db", vault_root)
     service.finance_import(str(source), account_name="DCU")
     service.add_category_rule("Groceries", "merchant_contains", "H-E-B")
     service.add_category_rule("Subscriptions", "merchant_contains", "NETFLIX")

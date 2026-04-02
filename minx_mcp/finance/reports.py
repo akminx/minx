@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, timedelta
+from pathlib import Path
 from sqlite3 import Connection
+from string import Template
+
+from minx_mcp.finance.analytics import find_anomalies, find_uncategorized
+
+TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "templates"
 
 
 def build_weekly_report(conn: Connection, period_start: str, period_end: str) -> dict[str, object]:
+    end_exclusive = _next_day(period_end)
     prior_start, prior_end = _previous_window(period_start, period_end)
+    prior_end_exclusive = _next_day(prior_end)
     totals = dict(
         conn.execute(
             """
@@ -14,9 +23,9 @@ def build_weekly_report(conn: Connection, period_start: str, period_end: str) ->
                 ROUND(COALESCE(SUM(CASE WHEN amount > 0 THEN amount END), 0), 2) AS inflow,
                 ROUND(COALESCE(ABS(SUM(CASE WHEN amount < 0 THEN amount END)), 0), 2) AS outflow
             FROM finance_transactions
-            WHERE posted_at BETWEEN ? AND ?
+            WHERE posted_at >= ? AND posted_at < ?
             """,
-            (period_start, period_end),
+            (period_start, end_exclusive),
         ).fetchone()
     )
     top_categories = [
@@ -28,12 +37,12 @@ def build_weekly_report(conn: Connection, period_start: str, period_end: str) ->
                 ROUND(ABS(SUM(t.amount)), 2) AS total_outflow
             FROM finance_transactions t
             LEFT JOIN finance_categories c ON c.id = t.category_id
-            WHERE t.posted_at BETWEEN ? AND ? AND t.amount < 0
+            WHERE t.posted_at >= ? AND t.posted_at < ? AND t.amount < 0
             GROUP BY COALESCE(c.name, 'Uncategorized')
             ORDER BY total_outflow DESC, category_name ASC
             LIMIT 5
             """,
-            (period_start, period_end),
+            (period_start, end_exclusive),
         ).fetchall()
     ]
     notable_merchants = [
@@ -45,18 +54,18 @@ def build_weekly_report(conn: Connection, period_start: str, period_end: str) ->
                 ROUND(ABS(SUM(amount)), 2) AS total_outflow,
                 COUNT(*) AS transaction_count
             FROM finance_transactions
-            WHERE posted_at BETWEEN ? AND ?
+            WHERE posted_at >= ? AND posted_at < ?
               AND amount < 0
               AND COALESCE(merchant, '') != ''
             GROUP BY merchant
             ORDER BY total_outflow DESC, merchant ASC
             LIMIT 5
             """,
-            (period_start, period_end),
+            (period_start, end_exclusive),
         ).fetchall()
     ]
-    current_categories = _category_outflow_map(conn, period_start, period_end)
-    prior_categories = _category_outflow_map(conn, prior_start, prior_end)
+    current_categories = _category_outflow_map(conn, period_start, end_exclusive)
+    prior_categories = _category_outflow_map(conn, prior_start, prior_end_exclusive)
     category_changes = [
         {
             "category_name": category_name,
@@ -81,13 +90,15 @@ def build_weekly_report(conn: Connection, period_start: str, period_end: str) ->
         "top_categories": top_categories,
         "notable_merchants": notable_merchants,
         "category_changes": category_changes,
-        "anomalies": _period_anomalies(conn, period_start, period_end),
-        "uncategorized_transactions": _uncategorized_transactions(conn, period_start, period_end),
+        "anomalies": find_anomalies(conn, period_start, end_exclusive),
+        "uncategorized_transactions": find_uncategorized(conn, period_start, end_exclusive),
     }
 
 
 def build_monthly_report(conn: Connection, period_start: str, period_end: str) -> dict[str, object]:
+    end_exclusive = _next_day(period_end)
     prior_start, prior_end = _previous_month_window(period_start)
+    prior_end_exclusive = _next_day(prior_end)
     account_rollups = [
         dict(row)
         for row in conn.execute(
@@ -95,11 +106,11 @@ def build_monthly_report(conn: Connection, period_start: str, period_end: str) -
             SELECT a.name AS account_name, ROUND(SUM(t.amount), 2) AS total_amount
             FROM finance_transactions t
             JOIN finance_accounts a ON a.id = t.account_id
-            WHERE t.posted_at BETWEEN ? AND ?
+            WHERE t.posted_at >= ? AND t.posted_at < ?
             GROUP BY a.name
             ORDER BY total_amount ASC, account_name ASC
             """,
-            (period_start, period_end),
+            (period_start, end_exclusive),
         ).fetchall()
     ]
     category_totals = [
@@ -109,15 +120,15 @@ def build_monthly_report(conn: Connection, period_start: str, period_end: str) -
             SELECT COALESCE(c.name, 'Uncategorized') AS category_name, ROUND(SUM(t.amount), 2) AS total_amount
             FROM finance_transactions t
             LEFT JOIN finance_categories c ON c.id = t.category_id
-            WHERE t.posted_at BETWEEN ? AND ?
+            WHERE t.posted_at >= ? AND t.posted_at < ?
             GROUP BY COALESCE(c.name, 'Uncategorized')
             ORDER BY total_amount ASC, category_name ASC
             """,
-            (period_start, period_end),
+            (period_start, end_exclusive),
         ).fetchall()
     ]
-    current_accounts = _account_total_map(conn, period_start, period_end)
-    prior_accounts = _account_total_map(conn, prior_start, prior_end)
+    current_accounts = _account_total_map(conn, period_start, end_exclusive)
+    prior_accounts = _account_total_map(conn, prior_start, prior_end_exclusive)
     changes_vs_prior_month = [
         {
             "account_name": account_name,
@@ -134,9 +145,9 @@ def build_monthly_report(conn: Connection, period_start: str, period_end: str) -
     recurring_charge_highlights = _recurring_charge_highlights(
         conn,
         period_start,
-        period_end,
+        end_exclusive,
         prior_start,
-        prior_end,
+        prior_end_exclusive,
     )
 
     return {
@@ -146,8 +157,8 @@ def build_monthly_report(conn: Connection, period_start: str, period_end: str) -
         "category_totals": category_totals,
         "changes_vs_prior_month": changes_vs_prior_month,
         "recurring_charge_highlights": recurring_charge_highlights,
-        "anomalies": _period_anomalies(conn, period_start, period_end),
-        "uncategorized_or_new_merchants": _monthly_review_items(conn, period_start, period_end),
+        "anomalies": find_anomalies(conn, period_start, end_exclusive),
+        "uncategorized_or_new_merchants": _monthly_review_items(conn, period_start, end_exclusive),
         "accounts": account_rollups,
     }
 
@@ -170,6 +181,10 @@ def persist_report_run(
     conn.commit()
 
 
+def _next_day(d: str) -> str:
+    return (date.fromisoformat(d) + timedelta(days=1)).isoformat()
+
+
 def _previous_window(period_start: str, period_end: str) -> tuple[str, str]:
     start = date.fromisoformat(period_start)
     end = date.fromisoformat(period_end)
@@ -186,7 +201,7 @@ def _previous_month_window(period_start: str) -> tuple[str, str]:
     return prior_start.isoformat(), prior_end.isoformat()
 
 
-def _category_outflow_map(conn: Connection, period_start: str, period_end: str) -> dict[str, float]:
+def _category_outflow_map(conn: Connection, period_start: str, end_exclusive: str) -> dict[str, float]:
     rows = conn.execute(
         """
         SELECT
@@ -194,104 +209,56 @@ def _category_outflow_map(conn: Connection, period_start: str, period_end: str) 
             ROUND(ABS(SUM(t.amount)), 2) AS total_outflow
         FROM finance_transactions t
         LEFT JOIN finance_categories c ON c.id = t.category_id
-        WHERE t.posted_at BETWEEN ? AND ? AND t.amount < 0
+        WHERE t.posted_at >= ? AND t.posted_at < ? AND t.amount < 0
         GROUP BY COALESCE(c.name, 'Uncategorized')
         """,
-        (period_start, period_end),
+        (period_start, end_exclusive),
     ).fetchall()
     return {str(row["category_name"]): float(row["total_outflow"]) for row in rows}
 
 
-def _account_total_map(conn: Connection, period_start: str, period_end: str) -> dict[str, float]:
+def _account_total_map(conn: Connection, period_start: str, end_exclusive: str) -> dict[str, float]:
     rows = conn.execute(
         """
         SELECT a.name AS account_name, ROUND(SUM(t.amount), 2) AS total_amount
         FROM finance_transactions t
         JOIN finance_accounts a ON a.id = t.account_id
-        WHERE t.posted_at BETWEEN ? AND ?
+        WHERE t.posted_at >= ? AND t.posted_at < ?
         GROUP BY a.name
         """,
-        (period_start, period_end),
+        (period_start, end_exclusive),
     ).fetchall()
     return {str(row["account_name"]): float(row["total_amount"]) for row in rows}
-
-
-def _period_anomalies(conn: Connection, period_start: str, period_end: str) -> list[dict[str, object]]:
-    return [
-        dict(row)
-        for row in conn.execute(
-            """
-            SELECT
-                'large_uncategorized' AS kind,
-                t.id AS transaction_id,
-                t.posted_at,
-                t.description,
-                t.amount
-            FROM finance_transactions t
-            LEFT JOIN finance_categories c ON c.id = t.category_id
-            WHERE t.posted_at BETWEEN ? AND ?
-              AND t.amount <= -250
-              AND COALESCE(c.name, 'Uncategorized') = 'Uncategorized'
-            ORDER BY t.amount ASC, t.id ASC
-            """,
-            (period_start, period_end),
-        ).fetchall()
-    ]
-
-
-def _uncategorized_transactions(
-    conn: Connection,
-    period_start: str,
-    period_end: str,
-) -> list[dict[str, object]]:
-    return [
-        dict(row)
-        for row in conn.execute(
-            """
-            SELECT
-                t.id,
-                t.posted_at,
-                t.description,
-                t.amount
-            FROM finance_transactions t
-            LEFT JOIN finance_categories c ON c.id = t.category_id
-            WHERE t.posted_at BETWEEN ? AND ?
-              AND COALESCE(c.name, 'Uncategorized') = 'Uncategorized'
-            ORDER BY t.posted_at ASC, t.id ASC
-            """,
-            (period_start, period_end),
-        ).fetchall()
-    ]
 
 
 def _recurring_charge_highlights(
     conn: Connection,
     period_start: str,
-    period_end: str,
+    end_exclusive: str,
     prior_start: str,
-    prior_end: str,
+    prior_end_exclusive: str,
 ) -> list[dict[str, object]]:
     current_rows = conn.execute(
         """
         SELECT merchant, COUNT(*) AS transaction_count, ROUND(ABS(SUM(amount)), 2) AS total_outflow
         FROM finance_transactions
-        WHERE posted_at BETWEEN ? AND ?
+        WHERE posted_at >= ? AND posted_at < ?
           AND amount < 0
           AND COALESCE(merchant, '') != ''
         GROUP BY merchant
         """,
-        (period_start, period_end),
+        (period_start, end_exclusive),
     ).fetchall()
     prior_rows = conn.execute(
         """
         SELECT merchant, COUNT(*) AS transaction_count, ROUND(ABS(SUM(amount)), 2) AS total_outflow
         FROM finance_transactions
-        WHERE posted_at BETWEEN ? AND ?
+        WHERE posted_at >= ? AND posted_at < ?
           AND amount < 0
           AND COALESCE(merchant, '') != ''
         GROUP BY merchant
         """,
-        (prior_start, prior_end),
+        (prior_start, prior_end_exclusive),
     ).fetchall()
     current = {str(row["merchant"]): dict(row) for row in current_rows}
     prior = {str(row["merchant"]): dict(row) for row in prior_rows}
@@ -314,10 +281,10 @@ def _recurring_charge_highlights(
 def _monthly_review_items(
     conn: Connection,
     period_start: str,
-    period_end: str,
+    end_exclusive: str,
 ) -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
-    for row in _uncategorized_transactions(conn, period_start, period_end):
+    for row in find_uncategorized(conn, period_start, end_exclusive):
         items.append(
             {
                 "kind": "uncategorized_transaction",
@@ -334,7 +301,7 @@ def _monthly_review_items(
             MIN(t.posted_at) AS first_seen_at,
             ROUND(SUM(t.amount), 2) AS total_amount
         FROM finance_transactions t
-        WHERE t.posted_at BETWEEN ? AND ?
+        WHERE t.posted_at >= ? AND t.posted_at < ?
           AND COALESCE(t.merchant, '') != ''
           AND NOT EXISTS (
               SELECT 1
@@ -345,7 +312,7 @@ def _monthly_review_items(
         GROUP BY t.merchant
         ORDER BY total_amount ASC, t.merchant ASC
         """,
-        (period_start, period_end, period_start),
+        (period_start, end_exclusive, period_start),
     ).fetchall()
     for row in new_merchants:
         items.append(
@@ -357,3 +324,90 @@ def _monthly_review_items(
             }
         )
     return items
+
+
+def render_weekly_markdown(summary: dict[str, object], period_start: str, period_end: str) -> str:
+    template = Template((TEMPLATE_DIR / "finance-weekly-summary.md").read_text())
+    return _render(template,
+        period_start=period_start,
+        period_end=period_end,
+        inflow=_fmt(summary["totals"]["inflow"]),
+        outflow=_fmt(summary["totals"]["outflow"]),
+        top_category_lines=_lines(
+            summary["top_categories"],
+            lambda i: f"- {i['category_name']}: {_fmt(i['total_outflow'])}",
+        ),
+        merchant_lines=_lines(
+            summary["notable_merchants"],
+            lambda i: f"- {i['merchant']}: {_fmt(i['total_outflow'])} across {i['transaction_count']} transaction(s)",
+        ),
+        category_change_lines=_lines(
+            summary["category_changes"],
+            lambda i: f"- {i['category_name']}: current {_fmt(i['current_outflow'])}, prior {_fmt(i['prior_outflow'])}, delta {_fmt(i['delta_outflow'])}",
+        ),
+        anomaly_lines=_lines(
+            summary["anomalies"],
+            lambda i: f"- {i['description']}: {_fmt(i['amount'])}",
+        ),
+        uncategorized_lines=_lines(
+            summary["uncategorized_transactions"],
+            lambda i: f"- {i['posted_at']} {i['description']}: {_fmt(i['amount'])}",
+        ),
+    )
+
+
+def render_monthly_markdown(summary: dict[str, object], period_start: str, period_end: str) -> str:
+    template = Template((TEMPLATE_DIR / "finance-monthly-summary.md").read_text())
+    return _render(template,
+        period_start=period_start,
+        period_end=period_end,
+        account_rollup_lines=_lines(
+            summary["account_rollups"],
+            lambda i: f"- {i['account_name']}: {_fmt(i['total_amount'])}",
+        ),
+        category_lines=_lines(
+            summary["category_totals"],
+            lambda i: f"- {i['category_name']}: {_fmt(i['total_amount'])}",
+        ),
+        change_lines=_lines(
+            summary["changes_vs_prior_month"],
+            lambda i: f"- {i['account_name']}: current {_fmt(i['current_total'])}, prior {_fmt(i['prior_total'])}, delta {_fmt(i['delta_total'])}",
+        ),
+        recurring_lines=_lines(
+            summary["recurring_charge_highlights"],
+            lambda i: f"- {i['merchant']}: current {_fmt(i['current_outflow'])}, prior {_fmt(i['prior_outflow'])}",
+        ),
+        anomaly_lines=_lines(
+            summary["anomalies"],
+            lambda i: f"- {i['description']}: {_fmt(i['amount'])}",
+        ),
+        review_lines=_lines(
+            summary["uncategorized_or_new_merchants"],
+            _fmt_review_item,
+        ),
+    )
+
+
+def _render(template: Template, **kwargs: object) -> str:
+    content = template.safe_substitute(**kwargs)
+    if "$" in content:
+        missing = re.findall(r"\$\{?(\w+)\}?", content)
+        if missing:
+            raise ValueError(f"Template has unresolved placeholders: {missing}")
+    return content
+
+
+def _fmt(value: object) -> str:
+    return f"{float(value):.2f}"
+
+
+def _lines(items: list[dict[str, object]], render) -> str:
+    if not items:
+        return "- None"
+    return "\n".join(render(item) for item in items)
+
+
+def _fmt_review_item(item: dict[str, object]) -> str:
+    if item["kind"] == "new_merchant":
+        return f"- new merchant {item['merchant']} first seen {item['first_seen_at']}: {_fmt(item['total_amount'])}"
+    return f"- uncategorized {item['posted_at']} {item['description']}: {_fmt(item['amount'])}"

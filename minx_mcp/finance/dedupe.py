@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 
 
-def fingerprint_transaction(account_name: str, transaction: dict[str, object]) -> str:
+def fingerprint_transaction(account_id: int, transaction: dict[str, object]) -> str:
     raw = "|".join(
         [
-            account_name,
+            str(account_id),
             str(transaction["posted_at"]),
             str(transaction["description"]),
             f"{float(transaction['amount']):.2f}",

@@ -1,4 +1,3 @@
-from minx_mcp.db import get_connection
 from minx_mcp.finance.service import FinanceService
 
 
@@ -9,7 +8,7 @@ def test_import_to_summary_to_report_flow(tmp_path):
         "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     vault = tmp_path / "vault"
-    service = FinanceService(get_connection(tmp_path / "minx.db"), vault)
+    service = FinanceService(tmp_path / "minx.db", vault)
     imported = service.finance_import(str(source), account_name="Robinhood Gold")
     summary = service.safe_finance_summary()
     report = service.generate_monthly_report("2026-03-01", "2026-03-31")
