@@ -28,12 +28,23 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         """
     )
     applied = {
-        row["name"]
+        row[0]
         for row in conn.execute("SELECT name FROM _migrations").fetchall()
     }
     for path in sorted(migration_dir().glob("*.sql")):
         if path.name in applied:
             continue
-        conn.executescript(path.read_text())
-        conn.execute("INSERT INTO _migrations (name) VALUES (?)", (path.name,))
+        script = path.read_text().strip()
+        escaped_name = path.name.replace("'", "''")
+        wrapped_script = (
+            "BEGIN IMMEDIATE;\n"
+            f"{script}\n"
+            f"INSERT INTO _migrations (name) VALUES ('{escaped_name}');\n"
+            "COMMIT;"
+        )
+        try:
+            conn.executescript(wrapped_script)
+        except sqlite3.DatabaseError:
+            conn.rollback()
+            raise
     conn.commit()
