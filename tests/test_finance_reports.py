@@ -82,3 +82,4 @@ def test_monthly_report_includes_required_sections(tmp_path):
     assert "## Recurring Charge Highlights" in report_text
     assert "## Anomalies" in report_text
     assert "## Uncategorized Or Newly Seen Merchants" in report_text
+    assert "accounts" not in summary

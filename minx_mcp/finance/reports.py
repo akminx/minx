@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import date, timedelta
 from pathlib import Path
 from sqlite3 import Connection
@@ -159,7 +158,6 @@ def build_monthly_report(conn: Connection, period_start: str, period_end: str) -
         "recurring_charge_highlights": recurring_charge_highlights,
         "anomalies": find_anomalies(conn, period_start, end_exclusive),
         "uncategorized_or_new_merchants": _monthly_review_items(conn, period_start, end_exclusive),
-        "accounts": account_rollups,
     }
 
 
@@ -238,30 +236,8 @@ def _recurring_charge_highlights(
     prior_start: str,
     prior_end_exclusive: str,
 ) -> list[dict[str, object]]:
-    current_rows = conn.execute(
-        """
-        SELECT merchant, COUNT(*) AS transaction_count, ROUND(ABS(SUM(amount)), 2) AS total_outflow
-        FROM finance_transactions
-        WHERE posted_at >= ? AND posted_at < ?
-          AND amount < 0
-          AND COALESCE(merchant, '') != ''
-        GROUP BY merchant
-        """,
-        (period_start, end_exclusive),
-    ).fetchall()
-    prior_rows = conn.execute(
-        """
-        SELECT merchant, COUNT(*) AS transaction_count, ROUND(ABS(SUM(amount)), 2) AS total_outflow
-        FROM finance_transactions
-        WHERE posted_at >= ? AND posted_at < ?
-          AND amount < 0
-          AND COALESCE(merchant, '') != ''
-        GROUP BY merchant
-        """,
-        (prior_start, prior_end_exclusive),
-    ).fetchall()
-    current = {str(row["merchant"]): dict(row) for row in current_rows}
-    prior = {str(row["merchant"]): dict(row) for row in prior_rows}
+    current = _merchant_outflow_map(conn, period_start, end_exclusive)
+    prior = _merchant_outflow_map(conn, prior_start, prior_end_exclusive)
 
     highlights = []
     for merchant in sorted(set(current) & set(prior)):
@@ -276,6 +252,25 @@ def _recurring_charge_highlights(
         )
     highlights.sort(key=lambda item: (-float(item["current_outflow"]), str(item["merchant"])))
     return highlights
+
+
+def _merchant_outflow_map(
+    conn: Connection,
+    period_start: str,
+    end_exclusive: str,
+) -> dict[str, dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT merchant, COUNT(*) AS transaction_count, ROUND(ABS(SUM(amount)), 2) AS total_outflow
+        FROM finance_transactions
+        WHERE posted_at >= ? AND posted_at < ?
+          AND amount < 0
+          AND COALESCE(merchant, '') != ''
+        GROUP BY merchant
+        """,
+        (period_start, end_exclusive),
+    ).fetchall()
+    return {str(row["merchant"]): dict(row) for row in rows}
 
 
 def _monthly_review_items(
@@ -389,12 +384,10 @@ def render_monthly_markdown(summary: dict[str, object], period_start: str, perio
 
 
 def _render(template: Template, **kwargs: object) -> str:
-    content = template.safe_substitute(**kwargs)
-    if "$" in content:
-        missing = re.findall(r"\$\{?(\w+)\}?", content)
-        if missing:
-            raise ValueError(f"Template has unresolved placeholders: {missing}")
-    return content
+    try:
+        return template.substitute(**kwargs)
+    except KeyError as exc:
+        raise ValueError(f"Template has unresolved placeholders: {exc.args[0]}") from exc
 
 
 def _fmt(value: object) -> str:

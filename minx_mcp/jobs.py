@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from sqlite3 import Connection, Row
+from sqlite3 import Connection, IntegrityError, Row
 
 STUCK_JOB_TIMEOUT_MINUTES = 30
 
@@ -31,10 +31,21 @@ def submit_job(
                     (job["id"], f"-{STUCK_JOB_TIMEOUT_MINUTES} minutes"),
                 ).fetchone()
                 if stuck:
-                    _set_status(conn, str(job["id"]), "failed", None, commit=True)
+                    recovery_msg = f"Auto-recovered: stuck in running for >{STUCK_JOB_TIMEOUT_MINUTES}m"
+                    conn.execute(
+                        """
+                        UPDATE jobs
+                        SET status = 'failed',
+                            error_message = ?,
+                            idempotency_key = NULL,
+                            updated_at = datetime('now')
+                        WHERE id = ?
+                        """,
+                        (recovery_msg, job["id"]),
+                    )
                     conn.execute(
                         "INSERT INTO job_events (job_id, status, message) VALUES (?, 'failed', ?)",
-                        (job["id"], f"Auto-recovered: stuck in running for >{STUCK_JOB_TIMEOUT_MINUTES}m"),
+                        (job["id"], recovery_msg),
                     )
                     conn.commit()
                 else:
@@ -43,13 +54,24 @@ def submit_job(
                 return job
 
     job_id = str(uuid.uuid4())
-    conn.execute(
-        """
-        INSERT INTO jobs (id, job_type, status, requested_by, source_ref, idempotency_key)
-        VALUES (?, ?, 'queued', ?, ?, ?)
-        """,
-        (job_id, job_type, requested_by, source_ref, idempotency_key),
-    )
+    try:
+        conn.execute(
+            """
+            INSERT INTO jobs (id, job_type, status, requested_by, source_ref, idempotency_key)
+            VALUES (?, ?, 'queued', ?, ?, ?)
+            """,
+            (job_id, job_type, requested_by, source_ref, idempotency_key),
+        )
+    except IntegrityError as exc:
+        if not idempotency_key or "jobs.idempotency_key" not in str(exc):
+            raise
+        existing = conn.execute(
+            "SELECT * FROM jobs WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        if not existing:
+            raise
+        return _row_to_job(existing)
     conn.execute(
         "INSERT INTO job_events (job_id, status, message) VALUES (?, 'queued', 'Job created')",
         (job_id,),

@@ -1,5 +1,7 @@
 import argparse
 
+import pytest
+
 from mcp.server.fastmcp import FastMCP
 
 from minx_mcp.finance import __main__ as finance_main
@@ -49,6 +51,7 @@ def test_main_wires_cli_and_settings_into_run_server(monkeypatch, tmp_path):
     class Settings:
         db_path = tmp_path / "minx.db"
         vault_path = tmp_path / "vault"
+        staging_path = tmp_path / "staging"
         default_transport = "stdio"
         http_host = "127.0.0.1"
         http_port = 8000
@@ -87,3 +90,339 @@ def test_main_wires_cli_and_settings_into_run_server(monkeypatch, tmp_path):
     assert calls["transport"] == "http"
     assert calls["host"] == "0.0.0.0"
     assert calls["port"] == 9000
+
+
+def test_finance_import_tool_rejects_missing_source_file(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path)
+    server = create_finance_server(service)
+    finance_import = server._tool_manager.get_tool("finance_import").fn
+
+    result = finance_import(str(tmp_path / "missing.csv"), "DCU")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "source_ref must point to an existing file",
+        "error_code": "INVALID_INPUT",
+    }
+
+
+
+def test_finance_import_tool_rejects_unknown_source_kind(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path)
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    server = create_finance_server(service)
+    finance_import = server._tool_manager.get_tool("finance_import").fn
+
+    result = finance_import(str(source), "DCU", source_kind="weird_kind")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "Unsupported finance source kind: weird_kind",
+        "error_code": "INVALID_INPUT",
+    }
+
+
+def test_finance_import_tool_rejects_unsupported_file_before_reading_contents(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path)
+    source = tmp_path / "notes.txt"
+    source.write_text("not a finance file")
+    server = create_finance_server(service)
+    finance_import = server._tool_manager.get_tool("finance_import").fn
+
+    result = finance_import(str(source), "DCU")
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "Could not detect finance source" in result["error"]
+
+
+def test_finance_import_tool_loads_saved_mapping_for_generic_csv(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path)
+    source = tmp_path / "transactions.csv"
+    source.write_text(
+        "posted,description,amount\n"
+        "03/02/2026,Coffee,-12.50\n"
+    )
+    service.conn.execute(
+        """
+        INSERT INTO preferences (domain, key, value_json, updated_at)
+        VALUES (
+            'finance.csv_mapping',
+            'DCU',
+            '{\"date_column\": \"posted\", \"date_format\": \"%m/%d/%Y\", \"description_column\": \"description\", \"amount_column\": \"amount\"}',
+            datetime('now')
+        )
+        """
+    )
+    service.conn.commit()
+    server = create_finance_server(service)
+    finance_import = server._tool_manager.get_tool("finance_import").fn
+
+    result = finance_import(str(source), "DCU", source_kind="generic_csv")
+
+    assert result["success"] is True
+    assert result["data"]["result"]["inserted"] == 1
+
+
+def test_finance_import_tool_loads_saved_mapping_by_account_import_profile(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path)
+    source = tmp_path / "transactions.csv"
+    source.write_text(
+        "posted,description,amount\n"
+        "03/02/2026,Coffee,-12.50\n"
+    )
+    service.conn.execute(
+        """
+        INSERT INTO preferences (domain, key, value_json, updated_at)
+        VALUES (
+            'finance.csv_mapping',
+            'dcu',
+            '{\"date_column\": \"posted\", \"date_format\": \"%m/%d/%Y\", \"description_column\": \"description\", \"amount_column\": \"amount\"}',
+            datetime('now')
+        )
+        """
+    )
+    service.conn.commit()
+    server = create_finance_server(service)
+    finance_import = server._tool_manager.get_tool("finance_import").fn
+
+    result = finance_import(str(source), "DCU", source_kind="generic_csv")
+
+    assert result["success"] is True
+    assert result["data"]["result"]["inserted"] == 1
+
+
+def test_finance_categorize_tool_rejects_empty_transaction_ids(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    finance_categorize = server._tool_manager.get_tool("finance_categorize").fn
+
+    result = finance_categorize([], "Groceries")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "transaction_ids must be a non-empty list",
+        "error_code": "INVALID_INPUT",
+    }
+
+
+
+def test_finance_categorize_tool_rejects_unknown_transaction_ids(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    finance_categorize = server._tool_manager.get_tool("finance_categorize").fn
+
+    result = finance_categorize([999], "Groceries")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "Unknown finance transaction ids: 999",
+        "error_code": "NOT_FOUND",
+    }
+
+
+def test_finance_categorize_tool_rejects_unknown_category(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    service.finance_import(str(source), account_name="DCU")
+    tx_id = service.sensitive_finance_query(limit=1)["transactions"][0]["id"]
+    server = create_finance_server(service)
+    finance_categorize = server._tool_manager.get_tool("finance_categorize").fn
+
+    result = finance_categorize([tx_id], "Missing Category")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "Unknown finance category: Missing Category",
+        "error_code": "NOT_FOUND",
+    }
+
+
+def test_finance_categorize_tool_reports_actual_rows_updated(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    service.finance_import(str(source), account_name="DCU")
+    tx_id = service.sensitive_finance_query(limit=1)["transactions"][0]["id"]
+    server = create_finance_server(service)
+    finance_categorize = server._tool_manager.get_tool("finance_categorize").fn
+
+    result = finance_categorize([tx_id, tx_id], "Groceries")
+
+    assert result == {
+        "success": True,
+        "data": {"updated": 1},
+        "error": None,
+        "error_code": None,
+    }
+
+
+def test_finance_job_status_returns_not_found_envelope_for_missing_job(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    finance_job_status = server._tool_manager.get_tool("finance_job_status").fn
+
+    result = finance_job_status("missing-job")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "Unknown finance job id: missing-job",
+        "error_code": "NOT_FOUND",
+    }
+
+
+def test_finance_add_category_rule_tool_rejects_empty_pattern(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    finance_add_rule = server._tool_manager.get_tool("finance_add_category_rule").fn
+
+    result = finance_add_rule("Groceries", "merchant_contains", "   ")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "pattern must not be empty",
+        "error_code": "INVALID_INPUT",
+    }
+
+
+def test_finance_add_category_rule_tool_rejects_unknown_category(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    finance_add_rule = server._tool_manager.get_tool("finance_add_category_rule").fn
+
+    result = finance_add_rule("Missing Category", "merchant_contains", "H-E-B")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "Unknown finance category: Missing Category",
+        "error_code": "NOT_FOUND",
+    }
+
+
+def test_report_tools_reject_invalid_date_windows(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    weekly = server._tool_manager.get_tool("finance_generate_weekly_report").fn
+    monthly = server._tool_manager.get_tool("finance_generate_monthly_report").fn
+
+    assert weekly("2026-03-10", "2026-03-01") == {
+        "success": False,
+        "data": None,
+        "error": "period_start must be on or before period_end",
+        "error_code": "INVALID_INPUT",
+    }
+
+    assert monthly("03/01/2026", "2026-03-31") == {
+        "success": False,
+        "data": None,
+        "error": "Invalid ISO date",
+        "error_code": "INVALID_INPUT",
+    }
+
+    assert weekly("2026-03-01", "2026-03-05") == {
+        "success": False,
+        "data": None,
+        "error": "weekly reports must span exactly 7 days",
+        "error_code": "INVALID_INPUT",
+    }
+
+    assert monthly("2026-03-02", "2026-03-31") == {
+        "success": False,
+        "data": None,
+        "error": "monthly reports must cover a full calendar month",
+        "error_code": "INVALID_INPUT",
+    }
+
+
+def test_report_tools_return_invalid_input_envelope_for_bad_date_window(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    weekly = server._tool_manager.get_tool("finance_generate_weekly_report").fn
+
+    result = weekly("2026-03-10", "2026-03-01")
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_sensitive_query_tool_rejects_large_limit(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    assert sensitive(limit=0) == {
+        "success": False,
+        "data": None,
+        "error": "limit must be between 1 and 500",
+        "error_code": "INVALID_INPUT",
+    }
+
+    assert sensitive(limit=501) == {
+        "success": False,
+        "data": None,
+        "error": "limit must be between 1 and 500",
+        "error_code": "INVALID_INPUT",
+    }
+
+
+def test_tool_calls_close_thread_local_connection_after_use(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    safe_accounts = server._tool_manager.get_tool("safe_finance_accounts").fn
+
+    safe_accounts()
+
+    assert getattr(service._local, "conn", None) is None
+
+
+def test_finance_import_tool_rejects_paths_outside_allowed_import_root(tmp_path):
+    import_root = tmp_path / "staging"
+    import_root.mkdir()
+    outside_source = tmp_path / "free checking transactions.csv"
+    outside_source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=import_root)
+    server = create_finance_server(service)
+    finance_import = server._tool_manager.get_tool("finance_import").fn
+
+    result = finance_import(str(outside_source), "DCU")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "source_ref must be inside the allowed import root",
+        "error_code": "INVALID_INPUT",
+    }
+
+
+def test_safe_finance_summary_returns_internal_error_envelope_for_unexpected_exception(
+    tmp_path, monkeypatch, caplog
+):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    safe_summary = server._tool_manager.get_tool("safe_finance_summary").fn
+
+    def boom():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(service, "safe_finance_summary", boom)
+    caplog.set_level("ERROR")
+
+    result = safe_summary()
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "Internal server error",
+        "error_code": "INTERNAL_ERROR",
+    }
+    assert "boom" in caplog.text

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from pathlib import Path
 
@@ -36,6 +35,6 @@ def parse_discover_pdf(path: Path, account_name: str) -> dict[str, object]:
         "account_name": account_name,
         "source_type": "pdf",
         "source_ref": str(path),
-        "raw_fingerprint": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "raw_fingerprint": "",
         "transactions": transactions,
     }

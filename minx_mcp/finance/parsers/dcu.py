@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import re
 from pathlib import Path
 
@@ -27,7 +26,7 @@ def parse_dcu_csv(path: Path, account_name: str) -> dict[str, object]:
         "account_name": account_name,
         "source_type": "csv",
         "source_ref": str(path),
-        "raw_fingerprint": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "raw_fingerprint": "",
         "transactions": transactions,
     }
 
@@ -57,6 +56,6 @@ def parse_dcu_pdf(path: Path, account_name: str) -> dict[str, object]:
         "account_name": account_name,
         "source_type": "pdf",
         "source_ref": str(path),
-        "raw_fingerprint": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "raw_fingerprint": "",
         "transactions": transactions,
     }

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 from pathlib import Path
 
 
@@ -24,6 +23,6 @@ def parse_robinhood_csv(path: Path, account_name: str) -> dict[str, object]:
         "account_name": account_name,
         "source_type": "csv",
         "source_ref": str(path),
-        "raw_fingerprint": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "raw_fingerprint": "",
         "transactions": transactions,
     }

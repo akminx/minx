@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     settings = get_settings()
     args = build_parser().parse_args()
-    service = FinanceService(settings.db_path, settings.vault_path)
+    service = FinanceService(settings.db_path, settings.vault_path, settings.staging_path)
     server = create_finance_server(service)
     run_server(
         server,

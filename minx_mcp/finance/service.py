@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from datetime import date, timedelta
 from pathlib import Path
 from sqlite3 import Connection
 
+from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.db import get_connection
 from minx_mcp.finance.analytics import find_anomalies, sensitive_query, summarize_finances
 from minx_mcp.finance.dedupe import fingerprint_transaction
-from minx_mcp.finance.importers import parse_source_file
+from minx_mcp.finance.importers import detect_source_kind, parse_source_file
 from minx_mcp.finance.reports import (
     build_monthly_report,
     build_weekly_report,
@@ -17,13 +19,16 @@ from minx_mcp.finance.reports import (
     render_weekly_markdown,
 )
 from minx_mcp.jobs import get_job, mark_completed, mark_failed, mark_running, submit_job
+from minx_mcp.preferences import get_csv_mapping
 from minx_mcp.vault_writer import VaultWriter
 
 
 class FinanceService:
-    def __init__(self, db_path: Path, vault_root: Path) -> None:
+    def __init__(self, db_path: Path, vault_root: Path, import_root: Path | None = None) -> None:
         self._db_path = db_path
         self._local = threading.local()
+        self._uncategorized_category_id: int | None = None
+        self.import_root = (import_root or db_path.parent).resolve()
         self.vault_writer = VaultWriter(vault_root, ("Finance",))
 
     @property
@@ -34,6 +39,18 @@ class FinanceService:
             self._local.conn = conn
         return conn
 
+    def close(self) -> None:
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     def finance_import(
         self,
         source_ref: str,
@@ -41,18 +58,45 @@ class FinanceService:
         source_kind: str | None = None,
         mapping: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        content_hash = hashlib.sha256(Path(source_ref).read_bytes()).hexdigest()
-        idempotency_key = hashlib.sha256(f"{account_name}|{source_ref}|{content_hash}".encode()).hexdigest()
-        job = submit_job(self.conn, "finance_import", "system", source_ref, idempotency_key)
-        if job["status"] == "completed":
+        path = Path(source_ref)
+        if not path.is_file():
+            raise InvalidInputError("source_ref must point to an existing file")
+        resolved_path = path.resolve()
+        canonical_source_path = _canonicalize_existing_path(resolved_path)
+        try:
+            canonical_source_path.relative_to(self.import_root)
+        except ValueError as exc:
+            raise InvalidInputError("source_ref must be inside the allowed import root") from exc
+        account = self._account(account_name)
+        account_id = int(account["id"])
+        effective_source_kind = source_kind or detect_source_kind(canonical_source_path)
+        effective_mapping = mapping
+        canonical_source_ref = str(canonical_source_path)
+        if effective_source_kind == "generic_csv" and effective_mapping is None:
+            profile_name = str(account["import_profile"]) if account["import_profile"] else account_name
+            effective_mapping = get_csv_mapping(self.conn, profile_name)
+            if effective_mapping is None and profile_name != account_name:
+                effective_mapping = get_csv_mapping(self.conn, account_name)
+            if effective_mapping is None:
+                raise InvalidInputError(f"No saved generic CSV mapping for account: {account_name}")
+
+        file_bytes = resolved_path.read_bytes()
+        content_hash = hashlib.sha256(file_bytes).hexdigest()
+        idempotency_key = hashlib.sha256(
+            f"{account_name}|{canonical_source_ref}|{content_hash}".encode()
+        ).hexdigest()
+        job = submit_job(self.conn, "finance_import", "system", canonical_source_ref, idempotency_key)
+        if job["status"] in {"completed", "running"}:
             return {"job_id": job["id"], "status": job["status"], "result": job["result"]}
 
         try:
             mark_running(self.conn, str(job["id"]), commit=False)
             self.conn.execute("SAVEPOINT finance_import")
 
-            parsed = parse_source_file(Path(source_ref), account_name, source_kind, mapping)
-            account_id = self._account_id(account_name)
+            parsed = parse_source_file(
+                canonical_source_path, account_name, effective_source_kind, effective_mapping,
+                file_bytes=file_bytes, content_hash=content_hash,
+            )
             batch_id = self._insert_batch(account_id, parsed)
             inserted = 0
             skipped = 0
@@ -96,10 +140,9 @@ class FinanceService:
             raise
 
     def add_category_rule(self, category_name: str, match_kind: str, pattern: str) -> None:
-        category_id = self.conn.execute(
-            "SELECT id FROM finance_categories WHERE name = ?",
-            (category_name,),
-        ).fetchone()["id"]
+        if not pattern.strip():
+            raise InvalidInputError("pattern must not be empty")
+        category_id = self._category_id(category_name)
         self.conn.execute(
             """
             INSERT INTO finance_category_rules (category_id, match_kind, pattern)
@@ -120,38 +163,57 @@ class FinanceService:
         for rule in rules:
             if rule["match_kind"] != "merchant_contains":
                 continue
+            escaped = (
+                rule["pattern"]
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
             self.conn.execute(
                 """
                 UPDATE finance_transactions
                 SET category_id = ?, category_source = 'rule'
-                WHERE merchant LIKE ? AND category_source != 'manual'
+                WHERE merchant LIKE ? ESCAPE '\\' AND category_source != 'manual'
                 """,
-                (rule["category_id"], f"%{rule['pattern']}%"),
+                (rule["category_id"], f"%{escaped}%"),
             )
         if commit:
             self.conn.commit()
 
-    def finance_categorize(self, transaction_ids: list[int], category_name: str) -> None:
-        category_id = self.conn.execute(
-            "SELECT id FROM finance_categories WHERE name = ?",
-            (category_name,),
-        ).fetchone()["id"]
-        placeholders = ",".join("?" for _ in transaction_ids)
-        self.conn.execute(
+    def finance_categorize(self, transaction_ids: list[int], category_name: str) -> int:
+        if not transaction_ids:
+            raise InvalidInputError("transaction_ids must be a non-empty list")
+        unique_ids = list(dict.fromkeys(transaction_ids))
+        category_id = self._category_id(category_name)
+        placeholders = ",".join("?" for _ in unique_ids)
+        cursor = self.conn.execute(
             f"""
             UPDATE finance_transactions
             SET category_id = ?, category_source = 'manual'
             WHERE id IN ({placeholders})
             """,
-            [category_id, *transaction_ids],
+            [category_id, *unique_ids],
         )
         self.conn.commit()
+        return int(cursor.rowcount)
 
     def list_accounts(self) -> dict[str, object]:
         rows = self.conn.execute(
             "SELECT name, account_type, last_imported_at FROM finance_accounts ORDER BY name"
         ).fetchall()
         return {"accounts": [dict(row) for row in rows]}
+
+    def missing_transaction_ids(self, transaction_ids: list[int]) -> list[int]:
+        if not transaction_ids:
+            return []
+
+        placeholders = ",".join("?" for _ in transaction_ids)
+        rows = self.conn.execute(
+            f"SELECT id FROM finance_transactions WHERE id IN ({placeholders})",
+            transaction_ids,
+        ).fetchall()
+        existing = {int(row["id"]) for row in rows}
+        return [transaction_id for transaction_id in transaction_ids if transaction_id not in existing]
 
     def safe_finance_summary(self) -> dict[str, object]:
         return summarize_finances(self.conn)
@@ -160,9 +222,12 @@ class FinanceService:
         return {"items": find_anomalies(self.conn)}
 
     def sensitive_finance_query(self, limit: int = 50, session_ref: str | None = None) -> dict[str, object]:
+        if limit < 1 or limit > 500:
+            raise InvalidInputError("limit must be between 1 and 500")
         return sensitive_query(self.conn, limit=limit, session_ref=session_ref)
 
     def generate_weekly_report(self, period_start: str, period_end: str) -> dict[str, object]:
+        _validate_weekly_window(period_start, period_end)
         summary = build_weekly_report(self.conn, period_start, period_end)
         content = render_weekly_markdown(summary, period_start, period_end)
         relative_path = f"Finance/weekly-{period_start}.md"
@@ -171,6 +236,7 @@ class FinanceService:
         return {"vault_path": str(path), "summary": summary}
 
     def generate_monthly_report(self, period_start: str, period_end: str) -> dict[str, object]:
+        _validate_monthly_window(period_start, period_end)
         summary = build_monthly_report(self.conn, period_start, period_end)
         content = render_monthly_markdown(summary, period_start, period_end)
         relative_path = f"Finance/monthly-{period_start[:7]}.md"
@@ -178,17 +244,23 @@ class FinanceService:
         persist_report_run(self.conn, "monthly", period_start, period_end, str(path), summary)
         return {"vault_path": str(path), "summary": summary}
 
-    def get_job(self, job_id: str) -> dict[str, object | None] | None:
-        return get_job(self.conn, job_id)
+    def get_job(self, job_id: str) -> dict[str, object | None]:
+        job = get_job(self.conn, job_id)
+        if job is None:
+            raise NotFoundError(f"Unknown finance job id: {job_id}")
+        return job
 
     def _account_id(self, account_name: str) -> int:
+        return int(self._account(account_name)["id"])
+
+    def _account(self, account_name: str):
         row = self.conn.execute(
-            "SELECT id FROM finance_accounts WHERE name = ?",
+            "SELECT id, import_profile FROM finance_accounts WHERE name = ?",
             (account_name,),
         ).fetchone()
         if not row:
-            raise ValueError(f"Unknown finance account: {account_name}")
-        return int(row["id"])
+            raise NotFoundError(f"Unknown finance account: {account_name}")
+        return row
 
     def _insert_batch(self, account_id: int, parsed: dict[str, object]) -> int:
         cursor = self.conn.execute(
@@ -211,9 +283,6 @@ class FinanceService:
         batch_id: int,
         txn: dict[str, object],
     ) -> int:
-        uncategorized_id = self.conn.execute(
-            "SELECT id FROM finance_categories WHERE name = 'Uncategorized'"
-        ).fetchone()["id"]
         cursor = self.conn.execute(
             """
             INSERT INTO finance_transactions (
@@ -228,9 +297,66 @@ class FinanceService:
                 txn["description"],
                 txn["merchant"],
                 txn["amount"],
-                uncategorized_id,
+                self._uncategorized_id(),
                 txn.get("external_id"),
             ),
         )
         return int(cursor.lastrowid)
 
+    def _category_id(self, category_name: str) -> int:
+        row = self.conn.execute(
+            "SELECT id FROM finance_categories WHERE name = ?",
+            (category_name,),
+        ).fetchone()
+        if not row:
+            raise NotFoundError(f"Unknown finance category: {category_name}")
+        return int(row["id"])
+
+    def _uncategorized_id(self) -> int:
+        if self._uncategorized_category_id is None:
+            self._uncategorized_category_id = self._category_id("Uncategorized")
+        return self._uncategorized_category_id
+
+
+def _parse_date_window(period_start: str, period_end: str) -> tuple[date, date]:
+    try:
+        start = date.fromisoformat(period_start)
+        end = date.fromisoformat(period_end)
+    except ValueError as exc:
+        raise InvalidInputError("Invalid ISO date") from exc
+    if start > end:
+        raise InvalidInputError("period_start must be on or before period_end")
+    return start, end
+
+
+def _validate_weekly_window(period_start: str, period_end: str) -> None:
+    start, end = _parse_date_window(period_start, period_end)
+    if (end - start).days != 6:
+        raise InvalidInputError("weekly reports must span exactly 7 days")
+
+
+def _validate_monthly_window(period_start: str, period_end: str) -> None:
+    start, end = _parse_date_window(period_start, period_end)
+    next_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    expected_end = next_month - timedelta(days=1)
+    if start.day != 1 or end != expected_end:
+        raise InvalidInputError("monthly reports must cover a full calendar month")
+
+
+def _canonicalize_existing_path(path: Path) -> Path:
+    resolved = path.resolve()
+    if not resolved.is_absolute():
+        return resolved
+
+    current = Path(resolved.anchor)
+    for part in resolved.parts[1:]:
+        actual_part = part
+        try:
+            for child in current.iterdir():
+                if child.name.casefold() == part.casefold():
+                    actual_part = child.name
+                    break
+        except OSError:
+            pass
+        current = current / actual_part
+    return current
