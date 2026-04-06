@@ -125,6 +125,27 @@ def test_amount_cents_migration_backfills_existing_rows(tmp_path):
     assert float(spend["total_amount"]) == -12.35
 
 
+def test_monthly_spend_view_stays_dollar_facing(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, 1, 'csv', 'seed.csv', 'fp')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (1, 1, '2026-04-01', 'View Check', 'Store', -1235, 1, 'manual')
+        """
+    )
+    conn.commit()
+
+    row = conn.execute("SELECT total_amount FROM v_finance_monthly_spend").fetchone()
+    assert float(row["total_amount"]) == -12.35
+
+
 def test_failed_migration_rolls_back_partial_changes(tmp_path, monkeypatch):
     migration_root = tmp_path / "migrations"
     migration_root.mkdir()
