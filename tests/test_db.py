@@ -40,7 +40,7 @@ def test_migrations_are_idempotent(tmp_path):
     first.close()
     second = get_connection(db_path)
     count = second.execute("SELECT COUNT(*) AS c FROM _migrations").fetchone()["c"]
-    assert count == 3
+    assert count == 4
 
 
 def test_finance_seed_rows_exist(tmp_path):
@@ -76,8 +76,53 @@ def test_apply_migrations_handles_plain_sqlite_connections(tmp_path):
     db_module.apply_migrations(conn)
 
     count = conn.execute("SELECT COUNT(*) FROM _migrations").fetchone()[0]
-    assert count == 3
+    assert count == 4
     assert conn.row_factory is original_row_factory
+
+
+def test_amount_cents_migration_backfills_existing_rows(tmp_path):
+    project_root = Path(__file__).resolve().parent.parent
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript((project_root / "schema" / "migrations" / "001_platform.sql").read_text())
+    conn.executescript((project_root / "schema" / "migrations" / "002_finance.sql").read_text())
+    conn.executescript((project_root / "schema" / "migrations" / "003_finance_views.sql").read_text())
+    conn.execute(
+        """
+        CREATE TABLE _migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO _migrations (name) VALUES (?)",
+        [("001_platform.sql",), ("002_finance.sql",), ("003_finance_views.sql",)],
+    )
+    conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, 1, 'csv', 'legacy.csv', 'fp')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount, category_id, category_source
+        ) VALUES (1, 1, '2026-04-01', 'Legacy Amount', 'Store', -12.345, 1, 'uncategorized')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = get_connection(db_path)
+    row = migrated.execute(
+        "SELECT amount_cents FROM finance_transactions WHERE description = 'Legacy Amount'"
+    ).fetchone()
+    assert row["amount_cents"] == -1235
+
+    spend = migrated.execute("SELECT total_amount FROM v_finance_monthly_spend").fetchone()
+    assert float(spend["total_amount"]) == -12.35
 
 
 def test_failed_migration_rolls_back_partial_changes(tmp_path, monkeypatch):
