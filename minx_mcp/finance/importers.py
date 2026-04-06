@@ -66,6 +66,13 @@ def parse_source_file(
         else:
             raise InvalidInputError(f"Unsupported finance source kind: {kind}")
 
+    _validate_parsed_transactions(result)
     result["source_ref"] = str(path.resolve())
     result["raw_fingerprint"] = content_hash
     return result
+
+
+def _validate_parsed_transactions(parsed: dict[str, object]) -> None:
+    for txn in parsed.get("transactions", []):
+        if "amount_cents" not in txn or not isinstance(txn["amount_cents"], int):
+            raise InvalidInputError("parsed transactions must include integer amount_cents")

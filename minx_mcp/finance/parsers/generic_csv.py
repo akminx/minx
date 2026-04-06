@@ -4,6 +4,8 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
+from minx_mcp.money import parse_dollars_to_cents
+
 
 def parse_generic_csv(
     path: Path,
@@ -22,12 +24,12 @@ def parse_generic_csv(
             merchant = row.get(merchant_column, description) if merchant_column else description
             category_column = str(mapping.get("category_hint_column", ""))
             category_hint = row.get(category_column) if category_column else None
-            amount = float(row[str(mapping["amount_column"])])
+            amount_cents = parse_dollars_to_cents(str(row[str(mapping["amount_column"])]))
             transactions.append(
                 {
                     "posted_at": posted_at,
                     "description": description,
-                    "amount": -abs(amount),
+                    "amount_cents": -abs(amount_cents),
                     "merchant": merchant,
                     "category_hint": category_hint,
                     "external_id": None,

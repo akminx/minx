@@ -7,6 +7,7 @@ from sqlite3 import Connection
 from string import Template
 
 from minx_mcp.finance.analytics import find_anomalies, find_uncategorized
+from minx_mcp.money import cents_to_dollars
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "templates"
 
@@ -15,49 +16,58 @@ def build_weekly_report(conn: Connection, period_start: str, period_end: str) ->
     end_exclusive = _next_day(period_end)
     prior_start, prior_end = _previous_window(period_start, period_end)
     prior_end_exclusive = _next_day(prior_end)
-    totals = dict(
-        conn.execute(
-            """
-            SELECT
-                ROUND(COALESCE(SUM(CASE WHEN amount > 0 THEN amount END), 0), 2) AS inflow,
-                ROUND(COALESCE(ABS(SUM(CASE WHEN amount < 0 THEN amount END)), 0), 2) AS outflow
-            FROM finance_transactions
-            WHERE posted_at >= ? AND posted_at < ?
-            """,
-            (period_start, end_exclusive),
-        ).fetchone()
-    )
+    totals_row = conn.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN amount_cents > 0 THEN amount_cents END), 0) AS inflow_cents,
+            COALESCE(ABS(SUM(CASE WHEN amount_cents < 0 THEN amount_cents END)), 0) AS outflow_cents
+        FROM finance_transactions
+        WHERE posted_at >= ? AND posted_at < ?
+        """,
+        (period_start, end_exclusive),
+    ).fetchone()
+    totals = {
+        "inflow": cents_to_dollars(int(totals_row["inflow_cents"])),
+        "outflow": cents_to_dollars(int(totals_row["outflow_cents"])),
+    }
     top_categories = [
-        dict(row)
+        {
+            "category_name": row["category_name"],
+            "total_outflow": cents_to_dollars(int(row["total_outflow_cents"])),
+        }
         for row in conn.execute(
             """
             SELECT
                 COALESCE(c.name, 'Uncategorized') AS category_name,
-                ROUND(ABS(SUM(t.amount)), 2) AS total_outflow
+                COALESCE(ABS(SUM(t.amount_cents)), 0) AS total_outflow_cents
             FROM finance_transactions t
             LEFT JOIN finance_categories c ON c.id = t.category_id
-            WHERE t.posted_at >= ? AND t.posted_at < ? AND t.amount < 0
+            WHERE t.posted_at >= ? AND t.posted_at < ? AND t.amount_cents < 0
             GROUP BY COALESCE(c.name, 'Uncategorized')
-            ORDER BY total_outflow DESC, category_name ASC
+            ORDER BY total_outflow_cents DESC, category_name ASC
             LIMIT 5
             """,
             (period_start, end_exclusive),
         ).fetchall()
     ]
     notable_merchants = [
-        dict(row)
+        {
+            "merchant": row["merchant"],
+            "total_outflow": cents_to_dollars(int(row["total_outflow_cents"])),
+            "transaction_count": row["transaction_count"],
+        }
         for row in conn.execute(
             """
             SELECT
                 merchant,
-                ROUND(ABS(SUM(amount)), 2) AS total_outflow,
+                COALESCE(ABS(SUM(amount_cents)), 0) AS total_outflow_cents,
                 COUNT(*) AS transaction_count
             FROM finance_transactions
             WHERE posted_at >= ? AND posted_at < ?
-              AND amount < 0
+              AND amount_cents < 0
               AND COALESCE(merchant, '') != ''
             GROUP BY merchant
-            ORDER BY total_outflow DESC, merchant ASC
+            ORDER BY total_outflow_cents DESC, merchant ASC
             LIMIT 5
             """,
             (period_start, end_exclusive),
@@ -99,29 +109,37 @@ def build_monthly_report(conn: Connection, period_start: str, period_end: str) -
     prior_start, prior_end = _previous_month_window(period_start)
     prior_end_exclusive = _next_day(prior_end)
     account_rollups = [
-        dict(row)
+        {
+            "account_name": row["account_name"],
+            "total_amount": cents_to_dollars(int(row["total_amount_cents"])),
+        }
         for row in conn.execute(
             """
-            SELECT a.name AS account_name, ROUND(SUM(t.amount), 2) AS total_amount
+            SELECT a.name AS account_name, COALESCE(SUM(t.amount_cents), 0) AS total_amount_cents
             FROM finance_transactions t
             JOIN finance_accounts a ON a.id = t.account_id
             WHERE t.posted_at >= ? AND t.posted_at < ?
             GROUP BY a.name
-            ORDER BY total_amount ASC, account_name ASC
+            ORDER BY total_amount_cents ASC, account_name ASC
             """,
             (period_start, end_exclusive),
         ).fetchall()
     ]
     category_totals = [
-        dict(row)
+        {
+            "category_name": row["category_name"],
+            "total_amount": cents_to_dollars(int(row["total_amount_cents"])),
+        }
         for row in conn.execute(
             """
-            SELECT COALESCE(c.name, 'Uncategorized') AS category_name, ROUND(SUM(t.amount), 2) AS total_amount
+            SELECT
+                COALESCE(c.name, 'Uncategorized') AS category_name,
+                COALESCE(SUM(t.amount_cents), 0) AS total_amount_cents
             FROM finance_transactions t
             LEFT JOIN finance_categories c ON c.id = t.category_id
             WHERE t.posted_at >= ? AND t.posted_at < ?
             GROUP BY COALESCE(c.name, 'Uncategorized')
-            ORDER BY total_amount ASC, category_name ASC
+            ORDER BY total_amount_cents ASC, category_name ASC
             """,
             (period_start, end_exclusive),
         ).fetchall()
@@ -204,21 +222,24 @@ def _category_outflow_map(conn: Connection, period_start: str, end_exclusive: st
         """
         SELECT
             COALESCE(c.name, 'Uncategorized') AS category_name,
-            ROUND(ABS(SUM(t.amount)), 2) AS total_outflow
+            COALESCE(ABS(SUM(t.amount_cents)), 0) AS total_outflow_cents
         FROM finance_transactions t
         LEFT JOIN finance_categories c ON c.id = t.category_id
-        WHERE t.posted_at >= ? AND t.posted_at < ? AND t.amount < 0
+        WHERE t.posted_at >= ? AND t.posted_at < ? AND t.amount_cents < 0
         GROUP BY COALESCE(c.name, 'Uncategorized')
         """,
         (period_start, end_exclusive),
     ).fetchall()
-    return {str(row["category_name"]): float(row["total_outflow"]) for row in rows}
+    return {
+        str(row["category_name"]): cents_to_dollars(int(row["total_outflow_cents"]))
+        for row in rows
+    }
 
 
 def _account_total_map(conn: Connection, period_start: str, end_exclusive: str) -> dict[str, float]:
     rows = conn.execute(
         """
-        SELECT a.name AS account_name, ROUND(SUM(t.amount), 2) AS total_amount
+        SELECT a.name AS account_name, COALESCE(SUM(t.amount_cents), 0) AS total_amount_cents
         FROM finance_transactions t
         JOIN finance_accounts a ON a.id = t.account_id
         WHERE t.posted_at >= ? AND t.posted_at < ?
@@ -226,7 +247,10 @@ def _account_total_map(conn: Connection, period_start: str, end_exclusive: str) 
         """,
         (period_start, end_exclusive),
     ).fetchall()
-    return {str(row["account_name"]): float(row["total_amount"]) for row in rows}
+    return {
+        str(row["account_name"]): cents_to_dollars(int(row["total_amount_cents"]))
+        for row in rows
+    }
 
 
 def _recurring_charge_highlights(
@@ -244,8 +268,8 @@ def _recurring_charge_highlights(
         highlights.append(
             {
                 "merchant": merchant,
-                "current_outflow": float(current[merchant]["total_outflow"]),
-                "prior_outflow": float(prior[merchant]["total_outflow"]),
+                "current_outflow": cents_to_dollars(int(current[merchant]["total_outflow_cents"])),
+                "prior_outflow": cents_to_dollars(int(prior[merchant]["total_outflow_cents"])),
                 "current_count": int(current[merchant]["transaction_count"]),
                 "prior_count": int(prior[merchant]["transaction_count"]),
             }
@@ -261,10 +285,10 @@ def _merchant_outflow_map(
 ) -> dict[str, dict[str, object]]:
     rows = conn.execute(
         """
-        SELECT merchant, COUNT(*) AS transaction_count, ROUND(ABS(SUM(amount)), 2) AS total_outflow
+        SELECT merchant, COUNT(*) AS transaction_count, COALESCE(ABS(SUM(amount_cents)), 0) AS total_outflow_cents
         FROM finance_transactions
         WHERE posted_at >= ? AND posted_at < ?
-          AND amount < 0
+          AND amount_cents < 0
           AND COALESCE(merchant, '') != ''
         GROUP BY merchant
         """,
@@ -294,7 +318,7 @@ def _monthly_review_items(
         SELECT
             t.merchant,
             MIN(t.posted_at) AS first_seen_at,
-            ROUND(SUM(t.amount), 2) AS total_amount
+            COALESCE(SUM(t.amount_cents), 0) AS total_amount_cents
         FROM finance_transactions t
         WHERE t.posted_at >= ? AND t.posted_at < ?
           AND COALESCE(t.merchant, '') != ''
@@ -305,7 +329,7 @@ def _monthly_review_items(
                 AND earlier.posted_at < ?
           )
         GROUP BY t.merchant
-        ORDER BY total_amount ASC, t.merchant ASC
+        ORDER BY total_amount_cents ASC, t.merchant ASC
         """,
         (period_start, end_exclusive, period_start),
     ).fetchall()
@@ -315,7 +339,7 @@ def _monthly_review_items(
                 "kind": "new_merchant",
                 "merchant": row["merchant"],
                 "first_seen_at": row["first_seen_at"],
-                "total_amount": row["total_amount"],
+                "total_amount": cents_to_dollars(int(row["total_amount_cents"])),
             }
         )
     return items

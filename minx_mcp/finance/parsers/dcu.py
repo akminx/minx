@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from minx_mcp.document_text import extract_text
+from minx_mcp.money import parse_dollars_to_cents
 
 
 def parse_dcu_csv(path: Path, account_name: str) -> dict[str, object]:
@@ -16,7 +17,7 @@ def parse_dcu_csv(path: Path, account_name: str) -> dict[str, object]:
                 {
                     "posted_at": row["Date"],
                     "description": description,
-                    "amount": float(row["Amount"]),
+                    "amount_cents": parse_dollars_to_cents(row["Amount"]),
                     "merchant": description,
                     "category_hint": None,
                     "external_id": None,
@@ -46,7 +47,7 @@ def parse_dcu_pdf(path: Path, account_name: str) -> dict[str, object]:
             {
                 "posted_at": match.group("date"),
                 "description": description,
-                "amount": float(match.group("amount")),
+                "amount_cents": parse_dollars_to_cents(match.group("amount")),
                 "merchant": description,
                 "category_hint": None,
                 "external_id": None,

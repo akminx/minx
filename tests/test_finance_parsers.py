@@ -1,6 +1,11 @@
 from pathlib import Path
 
+import pytest
+
+from minx_mcp.contracts import InvalidInputError
 from minx_mcp.finance.importers import detect_source_kind, parse_source_file
+from minx_mcp.finance.parsers.dcu import parse_dcu_csv
+from minx_mcp.finance.parsers.generic_csv import parse_generic_csv
 
 
 def test_detect_robinhood_csv(tmp_path):
@@ -30,7 +35,7 @@ def test_parse_discover_pdf_via_liteparse_adapter(tmp_path, monkeypatch):
     sample = "Transactions\n03/01/26 03/01/26 H-E-B $ 42.16 Supermarkets\n"
     monkeypatch.setattr("minx_mcp.finance.parsers.discover.extract_text", lambda _: sample)
     parsed = parse_source_file(path, account_name="Discover", source_kind="discover_pdf")
-    assert parsed["transactions"][0]["amount"] == -42.16
+    assert parsed["transactions"][0]["amount_cents"] == -4216
 
 
 def test_parse_generic_csv_with_saved_mapping(tmp_path):
@@ -50,3 +55,30 @@ def test_parse_generic_csv_with_saved_mapping(tmp_path):
         mapping=mapping,
     )
     assert parsed["transactions"][0]["description"] == "Household"
+
+
+def test_parse_dcu_csv_returns_amount_cents(tmp_path):
+    source = tmp_path / "dcu.csv"
+    source.write_text("Date,Description,Amount\n2026-03-28,HEB,-42.16\n")
+
+    parsed = parse_dcu_csv(source, "DCU")
+
+    assert parsed["transactions"][0]["amount_cents"] == -4216
+    assert "amount" not in parsed["transactions"][0]
+
+
+def test_generic_csv_rejects_more_than_two_decimals(tmp_path):
+    source = tmp_path / "generic.csv"
+    source.write_text("posted,description,amount\n03/28/2026,HEB,-12.345\n")
+
+    with pytest.raises(InvalidInputError, match="at most 2 decimal places"):
+        parse_generic_csv(
+            source,
+            "DCU",
+            {
+                "date_column": "posted",
+                "date_format": "%m/%d/%Y",
+                "description_column": "description",
+                "amount_column": "amount",
+            },
+        )

@@ -286,7 +286,7 @@ class FinanceService:
         cursor = self.conn.execute(
             """
             INSERT INTO finance_transactions (
-                account_id, batch_id, posted_at, description, merchant, amount,
+                account_id, batch_id, posted_at, description, merchant, amount_cents,
                 category_id, category_source, external_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, 'uncategorized', ?)
             """,
@@ -296,7 +296,7 @@ class FinanceService:
                 txn["posted_at"],
                 txn["description"],
                 txn["merchant"],
-                txn["amount"],
+                txn["amount_cents"],
                 self._uncategorized_id(),
                 txn.get("external_id"),
             ),

@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from minx_mcp.document_text import extract_text
+from minx_mcp.money import parse_dollars_to_cents
 
 
 def parse_discover_pdf(path: Path, account_name: str) -> dict[str, object]:
@@ -25,7 +26,7 @@ def parse_discover_pdf(path: Path, account_name: str) -> dict[str, object]:
             {
                 "posted_at": f"20{year}-{month}-{day}",
                 "description": description,
-                "amount": -float(match.group("amount")),
+                "amount_cents": -parse_dollars_to_cents(match.group("amount")),
                 "merchant": description,
                 "category_hint": match.group("category").lower(),
                 "external_id": None,

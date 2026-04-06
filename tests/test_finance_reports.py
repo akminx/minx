@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from minx_mcp.finance.reports import build_weekly_report
 from minx_mcp.finance.service import FinanceService
 
 
@@ -83,3 +84,29 @@ def test_monthly_report_includes_required_sections(tmp_path):
     assert "## Anomalies" in report_text
     assert "## Uncategorized Or Newly Seen Merchants" in report_text
     assert "accounts" not in summary
+
+
+def test_weekly_report_aggregates_amount_cents_but_returns_dollars(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    service.conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, 1, 'csv', 'seed.csv', 'fp')
+        """
+    )
+    service.conn.executemany(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (1, 1, "2026-03-28", "Paycheck", "Employer", 120000, 4, "manual"),
+            (1, 1, "2026-03-29", "HEB", "HEB", -4216, 2, "manual"),
+        ],
+    )
+    service.conn.commit()
+
+    summary = build_weekly_report(service.conn, "2026-03-28", "2026-04-03")
+
+    assert summary["totals"] == {"inflow": 1200.0, "outflow": 42.16}

@@ -144,12 +144,12 @@ def test_import_uses_hashed_file_snapshot_for_parse(tmp_path, monkeypatch):
         (result["result"]["batch_id"],),
     ).fetchone()
     transaction = service.conn.execute(
-        "SELECT description, amount FROM finance_transactions"
+        "SELECT description, amount_cents FROM finance_transactions"
     ).fetchone()
 
     assert batch["raw_fingerprint"] == hashlib.sha256(original_contents.encode()).hexdigest()
     assert transaction["description"] == "COFFEE"
-    assert transaction["amount"] == -12.50
+    assert transaction["amount_cents"] == -1250
 
 
 def test_import_returns_running_job_without_reexecuting(tmp_path):
@@ -304,3 +304,39 @@ def test_service_get_job_raises_not_found_for_missing_job(tmp_path):
 
     with pytest.raises(NotFoundError, match="Unknown finance job id: missing-job"):
         service.get_job("missing-job")
+
+
+def test_finance_import_stores_amount_cents(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-28,HEB,Withdrawal,-12.50\n")
+
+    service.finance_import(str(source), "DCU", source_kind="dcu_csv")
+
+    transaction = service.conn.execute(
+        "SELECT description, amount_cents FROM finance_transactions"
+    ).fetchone()
+    assert transaction["description"] == "HEB"
+    assert transaction["amount_cents"] == -1250
+
+
+def test_safe_finance_summary_returns_dollars_from_cents_storage(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    service.conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, 1, 'csv', 'seed.csv', 'fp')
+        """
+    )
+    service.conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (1, 1, '2026-03-28', 'HEB', 'HEB', -1250, 1, 'manual')
+        """
+    )
+    service.conn.commit()
+
+    summary = service.safe_finance_summary()
+
+    assert summary["net_total"] == -12.5

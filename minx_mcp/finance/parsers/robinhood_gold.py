@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+from minx_mcp.money import parse_dollars_to_cents
+
 
 def parse_robinhood_csv(path: Path, account_name: str) -> dict[str, object]:
     transactions: list[dict[str, object | None]] = []
@@ -13,7 +15,7 @@ def parse_robinhood_csv(path: Path, account_name: str) -> dict[str, object]:
                 {
                     "posted_at": row["Date"],
                     "description": description,
-                    "amount": float(row["Amount"]),
+                    "amount_cents": parse_dollars_to_cents(row["Amount"]),
                     "merchant": description,
                     "category_hint": None,
                     "external_id": None,

@@ -9,7 +9,7 @@ def fingerprint_transaction(account_id: int, transaction: dict[str, object]) -> 
             str(account_id),
             str(transaction["posted_at"]),
             str(transaction["description"]),
-            f"{float(transaction['amount']):.2f}",
+            str(int(transaction["amount_cents"])),
             str(transaction.get("external_id") or ""),
         ]
     )

@@ -3,27 +3,31 @@ from __future__ import annotations
 from sqlite3 import Connection
 
 from minx_mcp.audit import log_sensitive_access
+from minx_mcp.money import cents_to_dollars
 
-ANOMALY_THRESHOLD = -250
+ANOMALY_THRESHOLD = -25_000
 
 
 def summarize_finances(conn: Connection) -> dict[str, object]:
-    total = conn.execute(
-        "SELECT COALESCE(SUM(amount), 0) AS total FROM finance_transactions"
-    ).fetchone()["total"]
+    total_cents = conn.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0) AS total_cents FROM finance_transactions"
+    ).fetchone()["total_cents"]
     categories = [
-        dict(row)
+        {
+            "category_name": row["category_name"],
+            "total_amount": cents_to_dollars(int(row["total_cents"])),
+        }
         for row in conn.execute(
             """
-            SELECT c.name AS category_name, ROUND(SUM(t.amount), 2) AS total_amount
+            SELECT c.name AS category_name, COALESCE(SUM(t.amount_cents), 0) AS total_cents
             FROM finance_transactions t
             LEFT JOIN finance_categories c ON c.id = t.category_id
             GROUP BY c.name
-            ORDER BY total_amount ASC
+            ORDER BY total_cents ASC
             """
         ).fetchall()
     ]
-    return {"net_total": total, "categories": categories}
+    return {"net_total": cents_to_dollars(int(total_cents)), "categories": categories}
 
 
 def find_anomalies(
@@ -44,17 +48,17 @@ def find_anomalies(
             "transaction_id": row["id"],
             "posted_at": row["posted_at"],
             "description": row["description"],
-            "amount": row["amount"],
+            "amount": cents_to_dollars(int(row["amount_cents"])),
         }
         for row in conn.execute(
             f"""
-            SELECT t.id, t.posted_at, t.description, t.amount
+            SELECT t.id, t.posted_at, t.description, t.amount_cents
             FROM finance_transactions t
             LEFT JOIN finance_categories c ON c.id = t.category_id
-            WHERE t.amount <= ?
+            WHERE t.amount_cents <= ?
               AND COALESCE(c.name, 'Uncategorized') = 'Uncategorized'
               {date_clause}
-            ORDER BY t.amount ASC, t.id ASC
+            ORDER BY t.amount_cents ASC, t.id ASC
             """,
             params,
         ).fetchall()
@@ -67,14 +71,19 @@ def find_uncategorized(
     end_exclusive: str,
 ) -> list[dict[str, object]]:
     return [
-        dict(row)
+        {
+            "id": row["id"],
+            "posted_at": row["posted_at"],
+            "description": row["description"],
+            "amount": cents_to_dollars(int(row["amount_cents"])),
+        }
         for row in conn.execute(
             """
             SELECT
                 t.id,
                 t.posted_at,
                 t.description,
-                t.amount
+                t.amount_cents
             FROM finance_transactions t
             LEFT JOIN finance_categories c ON c.id = t.category_id
             WHERE t.posted_at >= ? AND t.posted_at < ?
@@ -92,14 +101,17 @@ def sensitive_query(
     session_ref: str | None = None,
 ) -> dict[str, object]:
     rows = [
-        dict(row)
+        {
+            **dict(row),
+            "amount": cents_to_dollars(int(row["amount_cents"])),
+        }
         for row in conn.execute(
             """
             SELECT
                 t.id,
                 t.posted_at,
                 t.description,
-                t.amount,
+                t.amount_cents,
                 a.name AS account_name,
                 c.name AS category_name
             FROM finance_transactions t
