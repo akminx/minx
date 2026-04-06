@@ -18,21 +18,50 @@ class VaultWriter:
         path = self._resolve(relative_path)
         text = path.read_text() if path.exists() else ""
         marker = f"## {heading}"
-        blocks = text.split(marker)
         replacement = f"{marker}\n\n{body.strip()}\n"
+        lines = text.splitlines()
+        start_line, end_line = self._find_section_bounds(lines, marker)
 
-        if len(blocks) == 1:
+        if start_line is None:
             new_text = f"{text.rstrip()}\n\n{replacement}\n".strip() + "\n"
         else:
-            before = blocks[0].rstrip()
-            remainder = blocks[1]
-            next_heading = remainder.find("\n## ")
-            tail = remainder[next_heading:] if next_heading != -1 else ""
-            new_text = f"{before}\n\n{replacement}{tail.lstrip()}"
+            before = "\n".join(lines[:start_line]).rstrip()
+            tail = "\n".join(lines[end_line:]).lstrip()
+            new_text = f"{before}\n\n{replacement}{tail}".strip() + "\n"
 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(new_text)
         return path
+
+    def _find_section_bounds(self, lines: list[str], marker: str) -> tuple[int | None, int]:
+        in_fence = False
+        start_line: int | None = None
+
+        for index, line in enumerate(lines):
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            if line == marker:
+                start_line = index
+                break
+
+        if start_line is None:
+            return None, len(lines)
+
+        in_fence = False
+        for index in range(start_line + 1, len(lines)):
+            line = lines[index]
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            if line.startswith("## "):
+                return start_line, index
+
+        return start_line, len(lines)
 
     def _resolve(self, relative_path: str) -> Path:
         normalized = Path(relative_path)

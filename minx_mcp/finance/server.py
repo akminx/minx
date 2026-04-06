@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from typing import Protocol, Self
 
 from mcp.server.fastmcp import FastMCP
 
@@ -26,7 +27,32 @@ MAX_SENSITIVE_QUERY_LIMIT = 500
 SUPPORTED_RULE_MATCH_KINDS = {"merchant_contains"}
 
 
-def create_finance_server(service: object) -> FastMCP:
+class FinanceServiceLike(Protocol):
+    def __enter__(self) -> Self: ...
+    def __exit__(self, *exc: object) -> None: ...
+    def safe_finance_summary(self) -> dict[str, object]: ...
+    def list_accounts(self) -> dict[str, object]: ...
+    def finance_import(
+        self,
+        source_ref: str,
+        account_name: str,
+        source_kind: str | None = None,
+    ) -> dict[str, object]: ...
+    def missing_transaction_ids(self, transaction_ids: list[int]) -> list[int]: ...
+    def finance_categorize(self, transaction_ids: list[int], category_name: str) -> int: ...
+    def add_category_rule(self, category_name: str, match_kind: str, pattern: str) -> None: ...
+    def finance_anomalies(self) -> dict[str, object]: ...
+    def get_job(self, job_id: str) -> dict[str, object]: ...
+    def generate_weekly_report(self, period_start: str, period_end: str) -> dict[str, object]: ...
+    def generate_monthly_report(self, period_start: str, period_end: str) -> dict[str, object]: ...
+    def sensitive_finance_query(
+        self,
+        limit: int = 50,
+        session_ref: str | None = None,
+    ) -> dict[str, object]: ...
+
+
+def create_finance_server(service: FinanceServiceLike) -> FastMCP:
     mcp = FastMCP("minx-finance", stateless_http=True, json_response=True)
 
     @mcp.tool(name="safe_finance_summary")
@@ -95,18 +121,18 @@ def create_finance_server(service: object) -> FastMCP:
     return mcp
 
 
-def _safe_finance_summary(service: object) -> dict[str, object]:
+def _safe_finance_summary(service: FinanceServiceLike) -> dict[str, object]:
     with service:
         return service.safe_finance_summary()
 
 
-def _safe_finance_accounts(service: object) -> dict[str, object]:
+def _safe_finance_accounts(service: FinanceServiceLike) -> dict[str, object]:
     with service:
         return service.list_accounts()
 
 
 def _finance_import(
-    service: object,
+    service: FinanceServiceLike,
     source_ref: str,
     account_name: str,
     source_kind: str | None,
@@ -120,7 +146,7 @@ def _finance_import(
 
 
 def _finance_categorize(
-    service: object,
+    service: FinanceServiceLike,
     transaction_ids: list[int],
     category_name: str,
 ) -> dict[str, object]:
@@ -139,7 +165,7 @@ def _finance_categorize(
 
 
 def _finance_add_category_rule(
-    service: object,
+    service: FinanceServiceLike,
     category_name: str,
     match_kind: str,
     pattern: str,
@@ -157,19 +183,19 @@ def _finance_add_category_rule(
         return {"status": "created", "category": category_name, "pattern": pattern}
 
 
-def _finance_anomalies(service: object) -> dict[str, object]:
+def _finance_anomalies(service: FinanceServiceLike) -> dict[str, object]:
     with service:
         return service.finance_anomalies()
 
 
-def _finance_job_status(service: object, job_id: str) -> dict[str, object]:
+def _finance_job_status(service: FinanceServiceLike, job_id: str) -> dict[str, object]:
     _require_non_empty("job_id", job_id)
     with service:
         return service.get_job(job_id)
 
 
 def _finance_generate_weekly_report(
-    service: object,
+    service: FinanceServiceLike,
     period_start: str,
     period_end: str,
 ) -> dict[str, object]:
@@ -179,7 +205,7 @@ def _finance_generate_weekly_report(
 
 
 def _finance_generate_monthly_report(
-    service: object,
+    service: FinanceServiceLike,
     period_start: str,
     period_end: str,
 ) -> dict[str, object]:
@@ -189,7 +215,7 @@ def _finance_generate_monthly_report(
 
 
 def _sensitive_finance_query(
-    service: object,
+    service: FinanceServiceLike,
     limit: int,
     session_ref: str | None,
 ) -> dict[str, object]:

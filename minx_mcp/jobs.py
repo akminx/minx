@@ -92,7 +92,10 @@ def mark_failed(conn: Connection, job_id: str, message: str, *, commit: bool = T
     conn.execute(
         """
         UPDATE jobs
-        SET status = 'failed', error_message = ?, updated_at = datetime('now')
+        SET status = 'failed',
+            error_message = ?,
+            idempotency_key = NULL,
+            updated_at = datetime('now')
         WHERE id = ?
         """,
         (message, job_id),

@@ -415,7 +415,9 @@ def _render(template: Template, **kwargs: object) -> str:
 
 
 def _fmt(value: object) -> str:
-    return f"{float(value):.2f}"
+    amount = float(value)
+    sign = "-" if amount < 0 else ""
+    return f"{sign}${abs(amount):.2f}"
 
 
 def _lines(items: list[dict[str, object]], render) -> str:

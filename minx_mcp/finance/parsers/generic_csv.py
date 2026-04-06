@@ -29,7 +29,7 @@ def parse_generic_csv(
                 {
                     "posted_at": posted_at,
                     "description": description,
-                    "amount_cents": -abs(amount_cents),
+                    "amount_cents": amount_cents,
                     "merchant": merchant,
                     "category_hint": category_hint,
                     "external_id": None,

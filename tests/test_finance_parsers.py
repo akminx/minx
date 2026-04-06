@@ -57,6 +57,24 @@ def test_parse_generic_csv_with_saved_mapping(tmp_path):
     assert parsed["transactions"][0]["description"] == "Household"
 
 
+def test_parse_generic_csv_preserves_positive_amounts(tmp_path):
+    source = tmp_path / "generic.csv"
+    source.write_text("posted,description,amount\n03/28/2026,Payroll,1200.00\n")
+
+    parsed = parse_generic_csv(
+        source,
+        "DCU",
+        {
+            "date_column": "posted",
+            "date_format": "%m/%d/%Y",
+            "description_column": "description",
+            "amount_column": "amount",
+        },
+    )
+
+    assert parsed["transactions"][0]["amount_cents"] == 120000
+
+
 def test_parse_dcu_csv_returns_amount_cents(tmp_path):
     source = tmp_path / "dcu.csv"
     source.write_text("Date,Description,Amount\n2026-03-28,HEB,-42.16\n")

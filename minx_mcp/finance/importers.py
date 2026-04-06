@@ -73,6 +73,11 @@ def parse_source_file(
 
 
 def _validate_parsed_transactions(parsed: dict[str, object]) -> None:
-    for txn in parsed.get("transactions", []):
+    transactions = parsed.get("transactions", [])
+    if not isinstance(transactions, list):
+        raise InvalidInputError("parsed transactions must be a list")
+    for txn in transactions:
+        if not isinstance(txn, dict):
+            raise InvalidInputError("parsed transactions must be objects")
         if "amount_cents" not in txn or not isinstance(txn["amount_cents"], int):
             raise InvalidInputError("parsed transactions must include integer amount_cents")

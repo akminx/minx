@@ -42,6 +42,18 @@ def test_safe_summary_and_sensitive_query_are_separate(tmp_path):
     assert sensitive["transactions"][0]["description"] == "H-E-B"
 
 
+def test_sensitive_query_hides_internal_amount_cents_field(tmp_path):
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    service.finance_import(str(source), account_name="DCU")
+
+    transaction = service.sensitive_finance_query(limit=1)["transactions"][0]
+
+    assert transaction["amount"] == -45.2
+    assert "amount_cents" not in transaction
+
+
 def test_changed_file_at_same_path_creates_new_import(tmp_path):
     db_path = tmp_path / "minx.db"
     source = tmp_path / "robinhood_transactions.csv"
@@ -204,6 +216,54 @@ def test_manual_categorization_survives_rule_reapplication(tmp_path):
     service.apply_category_rules()
     tx_after = service.sensitive_finance_query(limit=1)["transactions"][0]
     assert tx_after["category_name"] == "Dining Out"
+
+
+def test_apply_category_rules_can_scope_updates_to_a_batch(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    groceries_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    uncategorized_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Uncategorized'"
+    ).fetchone()["id"]
+    service.add_category_rule("Groceries", "merchant_contains", "H-E-B")
+    service.conn.executemany(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (?, 1, 'csv', ?, ?)
+        """,
+        [
+            (1, "old.csv", "fp-old"),
+            (2, "new.csv", "fp-new"),
+        ],
+    )
+    service.conn.executemany(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (1, 1, "2026-03-01", "old heb", "H-E-B", -1000, uncategorized_id, "uncategorized"),
+            (1, 2, "2026-03-02", "new heb", "H-E-B", -2000, uncategorized_id, "uncategorized"),
+        ],
+    )
+    service.conn.commit()
+
+    service.apply_category_rules(batch_id=2)
+
+    rows = service.conn.execute(
+        """
+        SELECT description, category_id
+        FROM finance_transactions
+        ORDER BY id
+        """
+    ).fetchall()
+
+    assert rows[0]["description"] == "old heb"
+    assert rows[0]["category_id"] == uncategorized_id
+    assert rows[1]["description"] == "new heb"
+    assert rows[1]["category_id"] == groceries_id
 
 
 def test_anomalies_flag_large_uncategorized_transactions(tmp_path):

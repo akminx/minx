@@ -126,7 +126,7 @@ class FinanceService:
                 "UPDATE finance_accounts SET last_imported_at = datetime('now') WHERE id = ?",
                 (account_id,),
             )
-            self.apply_category_rules(commit=False)
+            self.apply_category_rules(batch_id=batch_id, commit=False)
             self.conn.execute("RELEASE SAVEPOINT finance_import")
 
             result = {"batch_id": batch_id, "inserted": inserted, "skipped": skipped}
@@ -152,7 +152,7 @@ class FinanceService:
         )
         self.conn.commit()
 
-    def apply_category_rules(self, *, commit: bool = True) -> None:
+    def apply_category_rules(self, batch_id: int | None = None, *, commit: bool = True) -> None:
         rules = self.conn.execute(
             """
             SELECT r.pattern, r.match_kind, r.category_id
@@ -160,6 +160,11 @@ class FinanceService:
             ORDER BY r.priority ASC, r.id ASC
             """
         ).fetchall()
+        batch_clause = ""
+        batch_params: tuple[object, ...] = ()
+        if batch_id is not None:
+            batch_clause = " AND batch_id = ?"
+            batch_params = (batch_id,)
         for rule in rules:
             if rule["match_kind"] != "merchant_contains":
                 continue
@@ -174,8 +179,9 @@ class FinanceService:
                 UPDATE finance_transactions
                 SET category_id = ?, category_source = 'rule'
                 WHERE merchant LIKE ? ESCAPE '\\' AND category_source != 'manual'
-                """,
-                (rule["category_id"], f"%{escaped}%"),
+                """
+                + batch_clause,
+                (rule["category_id"], f"%{escaped}%", *batch_params),
             )
         if commit:
             self.conn.commit()

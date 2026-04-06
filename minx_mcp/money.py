@@ -10,7 +10,8 @@ def parse_dollars_to_cents(value: str) -> int:
         amount = Decimal(value.strip())
     except (AttributeError, InvalidOperation) as exc:
         raise InvalidInputError("amount must be a valid decimal string") from exc
-    if amount.as_tuple().exponent < -2:
+    exponent = amount.as_tuple().exponent
+    if isinstance(exponent, int) and exponent < -2:
         raise InvalidInputError("amount must use at most 2 decimal places")
     return int((amount * 100).to_integral_exact())
 

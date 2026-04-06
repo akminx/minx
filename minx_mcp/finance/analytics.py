@@ -102,7 +102,11 @@ def sensitive_query(
 ) -> dict[str, object]:
     rows = [
         {
-            **dict(row),
+            "id": int(row["id"]),
+            "posted_at": str(row["posted_at"]),
+            "description": str(row["description"]),
+            "account_name": str(row["account_name"]),
+            "category_name": row["category_name"],
             "amount": cents_to_dollars(int(row["amount_cents"])),
         }
         for row in conn.execute(

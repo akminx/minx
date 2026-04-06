@@ -14,6 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "mypy>=1.11.0",
   "pytest>=8.3.0",
   "pytest-asyncio>=0.24.0",
   "setuptools>=69",
@@ -28,3 +29,18 @@ include = ["minx_mcp*"]
 
 [tool.setuptools.package-data]
 "minx_mcp.schema.migrations" = ["*.sql"]
+
+[tool.mypy]
+python_version = "3.12"
+files = [
+  "minx_mcp/finance/server.py",
+  "minx_mcp/finance/analytics.py",
+  "minx_mcp/vault_writer.py",
+]
+check_untyped_defs = true
+no_implicit_optional = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["mcp.*"]
+ignore_missing_imports = true

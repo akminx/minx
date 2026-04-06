@@ -110,3 +110,24 @@ def test_weekly_report_aggregates_amount_cents_but_returns_dollars(tmp_path):
     summary = build_weekly_report(service.conn, "2026-03-28", "2026-04-03")
 
     assert summary["totals"] == {"inflow": 1200.0, "outflow": 42.16}
+
+
+def test_generated_reports_render_currency_strings(tmp_path):
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n"
+        "2026-03-02,H-E-B,Withdrawal,-45.20\n"
+        "2026-03-03,Payroll,Deposit,1200.00\n"
+    )
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    service.finance_import(str(source), account_name="DCU")
+
+    weekly = service.generate_weekly_report("2026-03-02", "2026-03-08")
+    monthly = service.generate_monthly_report("2026-03-01", "2026-03-31")
+
+    weekly_text = Path(weekly["vault_path"]).read_text()
+    monthly_text = Path(monthly["vault_path"]).read_text()
+
+    assert "- Inflow: $1200.00" in weekly_text
+    assert "- Outflow: $45.20" in weekly_text
+    assert "- DCU: $1154.80" in monthly_text
