@@ -196,10 +196,6 @@ class FinanceReadAPI:
         current_by_category = _read_category_spend_map(self._db, current_start, current_end_exclusive)
         prior_by_category = _read_category_spend_map(self._db, prior_start, prior_end_exclusive)
 
-        category_names = sorted(
-            set(current_by_category) | set(prior_by_category),
-            key=lambda name: (-current_by_category.get(name, 0), name),
-        )
         category_deltas = [
             CategoryDelta(
                 category_name=category_name,
@@ -208,8 +204,11 @@ class FinanceReadAPI:
                 delta_spent_cents=current_by_category.get(category_name, 0)
                 - prior_by_category.get(category_name, 0),
             )
-            for category_name in category_names
+            for category_name in set(current_by_category) | set(prior_by_category)
         ]
+        category_deltas.sort(
+            key=lambda item: (-abs(item.delta_spent_cents), item.category_name)
+        )
         return PeriodComparison(
             current_total_spent_cents=current_total,
             prior_total_spent_cents=prior_total,

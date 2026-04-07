@@ -185,6 +185,22 @@ def test_get_period_comparison_returns_totals_and_category_deltas(tmp_path):
         amount_cents=-1000,
         category_id=5,
     )
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-05",
+        description="Shopping Prior",
+        merchant="Big Box",
+        amount_cents=-9000,
+        category_id=6,
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-12",
+        description="Shopping Current",
+        merchant="Big Box",
+        amount_cents=-1000,
+        category_id=6,
+    )
     conn.commit()
 
     from minx_mcp.finance.read_api import FinanceReadAPI
@@ -196,8 +212,8 @@ def test_get_period_comparison_returns_totals_and_category_deltas(tmp_path):
         "2026-03-09",
     )
 
-    assert comparison.current_total_spent_cents == 7000
-    assert comparison.prior_total_spent_cents == 4500
+    assert comparison.current_total_spent_cents == 8000
+    assert comparison.prior_total_spent_cents == 13500
     assert [
         (
             item.category_name,
@@ -207,8 +223,9 @@ def test_get_period_comparison_returns_totals_and_category_deltas(tmp_path):
         )
         for item in comparison.category_deltas
     ] == [
-        ("Groceries", 5000, 3500, 1500),
+        ("Shopping", 1000, 9000, -8000),
         ("Dining Out", 2000, 0, 2000),
+        ("Groceries", 5000, 3500, 1500),
         ("Subscriptions", 0, 1000, -1000),
     ]
 
