@@ -215,15 +215,23 @@ def _local_date_to_utc_boundary(
 ) -> str:
     local_day = date.fromisoformat(value) + timedelta(days=add_days)
     local_midnight = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
-    return local_midnight.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return _format_utc_timestamp(local_midnight)
 
 
 def _normalize_utc_timestamp(value: str) -> str:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         raise ValueError("UTC timestamp must include timezone information")
-    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return _format_utc_timestamp(parsed)
 
 
 def _utc_now_isoformat() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return _format_utc_timestamp(datetime.now(timezone.utc))
+
+
+def _format_utc_timestamp(value: datetime) -> str:
+    return (
+        value.astimezone(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )

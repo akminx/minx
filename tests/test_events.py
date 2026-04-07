@@ -127,7 +127,7 @@ def test_emit_event_inserts_validated_json_payload_and_recorded_at(tmp_path):
 
     assert row["event_type"] == "finance.transactions_imported"
     assert row["domain"] == "finance"
-    assert row["occurred_at"] == "2026-01-15T18:30:00Z"
+    assert row["occurred_at"] == "2026-01-15T18:30:00.000000Z"
     assert row["entity_ref"] == "batch-1"
     assert row["source"] == "finance.service"
     assert row["schema_version"] == 1
@@ -335,7 +335,7 @@ def test_emit_event_normalizes_offset_timestamp_for_utc_queries(tmp_path):
     assert event_id is not None
 
     row = conn.execute("SELECT occurred_at FROM events WHERE id = ?", (event_id,)).fetchone()
-    assert row["occurred_at"] == "2026-01-15T17:00:00Z"
+    assert row["occurred_at"] == "2026-01-15T17:00:00.000000Z"
 
     events = query_events(
         conn,
@@ -345,6 +345,46 @@ def test_emit_event_normalizes_offset_timestamp_for_utc_queries(tmp_path):
     )
 
     assert [event.id for event in events] == [event_id]
+
+
+def test_query_events_handles_mixed_precision_utc_timestamps_within_one_second(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+
+    exact_id = emit_event(
+        conn,
+        event_type="finance.transactions_imported",
+        domain="finance",
+        occurred_at="2026-01-15T17:00:00.000000Z",
+        entity_ref="batch-exact",
+        source="finance.service",
+        payload=_imported_payload(job_id="job-exact"),
+    )
+    fractional_id = emit_event(
+        conn,
+        event_type="finance.transactions_imported",
+        domain="finance",
+        occurred_at="2026-01-15T17:00:00.100000Z",
+        entity_ref="batch-fractional",
+        source="finance.service",
+        payload=_imported_payload(job_id="job-fractional"),
+    )
+    conn.commit()
+
+    assert exact_id is not None
+    assert fractional_id is not None
+
+    events = query_events(
+        conn,
+        start="2026-01-15T17:00:00Z",
+        end="2026-01-15T17:00:01Z",
+        timezone=None,
+    )
+
+    assert [event.id for event in events] == [exact_id, fractional_id]
+    assert [event.occurred_at for event in events] == [
+        "2026-01-15T17:00:00.000000Z",
+        "2026-01-15T17:00:00.100000Z",
+    ]
 
 
 def test_query_events_filters_local_dates_in_new_york(tmp_path):
@@ -517,7 +557,7 @@ def test_query_events_composes_domain_type_and_date_filters_together(tmp_path):
         id=target_id,
         event_type="finance.report_generated",
         domain="finance",
-        occurred_at="2026-01-15T17:00:00Z",
+        occurred_at="2026-01-15T17:00:00.000000Z",
         recorded_at=events[0].recorded_at,
         entity_ref="entity-1",
         source="tests",
