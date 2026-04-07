@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
-
-if TYPE_CHECKING:
-    from minx_mcp.finance.read_api import FinanceReadAPI
+from typing import Protocol
 
 
 class LLMInterface(Protocol):
@@ -16,6 +13,23 @@ class LLMInterface(Protocol):
         open_loops: OpenLoopsSnapshot,
         detector_insights: list[InsightCandidate],
     ) -> "LLMReviewResult": ...
+
+
+class FinanceReadInterface(Protocol):
+    def get_spending_summary(self, start_date: str, end_date: str): ...
+    def get_uncategorized(self, start_date: str, end_date: str): ...
+    def get_import_job_issues(self): ...
+    def get_period_comparison(
+        self,
+        current_start: str,
+        current_end: str,
+        prior_start: str,
+        prior_end: str,
+    ): ...
+
+
+class VaultWriterLike(Protocol):
+    def write_markdown(self, relative_path: str, content: str) -> Path: ...
 
 
 @dataclass(frozen=True)
@@ -100,6 +114,6 @@ class DailyReview:
 @dataclass(frozen=True)
 class ReviewContext:
     db_path: str | Path
-    finance_api: "FinanceReadAPI"
-    vault_writer: object
+    finance_api: FinanceReadInterface
+    vault_writer: VaultWriterLike
     llm: LLMInterface | None = None

@@ -6,6 +6,7 @@ from sqlite3 import Connection
 from minx_mcp.core.events import Event, query_events
 from minx_mcp.core.models import (
     DailyTimeline,
+    FinanceReadInterface,
     OpenLoop,
     OpenLoopsSnapshot,
     ReadModels,
@@ -38,8 +39,12 @@ def build_daily_timeline(conn: Connection, review_date: str) -> DailyTimeline:
     return DailyTimeline(date=review_date, entries=entries)
 
 
-def build_spending_snapshot(conn: Connection, review_date: str) -> SpendingSnapshot:
-    finance_api = FinanceReadAPI(conn)
+def build_spending_snapshot(
+    conn: Connection,
+    review_date: str,
+    finance_api: FinanceReadInterface | None = None,
+) -> SpendingSnapshot:
+    finance_api = finance_api or FinanceReadAPI(conn)
     summary = finance_api.get_spending_summary(review_date, review_date)
     uncategorized = finance_api.get_uncategorized(review_date, review_date)
 
@@ -78,8 +83,12 @@ def build_spending_snapshot(conn: Connection, review_date: str) -> SpendingSnaps
     )
 
 
-def build_open_loops_snapshot(conn: Connection, review_date: str) -> OpenLoopsSnapshot:
-    finance_api = FinanceReadAPI(conn)
+def build_open_loops_snapshot(
+    conn: Connection,
+    review_date: str,
+    finance_api: FinanceReadInterface | None = None,
+) -> OpenLoopsSnapshot:
+    finance_api = finance_api or FinanceReadAPI(conn)
     uncategorized = finance_api.get_uncategorized(review_date, review_date)
     import_job_issues = finance_api.get_import_job_issues()
 
@@ -119,11 +128,15 @@ def build_open_loops_snapshot(conn: Connection, review_date: str) -> OpenLoopsSn
     return OpenLoopsSnapshot(date=review_date, loops=loops)
 
 
-def build_read_models(conn: Connection, review_date: str) -> ReadModels:
+def build_read_models(
+    conn: Connection,
+    review_date: str,
+    finance_api: FinanceReadInterface | None = None,
+) -> ReadModels:
     return ReadModels(
         timeline=build_daily_timeline(conn, review_date),
-        spending=build_spending_snapshot(conn, review_date),
-        open_loops=build_open_loops_snapshot(conn, review_date),
+        spending=build_spending_snapshot(conn, review_date, finance_api=finance_api),
+        open_loops=build_open_loops_snapshot(conn, review_date, finance_api=finance_api),
     )
 
 
