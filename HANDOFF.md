@@ -14,27 +14,33 @@ Status as of 2026-04-07: Slice 1 (Event Pipeline + Daily Review) is implemented 
 ### Slice 1 stabilization pass
 
 Shared time utilities:
+
 - `minx_mcp/time_utils.py` — single source for UTC timestamp formatting
 
 Core MCP server:
+
 - `minx_mcp/core/server.py` — `daily_review` tool, harness-facing entry point
 - `minx_mcp/core/__main__.py` — `python -m minx_mcp.core` runner
 
 Project-wide typing:
+
 - `pyproject.toml` — mypy now covers the full `minx_mcp` package (was 18-file whitelist)
 
 Documentation reconciliation:
+
 - `docs/superpowers/specs/2026-04-06-minx-roadmap-slices.md` — Slice 1 marked implemented with implementation notes documenting spec divergences
 
 ### Previously shipped (pre-stabilization)
 
 Core finance/report stabilization:
+
 - `minx_mcp/finance/service.py`
 - `minx_mcp/finance/reports.py`
 - `minx_mcp/schema/migrations/006_finance_report_lifecycle.sql`
 - `schema/migrations/006_finance_report_lifecycle.sql`
 
 Typed internal finance models:
+
 - `minx_mcp/finance/import_models.py`
 - `minx_mcp/finance/report_models.py`
 - `minx_mcp/finance/importers.py`
@@ -42,11 +48,13 @@ Typed internal finance models:
 - parser modules under `minx_mcp/finance/parsers`
 
 Runtime and filesystem hardening:
+
 - `minx_mcp/vault_writer.py`
 - `minx_mcp/transport.py`
 - `minx_mcp/jobs.py`
 
 Event pipeline and Minx Core:
+
 - `minx_mcp/core/events.py`
 - `minx_mcp/core/models.py`
 - `minx_mcp/core/read_models.py`
@@ -58,6 +66,7 @@ Event pipeline and Minx Core:
 ## Verification
 
 Latest verification:
+
 - command: `.venv/bin/python -m pytest tests/ -q`
 - result: `197 passed`
 - command: `.venv/bin/python -m mypy`
