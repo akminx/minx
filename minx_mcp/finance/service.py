@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import threading
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from sqlite3 import Connection
 
 from minx_mcp.contracts import InvalidInputError, NotFoundError
+from minx_mcp.core.events import emit_event
 from minx_mcp.db import get_connection
 from minx_mcp.finance.analytics import find_anomalies, sensitive_query, summarize_finances
 from minx_mcp.finance.dedupe import fingerprint_transaction
@@ -21,6 +22,8 @@ from minx_mcp.finance.reports import (
 from minx_mcp.jobs import get_job, mark_completed, mark_failed, mark_running, submit_job
 from minx_mcp.preferences import get_csv_mapping
 from minx_mcp.vault_writer import VaultWriter
+
+EVENT_SOURCE = "finance.service"
 
 
 class FinanceService:
@@ -89,9 +92,11 @@ class FinanceService:
         if job["status"] in {"completed", "running"}:
             return {"job_id": job["id"], "status": job["status"], "result": job["result"]}
 
+        savepoint_active = False
         try:
             mark_running(self.conn, str(job["id"]), commit=False)
             self.conn.execute("SAVEPOINT finance_import")
+            savepoint_active = True
 
             parsed = parse_source_file(
                 canonical_source_path, account_name, effective_source_kind, effective_mapping,
@@ -100,6 +105,7 @@ class FinanceService:
             batch_id = self._insert_batch(account_id, parsed)
             inserted = 0
             skipped = 0
+            total_cents = 0
 
             for txn in parsed["transactions"]:
                 fingerprint = fingerprint_transaction(account_id, txn)
@@ -117,6 +123,7 @@ class FinanceService:
                     (fingerprint, tx_id),
                 )
                 inserted += 1
+                total_cents += int(txn["amount_cents"])
 
             self.conn.execute(
                 "UPDATE finance_import_batches SET inserted_count = ?, skipped_count = ? WHERE id = ?",
@@ -127,15 +134,31 @@ class FinanceService:
                 (account_id,),
             )
             self.apply_category_rules(batch_id=batch_id, commit=False)
+            self._emit_finance_event(
+                event_type="finance.transactions_imported",
+                entity_ref=str(batch_id),
+                payload={
+                    "account_name": account_name,
+                    "account_id": account_id,
+                    "job_id": str(job["id"]),
+                    "transaction_count": inserted,
+                    "total_cents": total_cents,
+                    "source_kind": effective_source_kind,
+                },
+            )
             self.conn.execute("RELEASE SAVEPOINT finance_import")
+            savepoint_active = False
 
             result = {"batch_id": batch_id, "inserted": inserted, "skipped": skipped}
             mark_completed(self.conn, str(job["id"]), result)
             return {"job_id": job["id"], "status": "completed", "result": result}
         except Exception as exc:
             if self.conn.in_transaction:
-                self.conn.execute("ROLLBACK TO SAVEPOINT finance_import")
-                self.conn.execute("RELEASE SAVEPOINT finance_import")
+                if savepoint_active:
+                    self.conn.execute("ROLLBACK TO SAVEPOINT finance_import")
+                    self.conn.execute("RELEASE SAVEPOINT finance_import")
+                else:
+                    self.conn.rollback()
             mark_failed(self.conn, str(job["id"]), str(exc))
             raise
 
@@ -200,6 +223,14 @@ class FinanceService:
             """,
             [category_id, *unique_ids],
         )
+        self._emit_finance_event(
+            event_type="finance.transactions_categorized",
+            entity_ref=None,
+            payload={
+                "count": int(cursor.rowcount),
+                "categories": [category_name],
+            },
+        )
         self.conn.commit()
         return int(cursor.rowcount)
 
@@ -225,7 +256,26 @@ class FinanceService:
         return summarize_finances(self.conn)
 
     def finance_anomalies(self) -> dict[str, object]:
-        return {"items": find_anomalies(self.conn)}
+        should_commit_event = not self.conn.in_transaction
+        items = find_anomalies(self.conn)
+        if items:
+            self._emit_finance_event(
+                event_type="finance.anomalies_detected",
+                entity_ref=None,
+                payload={
+                    "count": len(items),
+                    "total_cents": self._sum_transaction_amount_cents(
+                        [
+                            int(item["transaction_id"])
+                            for item in items
+                            if item.get("transaction_id") is not None
+                        ]
+                    ),
+                },
+            )
+            if should_commit_event:
+                self.conn.commit()
+        return {"items": items}
 
     def sensitive_finance_query(self, limit: int = 50, session_ref: str | None = None) -> dict[str, object]:
         if limit < 1 or limit > 500:
@@ -238,7 +288,22 @@ class FinanceService:
         content = render_weekly_markdown(summary, period_start, period_end)
         relative_path = f"Finance/weekly-{period_start}.md"
         path = self.vault_writer.write_markdown(relative_path, content)
-        persist_report_run(self.conn, "weekly", period_start, period_end, str(path), summary)
+        try:
+            self._emit_finance_event(
+                event_type="finance.report_generated",
+                entity_ref=str(path),
+                payload={
+                    "report_type": "weekly",
+                    "period_start": period_start,
+                    "period_end": period_end,
+                    "vault_path": str(path),
+                },
+            )
+            persist_report_run(self.conn, "weekly", period_start, period_end, str(path), summary)
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
         return {"vault_path": str(path), "summary": summary}
 
     def generate_monthly_report(self, period_start: str, period_end: str) -> dict[str, object]:
@@ -247,7 +312,22 @@ class FinanceService:
         content = render_monthly_markdown(summary, period_start, period_end)
         relative_path = f"Finance/monthly-{period_start[:7]}.md"
         path = self.vault_writer.write_markdown(relative_path, content)
-        persist_report_run(self.conn, "monthly", period_start, period_end, str(path), summary)
+        try:
+            self._emit_finance_event(
+                event_type="finance.report_generated",
+                entity_ref=str(path),
+                payload={
+                    "report_type": "monthly",
+                    "period_start": period_start,
+                    "period_end": period_end,
+                    "vault_path": str(path),
+                },
+            )
+            persist_report_run(self.conn, "monthly", period_start, period_end, str(path), summary)
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
         return {"vault_path": str(path), "summary": summary}
 
     def get_job(self, job_id: str) -> dict[str, object | None]:
@@ -323,6 +403,39 @@ class FinanceService:
             self._uncategorized_category_id = self._category_id("Uncategorized")
         return self._uncategorized_category_id
 
+    def _emit_finance_event(
+        self,
+        *,
+        event_type: str,
+        entity_ref: str | None,
+        payload: dict[str, object],
+    ) -> int | None:
+        return emit_event(
+            self.conn,
+            event_type=event_type,
+            domain="finance",
+            occurred_at=_utc_now_isoformat(),
+            entity_ref=entity_ref,
+            source=EVENT_SOURCE,
+            payload=payload,
+        )
+
+    def _sum_transaction_amount_cents(self, transaction_ids: list[int]) -> int:
+        unique_ids = list(dict.fromkeys(transaction_ids))
+        if not unique_ids:
+            return 0
+
+        placeholders = ",".join("?" for _ in unique_ids)
+        row = self.conn.execute(
+            f"""
+            SELECT COALESCE(SUM(amount_cents), 0) AS total_cents
+            FROM finance_transactions
+            WHERE id IN ({placeholders})
+            """,
+            unique_ids,
+        ).fetchone()
+        return int(row["total_cents"])
+
 
 def _parse_date_window(period_start: str, period_end: str) -> tuple[date, date]:
     try:
@@ -366,3 +479,11 @@ def _canonicalize_existing_path(path: Path) -> Path:
             pass
         current = current / actual_part
     return current
+
+
+def _utc_now_isoformat() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
