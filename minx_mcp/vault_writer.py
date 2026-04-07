@@ -9,6 +9,9 @@ class VaultWriter:
         self.vault_root = vault_root
         self.allowed_roots = allowed_roots
 
+    def resolve_path(self, relative_path: str) -> Path:
+        return self._resolve(relative_path)
+
     def write_markdown(self, relative_path: str, content: str) -> Path:
         path = self._resolve(relative_path)
         path.parent.mkdir(parents=True, exist_ok=True)

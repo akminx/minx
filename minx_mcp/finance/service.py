@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ from minx_mcp.core.events import emit_event
 from minx_mcp.db import get_connection
 from minx_mcp.finance.analytics import find_anomalies, sensitive_query, summarize_finances
 from minx_mcp.finance.dedupe import fingerprint_transaction
+from minx_mcp.finance.import_models import ParsedImportBatch, ParsedTransaction
 from minx_mcp.finance.importers import detect_source_kind, parse_source_file
 from minx_mcp.finance.reports import (
     build_monthly_report,
@@ -18,12 +20,14 @@ from minx_mcp.finance.reports import (
     persist_report_run,
     render_monthly_markdown,
     render_weekly_markdown,
+    upsert_report_run,
 )
 from minx_mcp.jobs import get_job, mark_completed, mark_failed, mark_running, submit_job
 from minx_mcp.preferences import get_csv_mapping
 from minx_mcp.vault_writer import VaultWriter
 
 EVENT_SOURCE = "finance.service"
+logger = logging.getLogger(__name__)
 
 
 class FinanceService:
@@ -107,7 +111,7 @@ class FinanceService:
             skipped = 0
             total_cents = 0
 
-            for txn in parsed["transactions"]:
+            for txn in parsed.transactions:
                 fingerprint = fingerprint_transaction(account_id, txn)
                 existing = self.conn.execute(
                     "SELECT transaction_id FROM finance_transaction_dedupe WHERE fingerprint = ?",
@@ -123,7 +127,7 @@ class FinanceService:
                     (fingerprint, tx_id),
                 )
                 inserted += 1
-                total_cents += int(txn["amount_cents"])
+                total_cents += txn.amount_cents
 
             self.conn.execute(
                 "UPDATE finance_import_batches SET inserted_count = ?, skipped_count = ? WHERE id = ?",
@@ -285,10 +289,22 @@ class FinanceService:
     def generate_weekly_report(self, period_start: str, period_end: str) -> dict[str, object]:
         _validate_weekly_window(period_start, period_end)
         summary = build_weekly_report(self.conn, period_start, period_end)
+        summary_payload = summary.to_dict()
         content = render_weekly_markdown(summary, period_start, period_end)
         relative_path = f"Finance/weekly-{period_start}.md"
-        path = self.vault_writer.write_markdown(relative_path, content)
+        planned_path = self.vault_writer.resolve_path(relative_path)
+        upsert_report_run(
+            self.conn,
+            "weekly",
+            period_start,
+            period_end,
+            str(planned_path),
+            summary_payload,
+            status="pending",
+        )
+        path: Path | None = None
         try:
+            path = self.vault_writer.write_markdown(relative_path, content)
             self._emit_finance_event(
                 event_type="finance.report_generated",
                 entity_ref=str(path),
@@ -299,20 +315,51 @@ class FinanceService:
                     "vault_path": str(path),
                 },
             )
-            persist_report_run(self.conn, "weekly", period_start, period_end, str(path), summary)
-        except Exception:
+            persist_report_run(
+                self.conn,
+                "weekly",
+                period_start,
+                period_end,
+                str(path),
+                summary_payload,
+            )
+        except Exception as exc:
             if self.conn.in_transaction:
                 self.conn.rollback()
+            failed_path = path or planned_path
+            _best_effort_unlink(failed_path)
+            upsert_report_run(
+                self.conn,
+                "weekly",
+                period_start,
+                period_end,
+                str(failed_path),
+                summary_payload,
+                status="failed",
+                error_message=str(exc),
+            )
             raise
-        return {"vault_path": str(path), "summary": summary}
+        return {"vault_path": str(path), "summary": summary_payload}
 
     def generate_monthly_report(self, period_start: str, period_end: str) -> dict[str, object]:
         _validate_monthly_window(period_start, period_end)
         summary = build_monthly_report(self.conn, period_start, period_end)
+        summary_payload = summary.to_dict()
         content = render_monthly_markdown(summary, period_start, period_end)
         relative_path = f"Finance/monthly-{period_start[:7]}.md"
-        path = self.vault_writer.write_markdown(relative_path, content)
+        planned_path = self.vault_writer.resolve_path(relative_path)
+        upsert_report_run(
+            self.conn,
+            "monthly",
+            period_start,
+            period_end,
+            str(planned_path),
+            summary_payload,
+            status="pending",
+        )
+        path: Path | None = None
         try:
+            path = self.vault_writer.write_markdown(relative_path, content)
             self._emit_finance_event(
                 event_type="finance.report_generated",
                 entity_ref=str(path),
@@ -323,12 +370,31 @@ class FinanceService:
                     "vault_path": str(path),
                 },
             )
-            persist_report_run(self.conn, "monthly", period_start, period_end, str(path), summary)
-        except Exception:
+            persist_report_run(
+                self.conn,
+                "monthly",
+                period_start,
+                period_end,
+                str(path),
+                summary_payload,
+            )
+        except Exception as exc:
             if self.conn.in_transaction:
                 self.conn.rollback()
+            failed_path = path or planned_path
+            _best_effort_unlink(failed_path)
+            upsert_report_run(
+                self.conn,
+                "monthly",
+                period_start,
+                period_end,
+                str(failed_path),
+                summary_payload,
+                status="failed",
+                error_message=str(exc),
+            )
             raise
-        return {"vault_path": str(path), "summary": summary}
+        return {"vault_path": str(path), "summary": summary_payload}
 
     def get_job(self, job_id: str) -> dict[str, object | None]:
         job = get_job(self.conn, job_id)
@@ -348,7 +414,7 @@ class FinanceService:
             raise NotFoundError(f"Unknown finance account: {account_name}")
         return row
 
-    def _insert_batch(self, account_id: int, parsed: dict[str, object]) -> int:
+    def _insert_batch(self, account_id: int, parsed: ParsedImportBatch) -> int:
         cursor = self.conn.execute(
             """
             INSERT INTO finance_import_batches (account_id, source_type, source_ref, raw_fingerprint)
@@ -356,9 +422,9 @@ class FinanceService:
             """,
             (
                 account_id,
-                parsed["source_type"],
-                parsed["source_ref"],
-                parsed["raw_fingerprint"],
+                parsed.source_type,
+                parsed.source_ref,
+                parsed.raw_fingerprint,
             ),
         )
         return int(cursor.lastrowid)
@@ -367,7 +433,7 @@ class FinanceService:
         self,
         account_id: int,
         batch_id: int,
-        txn: dict[str, object],
+        txn: ParsedTransaction,
     ) -> int:
         cursor = self.conn.execute(
             """
@@ -379,12 +445,12 @@ class FinanceService:
             (
                 account_id,
                 batch_id,
-                txn["posted_at"],
-                txn["description"],
-                txn["merchant"],
-                txn["amount_cents"],
+                txn.posted_at,
+                txn.description,
+                txn.merchant,
+                txn.amount_cents,
                 self._uncategorized_id(),
-                txn.get("external_id"),
+                txn.external_id,
             ),
         )
         return int(cursor.lastrowid)
@@ -487,3 +553,11 @@ def _utc_now_isoformat() -> str:
         .isoformat(timespec="microseconds")
         .replace("+00:00", "Z")
     )
+
+
+def _best_effort_unlink(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError as exc:
+        logger.warning("Unable to remove failed report artifact %s: %s", path, exc)

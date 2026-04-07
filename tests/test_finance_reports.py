@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from minx_mcp.finance.reports import build_weekly_report
+from minx_mcp.finance.report_models import MonthlyReportSummary, WeeklyReportSummary
+from minx_mcp.finance.reports import build_monthly_report, build_weekly_report
 from minx_mcp.finance.service import FinanceService
 
 
@@ -109,7 +110,25 @@ def test_weekly_report_aggregates_amount_cents_but_returns_dollars(tmp_path):
 
     summary = build_weekly_report(service.conn, "2026-03-28", "2026-04-03")
 
-    assert summary["totals"] == {"inflow": 1200.0, "outflow": 42.16}
+    assert isinstance(summary, WeeklyReportSummary)
+    assert summary.totals.inflow == 1200.0
+    assert summary.totals.outflow == 42.16
+
+
+def test_build_monthly_report_returns_typed_summary(tmp_path):
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n"
+        "2026-02-10,NETFLIX,Withdrawal,-15.00\n"
+        "2026-03-12,NEW SHOP,Withdrawal,-20.00\n"
+    )
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    service.finance_import(str(source), account_name="DCU")
+
+    summary = build_monthly_report(service.conn, "2026-03-01", "2026-03-31")
+
+    assert isinstance(summary, MonthlyReportSummary)
+    assert any(item.kind == "new_merchant" for item in summary.uncategorized_or_new_merchants)
 
 
 def test_generated_reports_render_currency_strings(tmp_path):
