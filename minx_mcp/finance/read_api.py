@@ -195,7 +195,6 @@ class FinanceReadAPI:
         prior_total = _read_total_spent_cents(self._db, prior_start, prior_end_exclusive)
         current_by_category = _read_category_spend_map(self._db, current_start, current_end_exclusive)
         prior_by_category = _read_category_spend_map(self._db, prior_start, prior_end_exclusive)
-
         category_deltas = [
             CategoryDelta(
                 category_name=category_name,
