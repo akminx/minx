@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 
 class VaultWriter:
@@ -11,7 +12,21 @@ class VaultWriter:
     def write_markdown(self, relative_path: str, content: str) -> Path:
         path = self._resolve(relative_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        temp_path: Path | None = None
+        try:
+            with NamedTemporaryFile(
+                "w",
+                dir=path.parent,
+                delete=False,
+                encoding="utf-8",
+            ) as handle:
+                handle.write(content)
+                temp_path = Path(handle.name)
+            temp_path.replace(path)
+        except Exception:
+            if temp_path is not None and temp_path.exists():
+                temp_path.unlink()
+            raise
         return path
 
     def replace_section(self, relative_path: str, heading: str, body: str) -> Path:
