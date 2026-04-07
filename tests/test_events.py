@@ -318,6 +318,35 @@ def test_query_events_filters_utc_timestamps_when_timezone_is_none(tmp_path):
     assert after_id not in [event.id for event in events]
 
 
+def test_emit_event_normalizes_offset_timestamp_for_utc_queries(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+
+    event_id = emit_event(
+        conn,
+        event_type="finance.transactions_imported",
+        domain="finance",
+        occurred_at="2026-01-15T12:00:00-05:00",
+        entity_ref="batch-1",
+        source="finance.service",
+        payload=_imported_payload(),
+    )
+    conn.commit()
+
+    assert event_id is not None
+
+    row = conn.execute("SELECT occurred_at FROM events WHERE id = ?", (event_id,)).fetchone()
+    assert row["occurred_at"] == "2026-01-15T17:00:00Z"
+
+    events = query_events(
+        conn,
+        start="2026-01-15T17:00:00Z",
+        end="2026-01-15T17:00:01Z",
+        timezone=None,
+    )
+
+    assert [event.id for event in events] == [event_id]
+
+
 def test_query_events_filters_local_dates_in_new_york(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_event(

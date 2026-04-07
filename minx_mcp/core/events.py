@@ -83,6 +83,7 @@ def emit_event(
             return None
 
         validated = model.model_validate(payload)
+        normalized_occurred_at = _normalize_utc_timestamp(occurred_at)
         payload_json = json.dumps(validated.model_dump(mode="json"))
         recorded_at = _utc_now_isoformat()
         cursor = db.execute(
@@ -102,7 +103,7 @@ def emit_event(
             (
                 event_type,
                 domain,
-                occurred_at,
+                normalized_occurred_at,
                 recorded_at,
                 entity_ref,
                 source,
@@ -193,7 +194,10 @@ def _normalize_range(
     timezone_name: str | None,
 ) -> tuple[str | None, str | None]:
     if timezone_name is None:
-        return start, end
+        return (
+            _normalize_utc_timestamp(start) if start is not None else None,
+            _normalize_utc_timestamp(end) if end is not None else None,
+        )
 
     zone = ZoneInfo(timezone_name)
     start_utc = _local_date_to_utc_boundary(start, zone) if start is not None else None
@@ -212,6 +216,13 @@ def _local_date_to_utc_boundary(
     local_day = date.fromisoformat(value) + timedelta(days=add_days)
     local_midnight = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
     return local_midnight.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_utc_timestamp(value: str) -> str:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("UTC timestamp must include timezone information")
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _utc_now_isoformat() -> str:
