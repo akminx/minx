@@ -31,7 +31,21 @@ def test_database_bootstrap_creates_platform_and_finance_tables(tmp_path):
     assert "finance_transactions" in names
     assert "finance_transaction_dedupe" in names
     assert "finance_report_runs" in names
+    assert "events" in names
+    assert "insights" in names
     assert "v_finance_monthly_spend" in names
+
+
+def test_database_bootstrap_creates_core_indexes(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    indexes = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+    }
+
+    assert "idx_events_domain_type" in indexes
+    assert "idx_events_occurred" in indexes
+    assert "idx_insights_dedup" in indexes
 
 
 def test_migrations_are_idempotent(tmp_path):
@@ -40,7 +54,7 @@ def test_migrations_are_idempotent(tmp_path):
     first.close()
     second = get_connection(db_path)
     count = second.execute("SELECT COUNT(*) AS c FROM _migrations").fetchone()["c"]
-    assert count == 4
+    assert count == 5
 
 
 def test_finance_seed_rows_exist(tmp_path):
@@ -76,7 +90,7 @@ def test_apply_migrations_handles_plain_sqlite_connections(tmp_path):
     db_module.apply_migrations(conn)
 
     count = conn.execute("SELECT COUNT(*) FROM _migrations").fetchone()[0]
-    assert count == 4
+    assert count == 5
     assert conn.row_factory is original_row_factory
 
 
@@ -238,6 +252,8 @@ def test_built_wheel_includes_packaged_migrations(tmp_path):
     assert "minx_mcp/schema/migrations/001_platform.sql" in names
     assert "minx_mcp/schema/migrations/002_finance.sql" in names
     assert "minx_mcp/schema/migrations/003_finance_views.sql" in names
+    assert "minx_mcp/schema/migrations/004_finance_amount_cents.sql" in names
+    assert "minx_mcp/schema/migrations/005_core.sql" in names
 
 
 def test_missing_migrations_preserve_row_factory(tmp_path, monkeypatch):
