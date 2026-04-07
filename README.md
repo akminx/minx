@@ -28,6 +28,18 @@ python3 -m venv .venv
 .venv/bin/python -m minx_mcp.finance --transport http --host 127.0.0.1 --port 8000
 ```
 
+## Run core (daily review) over stdio
+
+```bash
+.venv/bin/python -m minx_mcp.core --transport stdio
+```
+
+## Run core over HTTP
+
+```bash
+.venv/bin/python -m minx_mcp.core --transport http --host 127.0.0.1 --port 8001
+```
+
 ## Default local paths
 
 - Database: `~/.minx/data/minx.db`
@@ -50,6 +62,7 @@ You can override these with:
 - Finance stores money internally as integer cents and renders dollars at the MCP/report boundary.
 - Weekly and monthly finance reports are generated with explicit lifecycle state in SQLite.
 - The daily review pipeline is implemented and covered by tests. If persisting detector insights to SQLite or writing the vault note fails after the in-memory review is built, `generate_daily_review` raises `ReviewDurabilityError` with the `DailyReview` on `exc.artifact` and per-sink failures on `exc.failures` (LLM timeouts/errors still fall back to the detector-only narrative and do not trigger this).
+- The Core MCP server exposes a `daily_review` tool that any harness can call. It returns the structured review artifact including the rendered markdown.
 
 ## Known limitations
 

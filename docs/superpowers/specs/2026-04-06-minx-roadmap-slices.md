@@ -10,7 +10,7 @@ Each slice gets its own spec, plan, and implementation cycle. Slices are ordered
 
 ## Slice 1: Event Pipeline + Daily Review
 
-**Status:** Spec drafted
+**Status:** Implemented
 **Spec:** [2026-04-06-slice1-event-pipeline-daily-review-design.md](2026-04-06-slice1-event-pipeline-daily-review-design.md)
 
 **Scope:**
@@ -27,10 +27,17 @@ Each slice gets its own spec, plan, and implementation cycle. Slices are ordered
 - Timezone preference for date filtering
 - Review idempotency (insight dedup + vault overwrite)
 - Quiet day handling
+- Core MCP server with `daily_review` tool (harness entry point)
 
-**Delivers:** First end-to-end cross-domain value. Hermes triggers a review and renders a structured artifact to Discord + vault.
+**Delivers:** First end-to-end cross-domain value. Any harness triggers a review via the Core MCP `daily_review` tool and renders a structured artifact to Discord + vault.
 
 **Dependencies:** None (builds on existing Finance MCP + shared platform)
+
+**Implementation notes:**
+- Insight dedup uses `(review_date, insight_type, dedupe_key)` instead of the spec's `(review_date, insight_type, summary)`. `dedupe_key` is an explicit field on `InsightCandidate`, giving callers control over identity rather than relying on summary text.
+- Finance read API exposes `get_import_job_issues()` (covering both failed and stale jobs) instead of the spec's `get_failed_imports()`.
+- The `insights` table omits `event_count` from the spec; dedup is handled entirely through `dedupe_key`.
+- `ReviewDurabilityError` provides partial-failure semantics: if the in-memory review is built but a durability sink (detector DB write or vault note) fails, the error carries the artifact on `exc.artifact` and per-sink details on `exc.failures`.
 
 ---
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from sqlite3 import Connection
 
@@ -13,6 +12,7 @@ from minx_mcp.finance.import_models import ParsedImportBatch, ParsedTransaction
 from minx_mcp.finance.import_workflow import run_finance_import
 from minx_mcp.finance.report_orchestration import run_monthly_report, run_weekly_report
 from minx_mcp.jobs import get_job
+from minx_mcp.time_utils import utc_now_isoformat
 from minx_mcp.vault_writer import VaultWriter
 
 EVENT_SOURCE = "finance.service"
@@ -272,7 +272,7 @@ class FinanceService:
             self.conn,
             event_type=event_type,
             domain="finance",
-            occurred_at=_utc_now_isoformat(),
+            occurred_at=utc_now_isoformat(),
             entity_ref=entity_ref,
             source=EVENT_SOURCE,
             payload=payload,
@@ -295,9 +295,3 @@ class FinanceService:
         return int(row["total_cents"])
 
 
-def _utc_now_isoformat() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="microseconds")
-        .replace("+00:00", "Z")
-    )

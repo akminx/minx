@@ -140,6 +140,6 @@ class ReviewDurabilityError(Exception):
 @dataclass(frozen=True)
 class ReviewContext:
     db_path: str | Path
-    finance_api: FinanceReadInterface
+    finance_api: FinanceReadInterface | None
     vault_writer: VaultWriterLike
     llm: LLMInterface | None = None
