@@ -1,15 +1,32 @@
 # Project Handoff
 
-Status as of 2026-04-07: the repository is in a publishable, verified state on `main`, and that branch has been pushed to `origin` at commit `831bee5` (`chore: stabilize project for publish`).
+Status as of 2026-04-07: Slice 1 (Event Pipeline + Daily Review) is implemented and verified. The project is ready for Slice 2 (Goals + Deeper Detection).
 
 ## Current State
 
-- Local checkout: clean on `main`
+- Local checkout: `main`
 - Remote: `origin` -> `https://github.com/akminx/minx.git`
-- Pushed commit: `831bee5c092428defbbf3d18ae67e39412f1b7ae`
-- Preserved local-only docs backup branch: `codex/local-docs-backup`
+- Slice 1: Implemented (see roadmap doc for implementation notes)
+- Slice 2+: Not started
 
 ## What Shipped
+
+### Slice 1 stabilization pass
+
+Shared time utilities:
+- `minx_mcp/time_utils.py` — single source for UTC timestamp formatting
+
+Core MCP server:
+- `minx_mcp/core/server.py` — `daily_review` tool, harness-facing entry point
+- `minx_mcp/core/__main__.py` — `python -m minx_mcp.core` runner
+
+Project-wide typing:
+- `pyproject.toml` — mypy now covers the full `minx_mcp` package (was 18-file whitelist)
+
+Documentation reconciliation:
+- `docs/superpowers/specs/2026-04-06-minx-roadmap-slices.md` — Slice 1 marked implemented with implementation notes documenting spec divergences
+
+### Previously shipped (pre-stabilization)
 
 Core finance/report stabilization:
 - `minx_mcp/finance/service.py`
@@ -29,56 +46,45 @@ Runtime and filesystem hardening:
 - `minx_mcp/transport.py`
 - `minx_mcp/jobs.py`
 
-Documentation and verification config:
-- `README.md`
-- `pyproject.toml`
-- `HANDOFF.md`
-
-Regression coverage:
-- `tests/test_db.py`
-- `tests/test_finance_parsers.py`
-- `tests/test_finance_reports.py`
-- `tests/test_report_lifecycle.py`
-- `tests/test_transport.py`
-- `tests/test_vault_writer.py`
-
-## Important Behavior In Place
-
-- Report generation now has explicit lifecycle state in SQLite: `pending`, `completed`, and `failed`.
-- Report runs are deduplicated by `(report_kind, period_start, period_end)` instead of allowing ambiguous duplicate bookkeeping rows.
-- If report generation fails after the markdown artifact is written but before durable DB completion, the run is marked failed and the artifact is cleaned up on a best-effort basis.
-- Vault markdown writes are now atomic via temp-file-plus-rename.
-- Finance parser and importer internals use typed models instead of broad `dict[str, object]` payloads.
-- Weekly and monthly report building now uses typed summary models internally and only converts to dicts at response/storage boundaries.
-- HTTP transport shutdown treats `KeyboardInterrupt` as a clean exit path.
-- Job submission now raises clearly if a just-created job cannot be reloaded, instead of assuming that invariant silently holds.
+Event pipeline and Minx Core:
+- `minx_mcp/core/events.py`
+- `minx_mcp/core/models.py`
+- `minx_mcp/core/read_models.py`
+- `minx_mcp/core/detectors.py`
+- `minx_mcp/core/review.py`
+- `minx_mcp/core/llm.py`
+- `minx_mcp/finance/read_api.py`
 
 ## Verification
 
-Latest verification on the shipped state:
+Latest verification:
 - command: `.venv/bin/python -m pytest tests/ -q`
-- result: `182 passed`
+- result: `197 passed`
 - command: `.venv/bin/python -m mypy`
-- result: `Success: no issues found in 9 source files`
-- command: `.venv/bin/python -m pip install -e '.[dev]'`
-- result: passed
-- command: finance runtime startup smoke checks over stdio and HTTP
-- result: both startup modes worked, and HTTP shutdown via Ctrl-C exited cleanly
+- result: `Success: no issues found in 44 source files`
 
-## Operational Notes
+## Known Limitations
 
-- The README now documents setup, env overrides, startup commands, and the verified local workflow.
-- The primary checkout is intentionally clean on `main`.
-- Older local planning/docs work that was not meant for publish was preserved on `codex/local-docs-backup` rather than mixed into `main`.
-- The GitHub PAT used for push was pasted into this thread, so it should be revoked and replaced after confirming the remote state is correct.
+- This is still a local single-user tool. There is no auth, multi-user coordination, or remote durability story beyond local SQLite and the filesystem.
+- Report generation and daily review pipeline are not globally atomic across SQLite and the vault filesystem.
+- The LLM provider registry (`_PROVIDER_BUILDERS`) has no registered providers. The fallback (detector-only) path works; wiring a real LLM provider should happen during or before Slice 2.
+- Live runtime smoke checks for the Core MCP server are not yet automated.
 
-## Remaining Caveats
+## Slice 2 Cleanup Queue
 
-- Normal finance imports now stream into a hashed snapshot before parse instead of fully buffering the source file in memory.
-- Import callers and automations still need to stage files under the configured staging/import root.
-- Live runtime smoke checks were run manually; they are not yet automated as a dedicated end-to-end test.
-- Parser deduplication/shared abstractions across multiple CSV sources can still be improved later if more source formats are added.
+Fix early in Slice 2 (before adding goal infrastructure):
+
+- **Make `daily_review` tool async.** `minx_mcp/core/server.py` creates and tears down a new `asyncio` event loop per tool call. If FastMCP supports async tool handlers, make the tool async directly. Otherwise use `asyncio.get_event_loop()` with a fallback to `new_event_loop()` only when no loop is running.
+- **Wire at least one real LLM provider.** `_PROVIDER_BUILDERS` in `minx_mcp/core/llm.py` is empty. The fallback path works, but the LLM-enriched path has never been exercised with a real provider. Slice 2 makes the LLM path more important for goal-aware narration.
+
+Fix when convenient (not blocking):
+
+- **Add `tests/conftest.py` with shared test fixtures.** `test_review.py`, `test_read_models.py`, and `test_core_server.py` all independently define seed helpers (`_seed_event`, `_finance_api_with_attention_items`, etc.). Extract common helpers before Slice 2 adds goal-related tests and the duplication grows.
+- **Add direct unit tests for `time_utils.py`.** Currently tested indirectly through `test_events.py`. Missing coverage for edge cases: naive timestamps (no tzinfo) passed to `normalize_utc_timestamp`, and timestamps with non-UTC offsets.
+- **Add tests for `transport.py`.** The `ValueError` path in `build_transport_config` for unsupported transports is untested. Low risk given the module is 19 lines.
+- **Align `FinanceServiceLike` Protocol with actual signature.** `finance/server.py` Protocol omits the `mapping` parameter that `FinanceService.finance_import` accepts. Works at runtime because `mapping` has a default, but it's spec drift.
+- **Decide on `document_text.py`.** `extract_text` shells out to a `LiteParse` binary. No tests, no callers. If future infrastructure, mark it as such. If dead code, remove it.
 
 ## Suggested Next Step
 
-Use the pushed `main` branch as the new baseline. The next highest-value cleanup is deeper simplification of finance parsing/import ergonomics only if new real usage exposes friction; the project is already in a stable enough state to use now.
+Begin Slice 2: Goals + Deeper Detection. The event contract, read model builders, detector registry, review pipeline, and Core MCP server are all in place as foundations.

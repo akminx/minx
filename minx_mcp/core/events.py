@@ -4,11 +4,13 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+
+from minx_mcp.time_utils import format_utc_timestamp, normalize_utc_timestamp, utc_now_isoformat
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +85,9 @@ def emit_event(
             return None
 
         validated = model.model_validate(payload)
-        normalized_occurred_at = _normalize_utc_timestamp(occurred_at)
+        normalized_occurred_at = normalize_utc_timestamp(occurred_at)
         payload_json = json.dumps(validated.model_dump(mode="json"))
-        recorded_at = _utc_now_isoformat()
+        recorded_at = utc_now_isoformat()
         cursor = db.execute(
             """
             INSERT INTO events (
@@ -195,8 +197,8 @@ def _normalize_range(
 ) -> tuple[str | None, str | None]:
     if timezone_name is None:
         return (
-            _normalize_utc_timestamp(start) if start is not None else None,
-            _normalize_utc_timestamp(end) if end is not None else None,
+            normalize_utc_timestamp(start) if start is not None else None,
+            normalize_utc_timestamp(end) if end is not None else None,
         )
 
     zone = ZoneInfo(timezone_name)
@@ -215,23 +217,6 @@ def _local_date_to_utc_boundary(
 ) -> str:
     local_day = date.fromisoformat(value) + timedelta(days=add_days)
     local_midnight = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
-    return _format_utc_timestamp(local_midnight)
+    return format_utc_timestamp(local_midnight)
 
 
-def _normalize_utc_timestamp(value: str) -> str:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        raise ValueError("UTC timestamp must include timezone information")
-    return _format_utc_timestamp(parsed)
-
-
-def _utc_now_isoformat() -> str:
-    return _format_utc_timestamp(datetime.now(timezone.utc))
-
-
-def _format_utc_timestamp(value: datetime) -> str:
-    return (
-        value.astimezone(timezone.utc)
-        .isoformat(timespec="microseconds")
-        .replace("+00:00", "Z")
-    )

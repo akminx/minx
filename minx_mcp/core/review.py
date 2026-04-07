@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 from sqlite3 import Connection
 
@@ -13,6 +12,7 @@ from minx_mcp.core.llm import LLMError, create_llm
 from minx_mcp.core.models import (
     DailyReview,
     DurabilitySinkFailure,
+    FinanceReadInterface,
     InsightCandidate,
     ReadModels,
     ReviewContext,
@@ -22,6 +22,7 @@ from minx_mcp.core.read_models import build_read_models
 from minx_mcp.db import get_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
 from minx_mcp.money import format_cents
+from minx_mcp.time_utils import utc_now_isoformat
 
 logger = logging.getLogger(__name__)
 
@@ -174,11 +175,7 @@ def render_daily_review_markdown(review: DailyReview) -> str:
     focus_lines = (
         [f"- {item}" for item in review.next_day_focus] or ["- None."]
     )
-    generated_at = (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z")
-    )
+    generated_at = utc_now_isoformat(timespec="seconds")
 
     return "\n".join(
         [
@@ -289,9 +286,11 @@ def _format_insight_line(insight: InsightCandidate) -> str:
     )
 
 
-def _resolve_finance_api(conn: Connection, finance_api):
-    # Rebind the default concrete API to the review connection so one run sees one DB snapshot.
-    if isinstance(finance_api, FinanceReadAPI):
+def _resolve_finance_api(
+    conn: Connection,
+    finance_api: FinanceReadInterface | None,
+) -> FinanceReadInterface:
+    if finance_api is None:
         return FinanceReadAPI(conn)
     return finance_api
 
