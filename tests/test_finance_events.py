@@ -240,7 +240,7 @@ def test_finance_import_rollback_does_not_leave_committed_event(tmp_path, monkey
         assert len(query_events(conn, event_type="finance.transactions_imported")) == 1
         raise RuntimeError("commit blocked")
 
-    monkeypatch.setattr("minx_mcp.finance.service.mark_completed", fail_before_commit)
+    monkeypatch.setattr("minx_mcp.finance.import_workflow.mark_completed", fail_before_commit)
 
     with pytest.raises(RuntimeError, match="commit blocked"):
         service.finance_import(str(source), account_name="DCU", source_kind="dcu_csv")
@@ -258,7 +258,7 @@ def test_report_generation_rollback_does_not_leave_committed_event(tmp_path, mon
         assert len(query_events(conn, event_type="finance.report_generated")) == 1
         raise RuntimeError("persist blocked")
 
-    monkeypatch.setattr("minx_mcp.finance.service.persist_report_run", fail_before_commit)
+    monkeypatch.setattr("minx_mcp.finance.report_orchestration.persist_report_run", fail_before_commit)
 
     with pytest.raises(RuntimeError, match="persist blocked"):
         service.generate_weekly_report("2026-03-02", "2026-03-08")

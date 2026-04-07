@@ -34,14 +34,25 @@ include = ["minx_mcp*"]
 [tool.mypy]
 python_version = "3.12"
 files = [
-  "minx_mcp/jobs.py",
-  "minx_mcp/finance/server.py",
+  "minx_mcp/core/events.py",
+  "minx_mcp/core/models.py",
+  "minx_mcp/core/read_models.py",
+  "minx_mcp/core/review.py",
+  "minx_mcp/db.py",
   "minx_mcp/finance/analytics.py",
   "minx_mcp/finance/import_models.py",
   "minx_mcp/finance/importers.py",
+  "minx_mcp/finance/import_workflow.py",
+  "minx_mcp/finance/read_api.py",
+  "minx_mcp/finance/report_builders.py",
+  "minx_mcp/finance/report_orchestration.py",
   "minx_mcp/finance/report_models.py",
+  "minx_mcp/finance/report_persistence.py",
+  "minx_mcp/finance/report_rendering.py",
   "minx_mcp/finance/reports.py",
+  "minx_mcp/finance/server.py",
   "minx_mcp/finance/service.py",
+  "minx_mcp/jobs.py",
   "minx_mcp/vault_writer.py",
 ]
 check_untyped_defs = true

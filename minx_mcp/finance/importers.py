@@ -20,6 +20,24 @@ SUPPORTED_SOURCE_KINDS = (
     "generic_csv",
 )
 
+_READ_CHUNK = 64 * 1024
+
+
+def stream_snapshot_copy_and_hash(source_path: Path, dest_path: Path) -> str:
+    """Copy ``source_path`` to ``dest_path`` in chunks while hashing the bytes written.
+
+    Returns the SHA-256 hex digest of the copied bytes. Does not load the full file into memory.
+    """
+    digest = hashlib.sha256()
+    with source_path.open("rb") as src, dest_path.open("wb") as dst:
+        while True:
+            chunk = src.read(_READ_CHUNK)
+            if not chunk:
+                break
+            digest.update(chunk)
+            dst.write(chunk)
+    return digest.hexdigest()
+
 
 def detect_source_kind(path: Path) -> str:
     name = path.name.lower()
@@ -34,6 +52,31 @@ def detect_source_kind(path: Path) -> str:
     raise InvalidInputError(f"Could not detect finance source for {path}")
 
 
+def _parse_kind_from_snapshot(
+    snapshot_path: Path,
+    account_name: str,
+    kind: str,
+    mapping: dict[str, object] | GenericCSVMapping | None,
+) -> ParsedImportBatch:
+    if kind == "robinhood_csv":
+        return parse_robinhood_csv(snapshot_path, account_name)
+    if kind == "dcu_csv":
+        return parse_dcu_csv(snapshot_path, account_name)
+    if kind == "dcu_pdf":
+        return parse_dcu_pdf(snapshot_path, account_name)
+    if kind == "discover_pdf":
+        return parse_discover_pdf(snapshot_path, account_name)
+    if kind == "generic_csv":
+        if not mapping:
+            raise InvalidInputError("generic_csv requires a saved mapping")
+        return parse_generic_csv(
+            snapshot_path,
+            account_name,
+            GenericCSVMapping.from_value(mapping),
+        )
+    raise InvalidInputError(f"Unsupported finance source kind: {kind}")
+
+
 def parse_source_file(
     path: Path,
     account_name: str,
@@ -42,35 +85,43 @@ def parse_source_file(
     *,
     file_bytes: bytes | None = None,
     content_hash: str | None = None,
+    snapshot_path: Path | None = None,
 ) -> ParsedImportBatch:
-    if file_bytes is None:
-        file_bytes = path.read_bytes()
-    if content_hash is None:
-        content_hash = hashlib.sha256(file_bytes).hexdigest()
+    if file_bytes is not None and snapshot_path is not None:
+        raise InvalidInputError("cannot pass both file_bytes and snapshot_path")
 
-    kind = source_kind or detect_source_kind(path)
+    if snapshot_path is not None:
+        if content_hash is None:
+            raise InvalidInputError("content_hash is required when snapshot_path is set")
+        kind = source_kind or detect_source_kind(path)
+        result = _parse_kind_from_snapshot(snapshot_path, account_name, kind, mapping)
+        _validate_parsed_transactions(result)
+        return replace(
+            result,
+            source_ref=str(path.resolve()),
+            raw_fingerprint=content_hash,
+        )
+
+    if file_bytes is not None:
+        if content_hash is None:
+            content_hash = hashlib.sha256(file_bytes).hexdigest()
+        with TemporaryDirectory() as temp_dir:
+            sp = Path(temp_dir) / path.name
+            sp.write_bytes(file_bytes)
+            kind = source_kind or detect_source_kind(path)
+            result = _parse_kind_from_snapshot(sp, account_name, kind, mapping)
+        _validate_parsed_transactions(result)
+        return replace(
+            result,
+            source_ref=str(path.resolve()),
+            raw_fingerprint=content_hash,
+        )
+
     with TemporaryDirectory() as temp_dir:
-        snapshot_path = Path(temp_dir) / path.name
-        snapshot_path.write_bytes(file_bytes)
-
-        if kind == "robinhood_csv":
-            result = parse_robinhood_csv(snapshot_path, account_name)
-        elif kind == "dcu_csv":
-            result = parse_dcu_csv(snapshot_path, account_name)
-        elif kind == "dcu_pdf":
-            result = parse_dcu_pdf(snapshot_path, account_name)
-        elif kind == "discover_pdf":
-            result = parse_discover_pdf(snapshot_path, account_name)
-        elif kind == "generic_csv":
-            if not mapping:
-                raise InvalidInputError("generic_csv requires a saved mapping")
-            result = parse_generic_csv(
-                snapshot_path,
-                account_name,
-                GenericCSVMapping.from_value(mapping),
-            )
-        else:
-            raise InvalidInputError(f"Unsupported finance source kind: {kind}")
+        sp = Path(temp_dir) / path.name
+        content_hash = stream_snapshot_copy_and_hash(path, sp)
+        kind = source_kind or detect_source_kind(path)
+        result = _parse_kind_from_snapshot(sp, account_name, kind, mapping)
 
     _validate_parsed_transactions(result)
     return replace(

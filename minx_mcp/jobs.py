@@ -4,7 +4,15 @@ import json
 import uuid
 from sqlite3 import Connection, IntegrityError, Row
 
+from minx_mcp.contracts import NotFoundError
+
 STUCK_JOB_TIMEOUT_MINUTES = 30
+
+
+def _require_job_row(conn: Connection, job_id: str) -> None:
+    row = conn.execute("SELECT 1 FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    if row is None:
+        raise NotFoundError(f"Unknown job id: {job_id}")
 
 
 def submit_job(
@@ -92,6 +100,7 @@ def mark_completed(conn: Connection, job_id: str, result: dict[str, object], *, 
 
 
 def mark_failed(conn: Connection, job_id: str, message: str, *, commit: bool = True) -> None:
+    _require_job_row(conn, job_id)
     conn.execute(
         """
         UPDATE jobs
@@ -117,6 +126,7 @@ def get_job(conn: Connection, job_id: str) -> dict[str, object | None] | None:
 
 
 def _set_status(conn: Connection, job_id: str, status: str, result_json: str | None, *, commit: bool = True) -> None:
+    _require_job_row(conn, job_id)
     conn.execute(
         """
         UPDATE jobs

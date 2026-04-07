@@ -72,3 +72,22 @@ def test_write_markdown_avoids_direct_write_to_target_path(tmp_path, monkeypatch
 
     assert path == target
     assert path.read_text() == "new"
+
+
+def test_replace_section_avoids_direct_write_to_target_path(tmp_path, monkeypatch):
+    writer = VaultWriter(tmp_path, ("Finance",))
+    writer.write_markdown("Finance/report.md", "# Doc\n\n## Section\n\nold\n")
+    target = (tmp_path / "Finance" / "report.md").resolve()
+    original_write_text = Path.write_text
+
+    def guarded_write_text(self: Path, content: str, *args, **kwargs):
+        if self.resolve() == target:
+            raise AssertionError("target path was written directly")
+        return original_write_text(self, content, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", guarded_write_text)
+
+    path = writer.replace_section("Finance/report.md", "Section", "new body")
+
+    assert path == target
+    assert "new body" in path.read_text()

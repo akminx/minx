@@ -1,8 +1,11 @@
+import hashlib
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from minx_mcp.contracts import InvalidInputError
+from minx_mcp.finance import importers
 from minx_mcp.finance.import_models import ParsedImportBatch
 from minx_mcp.finance.importers import detect_source_kind, parse_source_file
 from minx_mcp.finance.parsers.dcu import parse_dcu_csv
@@ -16,6 +19,76 @@ def test_detect_robinhood_csv(tmp_path):
         "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     assert detect_source_kind(path) == "robinhood_csv"
+
+
+def test_stream_snapshot_copy_and_hash_reads_in_chunks(tmp_path, monkeypatch):
+    chunk_size = importers._READ_CHUNK
+    payload = b"x" * chunk_size + b"y" * chunk_size + b"tail"
+    source = tmp_path / "source.bin"
+    dest = tmp_path / "snapshot.bin"
+    source.write_bytes(payload)
+
+    requests: list[int] = []
+    returns: list[int] = []
+    real_open = Path.open
+
+    class RecordingReader:
+        def __init__(self, data: bytes) -> None:
+            self._data = data
+            self._offset = 0
+
+        def __enter__(self) -> "RecordingReader":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def read(self, size: int = -1) -> bytes:
+            requests.append(size)
+            if size <= 0:
+                raise AssertionError("expected fixed-size chunk reads")
+            start = self._offset
+            end = min(start + size, len(self._data))
+            self._offset = end
+            chunk = self._data[start:end]
+            returns.append(len(chunk))
+            return chunk
+
+    def patched_open(self: Path, mode: str = "r", *args, **kwargs):
+        if self == source and mode == "rb":
+            return RecordingReader(payload)
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", patched_open)
+
+    content_hash = importers.stream_snapshot_copy_and_hash(source, dest)
+
+    assert requests == [chunk_size, chunk_size, chunk_size, chunk_size]
+    assert returns == [chunk_size, chunk_size, 4, 0]
+    assert dest.read_bytes() == payload
+    assert content_hash == hashlib.sha256(payload).hexdigest()
+
+
+def test_parse_source_file_streams_without_read_bytes_on_source(tmp_path):
+    path = tmp_path / "free checking transactions.csv"
+    path.write_text(
+        "Date,Description,Transaction Type,Amount\n"
+        "2026-03-01,Payroll,Deposit,1200.00\n"
+        "2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
+    real_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(self: Path) -> bytes:
+        try:
+            if self.resolve() == path.resolve():
+                raise AssertionError("parse_source_file must stream the source, not read_bytes()")
+        except OSError:
+            pass
+        return real_read_bytes(self)
+
+    with patch.object(Path, "read_bytes", guarded_read_bytes):
+        parsed = parse_source_file(path, account_name="DCU")
+    assert parsed.transactions[1].merchant == "H-E-B"
 
 
 def test_parse_dcu_csv(tmp_path):

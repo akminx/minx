@@ -10,7 +10,16 @@ from pathlib import Path
 import pytest
 
 from minx_mcp import db as db_module
-from minx_mcp.db import get_connection
+from minx_mcp.db import get_connection, migration_dir
+
+
+def test_migration_dir_points_at_packaged_minx_mcp_schema_migrations() -> None:
+    """Runtime migrations always load from the package tree next to db.py (wheel or source)."""
+    expected = Path(db_module.__file__).resolve().parent / "schema" / "migrations"
+    assert migration_dir() == expected
+    assert expected.is_dir()
+    sql_files = sorted(path.name for path in expected.glob("*.sql"))
+    assert sql_files, "packaged migrations directory must contain .sql files"
 
 
 def test_database_bootstrap_creates_platform_and_finance_tables(tmp_path):
@@ -402,6 +411,8 @@ def test_source_and_packaged_migrations_match():
     project_root = Path(__file__).resolve().parent.parent
     source_root = project_root / "schema" / "migrations"
     packaged_root = project_root / "minx_mcp" / "schema" / "migrations"
+    # apply_migrations / get_connection read from the packaged tree only.
+    assert migration_dir().resolve() == packaged_root.resolve()
     source_files = sorted(path.name for path in source_root.glob("*.sql"))
     packaged_files = sorted(path.name for path in packaged_root.glob("*.sql"))
 

@@ -11,6 +11,7 @@ from minx_mcp.core.models import (
     InsightCandidate,
     LLMReviewResult,
     ReviewContext,
+    ReviewDurabilityError,
 )
 from minx_mcp.db import get_connection
 from minx_mcp.finance.read_api import (
@@ -363,7 +364,7 @@ async def test_generate_daily_review_raises_when_finance_read_api_fails(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_generate_daily_review_logs_vault_write_failure_and_still_returns(
+async def test_generate_daily_review_raises_durability_error_when_vault_write_fails(
     tmp_path,
     caplog,
 ):
@@ -378,18 +379,107 @@ async def test_generate_daily_review_logs_vault_write_failure_and_still_returns(
 
     from minx_mcp.core.review import generate_daily_review
 
-    artifact = await generate_daily_review(
-        "2026-03-15",
-        ReviewContext(
-            db_path=db_path,
-            finance_api=_finance_api_with_attention_items(),
-            vault_writer=BrokenVaultWriter(),
-            llm=None,
-        ),
-    )
+    with pytest.raises(ReviewDurabilityError) as excinfo:
+        await generate_daily_review(
+            "2026-03-15",
+            ReviewContext(
+                db_path=db_path,
+                finance_api=_finance_api_with_attention_items(),
+                vault_writer=BrokenVaultWriter(),
+                llm=None,
+            ),
+        )
 
-    assert artifact.date == "2026-03-15"
+    err = excinfo.value
+    assert err.artifact.date == "2026-03-15"
+    assert len(err.failures) == 1
+    assert err.failures[0].sink == "vault_note"
+    assert isinstance(err.failures[0].error, OSError)
+    persisted = _read_persisted_insights(db_path)
+    assert len(persisted) == 4
+    assert {row["source"] for row in persisted} == {"detector"}
     assert "disk full" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_generate_daily_review_raises_durability_error_when_detector_persistence_fails(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    _seed_event(conn, occurred_at="2026-03-15T15:00:00Z")
+    conn.commit()
+
+    import minx_mcp.core.review as review
+
+    monkeypatch.setattr(review, "create_llm", lambda config=None, db_path=None: None)
+
+    def boom_insert(conn, review_date, insights):
+        raise RuntimeError("insert failed")
+
+    monkeypatch.setattr(review, "_insert_detector_insights", boom_insert)
+
+    vault_root = tmp_path / "vault"
+    with pytest.raises(ReviewDurabilityError) as excinfo:
+        await review.generate_daily_review(
+            "2026-03-15",
+            ReviewContext(
+                db_path=db_path,
+                finance_api=_finance_api_with_attention_items(),
+                vault_writer=VaultWriter(vault_root, ("Minx",)),
+                llm=None,
+            ),
+        )
+
+    err = excinfo.value
+    assert err.artifact.date == "2026-03-15"
+    assert len(err.failures) == 1
+    assert err.failures[0].sink == "detector_insights"
+    assert "insert failed" in caplog.text
+    assert _read_persisted_insights(db_path) == []
+    note_path = vault_root / "Minx" / "Reviews" / "2026-03-15-daily-review.md"
+    assert note_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_generate_daily_review_durability_error_lists_multiple_sink_failures(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    _seed_event(conn, occurred_at="2026-03-15T15:00:00Z")
+    conn.commit()
+
+    class BrokenVaultWriter:
+        def write_markdown(self, relative_path: str, content: str) -> Path:
+            raise OSError("vault boom")
+
+    import minx_mcp.core.review as review
+
+    monkeypatch.setattr(review, "create_llm", lambda config=None, db_path=None: None)
+
+    def boom_insert(conn, review_date, insights):
+        raise RuntimeError("db boom")
+
+    monkeypatch.setattr(review, "_insert_detector_insights", boom_insert)
+
+    with pytest.raises(ReviewDurabilityError) as excinfo:
+        await review.generate_daily_review(
+            "2026-03-15",
+            ReviewContext(
+                db_path=db_path,
+                finance_api=_finance_api_with_attention_items(),
+                vault_writer=BrokenVaultWriter(),
+                llm=None,
+            ),
+        )
+
+    assert len(excinfo.value.failures) == 2
+    sinks = {f.sink for f in excinfo.value.failures}
+    assert sinks == {"detector_insights", "vault_note"}
 
 
 @pytest.mark.asyncio
@@ -483,21 +573,23 @@ async def test_generate_daily_review_force_true_preserves_prior_rows_when_replac
 
     monkeypatch.setattr(review, "_insert_detector_insights", fail_insert)
 
-    artifact = await review.generate_daily_review(
-        "2026-03-15",
-        ReviewContext(
-            db_path=db_path,
-            finance_api=_finance_api_without_open_loops(),
-            vault_writer=VaultWriter(tmp_path / "vault", ("Minx",)),
-            llm=None,
-        ),
-        force=True,
-    )
+    with pytest.raises(ReviewDurabilityError) as excinfo:
+        await review.generate_daily_review(
+            "2026-03-15",
+            ReviewContext(
+                db_path=db_path,
+                finance_api=_finance_api_without_open_loops(),
+                vault_writer=VaultWriter(tmp_path / "vault", ("Minx",)),
+                llm=None,
+            ),
+            force=True,
+        )
 
     after = _read_persisted_insights(db_path)
-    assert artifact.date == "2026-03-15"
+    assert excinfo.value.artifact.date == "2026-03-15"
     assert before == after
     assert "replace failed" in caplog.text
+    assert excinfo.value.failures[0].sink == "detector_insights"
 
 
 class _StaticLLM:

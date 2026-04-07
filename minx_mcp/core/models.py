@@ -112,6 +112,32 @@ class DailyReview:
 
 
 @dataclass(frozen=True)
+class DurabilitySinkFailure:
+    """One failed durability step in the daily review pipeline."""
+
+    sink: str
+    error: Exception
+
+
+class ReviewDurabilityError(Exception):
+    """Raised when the in-memory review was built but a durability sink failed.
+
+    ``artifact`` holds the generated review; callers may log, retry, or surface it.
+    ``failures`` lists each sink that failed (e.g. detector DB write, vault note).
+    """
+
+    def __init__(
+        self,
+        artifact: DailyReview,
+        failures: tuple[DurabilitySinkFailure, ...] | list[DurabilitySinkFailure],
+    ) -> None:
+        self.artifact = artifact
+        self.failures = tuple(failures)
+        sinks = ", ".join(f.sink for f in self.failures)
+        super().__init__(f"Daily review durability failed ({sinks})")
+
+
+@dataclass(frozen=True)
 class ReviewContext:
     db_path: str | Path
     finance_api: FinanceReadInterface

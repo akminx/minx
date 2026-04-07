@@ -10,7 +10,14 @@ from sqlite3 import Connection
 
 from minx_mcp.core.detectors import DETECTORS
 from minx_mcp.core.llm import LLMError, create_llm
-from minx_mcp.core.models import DailyReview, InsightCandidate, ReadModels, ReviewContext
+from minx_mcp.core.models import (
+    DailyReview,
+    DurabilitySinkFailure,
+    InsightCandidate,
+    ReadModels,
+    ReviewContext,
+    ReviewDurabilityError,
+)
 from minx_mcp.core.read_models import build_read_models
 from minx_mcp.db import get_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
@@ -32,6 +39,13 @@ async def generate_daily_review(
     ctx: ReviewContext,
     force: bool = False,
 ) -> DailyReview:
+    """Build and durably persist a daily review.
+
+    Returns the in-memory artifact only when detector insight persistence and
+    vault note writing both succeed. Raises `ReviewDurabilityError` after the
+    artifact is built if either durability step fails; callers can inspect
+    `exc.artifact` and `exc.failures`.
+    """
     conn = get_connection(Path(ctx.db_path))
     try:
         read_models = _build_review_models(conn, date, ctx)
@@ -83,10 +97,13 @@ async def generate_daily_review(
             llm_enriched=llm_enriched,
         )
 
+        failures: list[DurabilitySinkFailure] = []
+
         try:
             _persist_detector_insights(conn, date, detector_insights, force=force)
         except Exception as exc:
             logger.warning("Detector insight persistence failed for %s: %s", date, exc)
+            failures.append(DurabilitySinkFailure("detector_insights", exc))
 
         try:
             ctx.vault_writer.write_markdown(
@@ -95,6 +112,10 @@ async def generate_daily_review(
             )
         except Exception as exc:
             logger.warning("Vault write failed for %s: %s", date, exc)
+            failures.append(DurabilitySinkFailure("vault_note", exc))
+
+        if failures:
+            raise ReviewDurabilityError(artifact, failures)
 
         return artifact
     finally:

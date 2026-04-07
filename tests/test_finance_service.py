@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from minx_mcp.contracts import InvalidInputError, NotFoundError
@@ -111,11 +113,37 @@ def test_import_job_is_idempotent_across_case_only_aliases(tmp_path):
     assert first["job_id"] == second["job_id"]
 
 
+def test_finance_import_normal_path_does_not_read_source_via_read_bytes(tmp_path, monkeypatch):
+    """Import should stream the source file, not load it entirely via Path.read_bytes()."""
+    real_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(self: Path) -> bytes:
+        try:
+            if self.resolve() == (tmp_path / "robinhood_transactions.csv").resolve():
+                raise AssertionError(
+                    "finance import must not use Path.read_bytes() on the source file"
+                )
+        except OSError:
+            pass
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+
+    source = tmp_path / "robinhood_transactions.csv"
+    source.write_text(
+        "Date,Time,Cardholder,Card,Amount,Description\n"
+        "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
+    )
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    result = service.finance_import(str(source), account_name="Robinhood Gold")
+    assert result["result"]["inserted"] == 1
+
+
 def test_import_uses_hashed_file_snapshot_for_parse(tmp_path, monkeypatch):
     import hashlib
 
     from minx_mcp.finance import importers as importers_module
-    from minx_mcp.finance import service as service_module
+    from minx_mcp.finance import import_workflow as import_workflow_module
 
     original_contents = (
         "Date,Time,Cardholder,Card,Amount,Description\n"
@@ -137,6 +165,7 @@ def test_import_uses_hashed_file_snapshot_for_parse(tmp_path, monkeypatch):
         *,
         file_bytes=None,
         content_hash=None,
+        snapshot_path=None,
     ):
         path.write_text(mutated_contents)
         return importers_module.parse_source_file(
@@ -146,9 +175,10 @@ def test_import_uses_hashed_file_snapshot_for_parse(tmp_path, monkeypatch):
             mapping,
             file_bytes=file_bytes,
             content_hash=content_hash,
+            snapshot_path=snapshot_path,
         )
 
-    monkeypatch.setattr(service_module, "parse_source_file", mutate_before_parse)
+    monkeypatch.setattr(import_workflow_module, "parse_source_file", mutate_before_parse)
 
     result = service.finance_import(str(source), account_name="Robinhood Gold")
     batch = service.conn.execute(
@@ -357,6 +387,30 @@ def test_service_import_rejects_paths_outside_allowed_import_root(tmp_path):
 
     with pytest.raises(InvalidInputError, match="source_ref must be inside the allowed import root"):
         service.finance_import(str(outside_source), account_name="DCU")
+
+
+def test_service_import_rejects_unsupported_explicit_source_kind_before_job_creation(tmp_path):
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n"
+        "2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+
+    with pytest.raises(InvalidInputError, match="Unsupported finance source kind: not_a_real_kind"):
+        service.finance_import(
+            str(source),
+            account_name="DCU",
+            source_kind="not_a_real_kind",
+        )
+
+    job_count = service.conn.execute("SELECT COUNT(*) AS count FROM jobs").fetchone()["count"]
+    batch_count = service.conn.execute(
+        "SELECT COUNT(*) AS count FROM finance_import_batches"
+    ).fetchone()["count"]
+
+    assert job_count == 0
+    assert batch_count == 0
 
 
 def test_service_get_job_raises_not_found_for_missing_job(tmp_path):

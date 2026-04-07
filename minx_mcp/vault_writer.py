@@ -14,22 +14,7 @@ class VaultWriter:
 
     def write_markdown(self, relative_path: str, content: str) -> Path:
         path = self._resolve(relative_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path: Path | None = None
-        try:
-            with NamedTemporaryFile(
-                "w",
-                dir=path.parent,
-                delete=False,
-                encoding="utf-8",
-            ) as handle:
-                handle.write(content)
-                temp_path = Path(handle.name)
-            temp_path.replace(path)
-        except Exception:
-            if temp_path is not None and temp_path.exists():
-                temp_path.unlink()
-            raise
+        self._atomic_write_text(path, content)
         return path
 
     def replace_section(self, relative_path: str, heading: str, body: str) -> Path:
@@ -47,9 +32,26 @@ class VaultWriter:
             tail = "\n".join(lines[end_line:]).lstrip()
             new_text = f"{before}\n\n{replacement}{tail}".strip() + "\n"
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new_text)
+        self._atomic_write_text(path, new_text)
         return path
+
+    def _atomic_write_text(self, path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path: Path | None = None
+        try:
+            with NamedTemporaryFile(
+                "w",
+                dir=path.parent,
+                delete=False,
+                encoding="utf-8",
+            ) as handle:
+                handle.write(content)
+                temp_path = Path(handle.name)
+            temp_path.replace(path)
+        except Exception:
+            if temp_path is not None and temp_path.exists():
+                temp_path.unlink()
+            raise
 
     def _find_section_bounds(self, lines: list[str], marker: str) -> tuple[int | None, int]:
         in_fence = False

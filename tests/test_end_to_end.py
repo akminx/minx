@@ -18,3 +18,13 @@ def test_import_to_summary_to_report_flow(tmp_path):
     assert summary["net_total"] == -12.5
     assert report["summary"]["account_rollups"][0]["total_amount"] == -12.5
     assert report["vault_path"].endswith("Finance/monthly-2026-03.md")
+    row = service.conn.execute(
+        """
+        SELECT status, error_message, vault_path
+        FROM finance_report_runs
+        WHERE report_kind = 'monthly' AND period_start = '2026-03-01' AND period_end = '2026-03-31'
+        """
+    ).fetchone()
+    assert row["status"] == "completed"
+    assert row["error_message"] is None
+    assert row["vault_path"] == report["vault_path"]

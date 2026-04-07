@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""SQLite access and migration application.
+
+SQL migrations are loaded only from the packaged tree ``minx_mcp/schema/migrations``
+(next to this module). That directory is what ships in the wheel; the repository
+also keeps ``schema/migrations`` as a mirror—tests enforce matching filenames and
+normalized SQL contents.
+"""
+
 import re
 import sqlite3
 import time
@@ -7,6 +15,13 @@ from pathlib import Path
 
 
 def migration_dir() -> Path:
+    """Directory of ``*.sql`` files used at runtime by ``apply_migrations``.
+
+    Resolves to ``minx_mcp/schema/migrations`` relative to this package (editable
+    install, wheel extract, or test import). This is the sole migration source for
+    ``get_connection`` / ``apply_migrations``; it is not the repo-root
+    ``schema/migrations`` path.
+    """
     return Path(__file__).resolve().parent / "schema" / "migrations"
 
 

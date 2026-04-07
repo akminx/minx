@@ -1,8 +1,28 @@
 from pathlib import Path
 
+from minx_mcp.contracts import InvalidInputError
 from minx_mcp.finance.report_models import MonthlyReportSummary, WeeklyReportSummary
-from minx_mcp.finance.reports import build_monthly_report, build_weekly_report
+from minx_mcp.finance.reports import build_monthly_report, build_weekly_report, upsert_report_run
 from minx_mcp.finance.service import FinanceService
+
+
+def test_upsert_report_run_rejects_invalid_status(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    try:
+        upsert_report_run(
+            service.conn,
+            "weekly",
+            "2026-01-01",
+            "2026-01-07",
+            "/vault/x.md",
+            {},
+            status="bogus",
+            commit=False,
+        )
+    except InvalidInputError as exc:
+        assert "status" in str(exc).lower()
+    else:
+        raise AssertionError("expected InvalidInputError")
 
 
 def test_weekly_report_includes_required_sections(tmp_path):

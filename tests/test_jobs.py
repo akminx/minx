@@ -1,8 +1,20 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
+from minx_mcp.contracts import NotFoundError
 from minx_mcp.db import get_connection
 from minx_mcp.jobs import get_job, mark_completed, mark_failed, mark_running, submit_job
+
+
+def test_mark_running_unknown_job_raises_not_found(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    fake_id = "00000000-0000-0000-0000-000000000000"
+    try:
+        mark_running(conn, fake_id)
+    except NotFoundError as exc:
+        assert fake_id in str(exc)
+    else:
+        raise AssertionError("expected NotFoundError")
 
 
 def test_submit_job_reuses_idempotency_key(tmp_path):

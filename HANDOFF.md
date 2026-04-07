@@ -74,7 +74,7 @@ Latest verification on the shipped state:
 
 ## Remaining Caveats
 
-- Large imports are still fully buffered in memory before parse.
+- Normal finance imports now stream into a hashed snapshot before parse instead of fully buffering the source file in memory.
 - Import callers and automations still need to stage files under the configured staging/import root.
 - Live runtime smoke checks were run manually; they are not yet automated as a dedicated end-to-end test.
 - Parser deduplication/shared abstractions across multiple CSV sources can still be improved later if more source formats are added.
