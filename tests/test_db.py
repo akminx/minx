@@ -48,13 +48,30 @@ def test_database_bootstrap_creates_core_indexes(tmp_path):
     assert "idx_insights_dedup" in indexes
 
 
+def test_database_bootstrap_creates_finance_report_lifecycle_columns(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    columns = {
+        row["name"]: row
+        for row in conn.execute("PRAGMA table_info(finance_report_runs)").fetchall()
+    }
+    indexes = {
+        row["name"]
+        for row in conn.execute("PRAGMA index_list(finance_report_runs)").fetchall()
+    }
+
+    assert "status" in columns
+    assert "updated_at" in columns
+    assert "error_message" in columns
+    assert "idx_finance_report_runs_identity" in indexes
+
+
 def test_migrations_are_idempotent(tmp_path):
     db_path = tmp_path / "minx.db"
     first = get_connection(db_path)
     first.close()
     second = get_connection(db_path)
     count = second.execute("SELECT COUNT(*) AS c FROM _migrations").fetchone()["c"]
-    assert count == 5
+    assert count == 6
 
 
 def test_finance_seed_rows_exist(tmp_path):
@@ -90,8 +107,63 @@ def test_apply_migrations_handles_plain_sqlite_connections(tmp_path):
     db_module.apply_migrations(conn)
 
     count = conn.execute("SELECT COUNT(*) FROM _migrations").fetchone()[0]
-    assert count == 5
+    assert count == 6
     assert conn.row_factory is original_row_factory
+
+
+def test_report_lifecycle_migration_dedupes_existing_report_runs(tmp_path):
+    project_root = Path(__file__).resolve().parent.parent
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript((project_root / "schema" / "migrations" / "001_platform.sql").read_text())
+    conn.executescript((project_root / "schema" / "migrations" / "002_finance.sql").read_text())
+    conn.executescript((project_root / "schema" / "migrations" / "003_finance_views.sql").read_text())
+    conn.executescript((project_root / "schema" / "migrations" / "004_finance_amount_cents.sql").read_text())
+    conn.executescript((project_root / "schema" / "migrations" / "005_core.sql").read_text())
+    conn.execute(
+        """
+        CREATE TABLE _migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO _migrations (name) VALUES (?)",
+        [
+            ("001_platform.sql",),
+            ("002_finance.sql",),
+            ("003_finance_views.sql",),
+            ("004_finance_amount_cents.sql",),
+            ("005_core.sql",),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO finance_report_runs (report_kind, period_start, period_end, vault_path, summary_json)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            ("weekly", "2026-03-02", "2026-03-08", "Finance/weekly-old.md", '{"old": true}'),
+            ("weekly", "2026-03-02", "2026-03-08", "Finance/weekly-new.md", '{"new": true}'),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = get_connection(db_path)
+    rows = migrated.execute(
+        """
+        SELECT report_kind, period_start, period_end, vault_path, status, error_message
+        FROM finance_report_runs
+        ORDER BY id
+        """
+    ).fetchall()
+
+    assert len(rows) == 1
+    assert rows[0]["vault_path"] == "Finance/weekly-new.md"
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["error_message"] is None
 
 
 def test_amount_cents_migration_backfills_existing_rows(tmp_path):
@@ -254,6 +326,7 @@ def test_built_wheel_includes_packaged_migrations(tmp_path):
     assert "minx_mcp/schema/migrations/003_finance_views.sql" in names
     assert "minx_mcp/schema/migrations/004_finance_amount_cents.sql" in names
     assert "minx_mcp/schema/migrations/005_core.sql" in names
+    assert "minx_mcp/schema/migrations/006_finance_report_lifecycle.sql" in names
 
 
 def test_missing_migrations_preserve_row_factory(tmp_path, monkeypatch):
