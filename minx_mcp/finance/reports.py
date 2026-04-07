@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Sequence
 from datetime import date, timedelta
 from pathlib import Path
 from sqlite3 import Connection
 from string import Template
+from typing import SupportsFloat, TypeVar
 
 from minx_mcp.finance.analytics import find_anomalies, find_uncategorized
 from minx_mcp.finance.report_models import (
@@ -27,6 +29,7 @@ from minx_mcp.finance.report_models import (
 from minx_mcp.money import cents_to_dollars
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "templates"
+T = TypeVar("T")
 
 
 def build_weekly_report(
@@ -379,10 +382,10 @@ def _recurring_charge_highlights(
     highlights = [
         RecurringChargeHighlight(
             merchant=merchant,
-            current_outflow=cents_to_dollars(int(current[merchant]["total_outflow_cents"])),
-            prior_outflow=cents_to_dollars(int(prior[merchant]["total_outflow_cents"])),
-            current_count=int(current[merchant]["transaction_count"]),
-            prior_count=int(prior[merchant]["transaction_count"]),
+            current_outflow=cents_to_dollars(current[merchant][1]),
+            prior_outflow=cents_to_dollars(prior[merchant][1]),
+            current_count=current[merchant][0],
+            prior_count=prior[merchant][0],
         )
         for merchant in sorted(set(current) & set(prior))
     ]
@@ -394,7 +397,7 @@ def _merchant_outflow_map(
     conn: Connection,
     period_start: str,
     end_exclusive: str,
-) -> dict[str, dict[str, object]]:
+) -> dict[str, tuple[int, int]]:
     rows = conn.execute(
         """
         SELECT merchant, COUNT(*) AS transaction_count, COALESCE(ABS(SUM(amount_cents)), 0) AS total_outflow_cents
@@ -406,7 +409,13 @@ def _merchant_outflow_map(
         """,
         (period_start, end_exclusive),
     ).fetchall()
-    return {str(row["merchant"]): dict(row) for row in rows}
+    return {
+        str(row["merchant"]): (
+            int(row["transaction_count"]),
+            int(row["total_outflow_cents"]),
+        )
+        for row in rows
+    }
 
 
 def _monthly_review_items(
@@ -420,7 +429,7 @@ def _monthly_review_items(
             UncategorizedReviewItem(
                 posted_at=str(row["posted_at"]),
                 description=str(row["description"]),
-                amount=float(row["amount"]),
+                amount=_as_float(row["amount"]),
             )
         )
 
@@ -546,13 +555,13 @@ def _render(template: Template, **kwargs: object) -> str:
         raise ValueError(f"Template has unresolved placeholders: {exc.args[0]}") from exc
 
 
-def _fmt(value: object) -> str:
+def _fmt(value: SupportsFloat) -> str:
     amount = float(value)
     sign = "-" if amount < 0 else ""
     return f"{sign}${abs(amount):.2f}"
 
 
-def _lines(items: list[object], render) -> str:
+def _lines(items: Sequence[T], render: Callable[[T], str]) -> str:
     if not items:
         return "- None"
     return "\n".join(render(item) for item in items)
@@ -575,13 +584,13 @@ def _anomaly_items(items: list[dict[str, object]]) -> list[AnomalyItem]:
         AnomalyItem(
             kind=str(item["kind"]),
             transaction_id=(
-                int(item["transaction_id"])
+                _as_int(item["transaction_id"])
                 if item.get("transaction_id") is not None
                 else None
             ),
             posted_at=str(item["posted_at"]),
             description=str(item["description"]),
-            amount=float(item["amount"]),
+            amount=_as_float(item["amount"]),
         )
         for item in items
     ]
@@ -592,10 +601,22 @@ def _uncategorized_transactions(
 ) -> list[UncategorizedTransaction]:
     return [
         UncategorizedTransaction(
-            id=int(item["id"]) if item.get("id") is not None else None,
+            id=_as_int(item["id"]) if item.get("id") is not None else None,
             posted_at=str(item["posted_at"]),
             description=str(item["description"]),
-            amount=float(item["amount"]),
+            amount=_as_float(item["amount"]),
         )
         for item in items
     ]
+
+
+def _as_float(value: object) -> float:
+    if isinstance(value, int | float):
+        return float(value)
+    raise TypeError(f"Expected numeric value, got {type(value).__name__}")
+
+
+def _as_int(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    raise TypeError(f"Expected int value, got {type(value).__name__}")

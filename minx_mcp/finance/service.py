@@ -153,7 +153,11 @@ class FinanceService:
             self.conn.execute("RELEASE SAVEPOINT finance_import")
             savepoint_active = False
 
-            result = {"batch_id": batch_id, "inserted": inserted, "skipped": skipped}
+            result: dict[str, object] = {
+                "batch_id": batch_id,
+                "inserted": inserted,
+                "skipped": skipped,
+            }
             mark_completed(self.conn, str(job["id"]), result)
             return {"job_id": job["id"], "status": "completed", "result": result}
         except Exception as exc:
@@ -270,9 +274,12 @@ class FinanceService:
                     "count": len(items),
                     "total_cents": self._sum_transaction_amount_cents(
                         [
-                            int(item["transaction_id"])
+                            transaction_id
                             for item in items
-                            if item.get("transaction_id") is not None
+                            if isinstance(
+                                (transaction_id := item.get("transaction_id")),
+                                int,
+                            )
                         ]
                     ),
                 },
@@ -427,6 +434,8 @@ class FinanceService:
                 parsed.raw_fingerprint,
             ),
         )
+        if cursor.lastrowid is None:
+            raise RuntimeError("finance_import_batches insert did not return a row id")
         return int(cursor.lastrowid)
 
     def _insert_transaction(
@@ -453,6 +462,8 @@ class FinanceService:
                 txn.external_id,
             ),
         )
+        if cursor.lastrowid is None:
+            raise RuntimeError("finance_transactions insert did not return a row id")
         return int(cursor.lastrowid)
 
     def _category_id(self, category_name: str) -> int:

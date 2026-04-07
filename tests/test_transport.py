@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from minx_mcp.transport import build_transport_config
+from minx_mcp.transport import build_transport_config, run_server
 from minx_mcp import document_text
 
 
@@ -47,3 +47,22 @@ def test_extract_text_uses_configured_liteparse_binary(monkeypatch, tmp_path):
         "check": True,
         "text": True,
     }
+
+
+def test_run_server_treats_keyboard_interrupt_as_clean_shutdown():
+    events = {"run_called": False}
+
+    class Settings:
+        host = ""
+        port = 0
+
+    class FakeMCP:
+        settings = Settings()
+
+        def run(self, *, transport):
+            events["run_called"] = True
+            raise KeyboardInterrupt()
+
+    run_server(FakeMCP(), transport="http", host="127.0.0.1", port=8765)
+
+    assert events["run_called"] is True

@@ -77,7 +77,10 @@ def submit_job(
         (job_id,),
     )
     conn.commit()
-    return get_job(conn, job_id)
+    created_job: dict[str, object | None] | None = get_job(conn, job_id)
+    if created_job is None:
+        raise RuntimeError(f"Expected queued job {job_id} to exist after insert")
+    return created_job
 
 
 def mark_running(conn: Connection, job_id: str, *, commit: bool = True) -> None:

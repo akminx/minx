@@ -13,4 +13,7 @@ def run_server(mcp, transport: str, host: str, port: int) -> None:
     config = build_transport_config(transport, host, port)
     mcp.settings.host = config["host"]
     mcp.settings.port = config["port"]
-    mcp.run(transport=config["transport"])
+    try:
+        mcp.run(transport=config["transport"])
+    except KeyboardInterrupt:
+        return

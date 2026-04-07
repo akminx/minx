@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Any
 
 from minx_mcp.contracts import InvalidInputError
 
@@ -39,10 +40,14 @@ class GenericCSVMapping:
     @classmethod
     def from_value(
         cls,
-        value: dict[str, object] | "GenericCSVMapping",
+        value: object,
     ) -> "GenericCSVMapping":
         if isinstance(value, cls):
             return value
+        if not isinstance(value, dict):
+            raise InvalidInputError("generic csv mapping must be a mapping object")
+
+        mapping: dict[str, Any] = value
 
         required_fields = (
             "date_column",
@@ -53,23 +58,25 @@ class GenericCSVMapping:
         missing = [
             field
             for field in required_fields
-            if not isinstance(value.get(field), str) or not str(value[field]).strip()
+            if not isinstance(mapping.get(field), str) or not str(mapping[field]).strip()
         ]
         if missing:
             raise InvalidInputError(
                 f"generic csv mapping is missing required field: {missing[0]}"
             )
 
-        merchant_column = value.get("merchant_column")
-        category_hint_column = value.get("category_hint_column")
+        merchant_column = mapping.get("merchant_column")
+        category_hint_column = mapping.get("category_hint_column")
 
         return cls(
-            date_column=str(value["date_column"]),
-            amount_column=str(value["amount_column"]),
-            description_column=str(value["description_column"]),
-            date_format=str(value["date_format"]),
+            date_column=str(mapping["date_column"]),
+            amount_column=str(mapping["amount_column"]),
+            description_column=str(mapping["description_column"]),
+            date_format=str(mapping["date_format"]),
             merchant_column=(
-                str(merchant_column) if isinstance(merchant_column, str) and merchant_column else None
+                str(merchant_column)
+                if isinstance(merchant_column, str) and merchant_column
+                else None
             ),
             category_hint_column=(
                 str(category_hint_column)
