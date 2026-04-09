@@ -189,6 +189,8 @@ def _compute_summary(
 
     if status == "met":
         return f"Met! {actual_str} against target of {target_str}."
+    if goal.metric_type in ("sum_above", "count_above") and status == "watch":
+        return f"Watch: {actual_str} of {target_str} - below target pace."
     if status == "on_track":
         return f"On track: {actual_str} of {target_str}."
     if status == "watch":

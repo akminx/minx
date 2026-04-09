@@ -215,7 +215,6 @@ GoalCaptureClarificationType = Literal[
     "ambiguous_subject",
     "missing_goal",
     "missing_target",
-    "missing_period",
     "vague_intent",
 ]
 GoalCaptureOptionKind = Literal["category", "merchant", "goal"]
@@ -403,6 +402,13 @@ class GoalCaptureResult:
 
 @dataclass(frozen=True)
 class GoalProgress:
+    """Derived goal progress for review and UI use.
+
+    ``summary`` is human-facing convenience text. It is intentionally not a
+    stable machine contract; downstream code should use the structured fields
+    instead of parsing summary wording.
+    """
+
     goal_id: int
     title: str
     metric_type: str

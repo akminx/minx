@@ -235,4 +235,4 @@ def test_build_goal_progress_for_count_above_can_be_watch():
     assert progress[0].actual_value == 4
     assert progress[0].remaining_value is None
     assert progress[0].status == "watch"
-    assert progress[0].summary == "Watch: 4 of 10 — approaching limit."
+    assert progress[0].summary == "Watch: 4 of 10 - below target pace."

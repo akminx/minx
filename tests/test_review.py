@@ -893,6 +893,53 @@ def test_build_protected_review_flags_spending_when_uncategorized_spending_prese
     assert "spending" in protected.attention_areas
 
 
+def test_build_protected_review_flags_spending_when_spending_spike_exists_without_uncategorized_spend() -> None:
+    from minx_mcp.core.models import (
+        DailyReview,
+        DailyTimeline,
+        InsightCandidate,
+        OpenLoopsSnapshot,
+        SpendingSnapshot,
+    )
+    from minx_mcp.core.review_policy import build_protected_review
+
+    protected = build_protected_review(
+        DailyReview(
+            date="2026-03-15",
+            timeline=DailyTimeline(date="2026-03-15", entries=[]),
+            spending=SpendingSnapshot(
+                date="2026-03-15",
+                total_spent_cents=12_000,
+                by_category={"Dining Out": 12_000},
+                top_merchants=[("Cafe", 12_000)],
+                vs_prior_week_pct=60.0,
+                uncategorized_count=0,
+                uncategorized_total_cents=0,
+            ),
+            open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
+            goal_progress=[],
+            insights=[
+                InsightCandidate(
+                    insight_type="finance.spending_spike",
+                    dedupe_key="2026-03-15:spending_spike:dining-out",
+                    summary="Spending is up sharply.",
+                    supporting_signals=["Dining Out drove the increase."],
+                    confidence=0.9,
+                    severity="alert",
+                    actionability="action_needed",
+                    source="detector",
+                )
+            ],
+            narrative="raw",
+            next_day_focus=[],
+            llm_enriched=False,
+        )
+    )
+
+    assert "spending" in protected.attention_areas
+    assert protected.narrative != "Protected summary: no flagged areas."
+
+
 def test_build_protected_review_does_not_flag_goals_when_all_on_track() -> None:
     from minx_mcp.core.models import DailyReview, DailyTimeline, GoalProgress, OpenLoopsSnapshot, SpendingSnapshot
     from minx_mcp.core.review_policy import build_protected_review

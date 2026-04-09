@@ -110,13 +110,19 @@ def _build_attention_areas(
     areas: list[str] = []
     if activity_level != "none":
         areas.append("activity")
-    if review.spending.uncategorized_total_cents > 0:
+    if _has_spending_attention(review):
         areas.append("spending")
     if goal_attention_level != "none":
         areas.append("goals")
     if open_loop_level != "none":
         areas.append("open_loops")
     return areas
+
+
+def _has_spending_attention(review: DailyReview) -> bool:
+    if review.spending.uncategorized_total_cents > 0:
+        return True
+    return any(insight.insight_type == "finance.spending_spike" for insight in review.insights)
 
 
 def _build_protected_narrative(

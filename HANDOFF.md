@@ -13,11 +13,11 @@ The repo currently has local, uncommitted doc/workspace changes. Do not assume a
 ## What Was Fixed In The Hardening Pass (2026-04-09 follow-up)
 
 - Goal filter validation: blank/whitespace-only `category_names`, `merchant_names`, and `account_names` members are now rejected with a stable `InvalidInputError`; valid members are trimmed before persistence.
-- Protected review attention semantics: `goal_attention_level` now reflects only goals with `off_track` or `watch` status, not mere presence of active goals; `spending` is only added to `attention_areas` when `uncategorized_total_cents > 0`, not on any day with normal spending.
+- Protected review attention semantics: `goal_attention_level` now reflects only goals with `off_track` or `watch` status, not mere presence of active goals; `spending` is added to `attention_areas` for uncategorized spending or an actual `finance.spending_spike` signal, not for any day with ordinary spending.
 - Wheel packaging test: `test_built_wheel_includes_packaged_migrations` now uses `setuptools.build_meta.build_wheel` directly instead of `pip wheel`; passes reliably in the uv-managed environment.
 - `assert payload is not None` guards in `goal_capture.py` replaced with explicit `RuntimeError` to survive `-O` optimization.
 - `OSError` swallowed silently in `import_workflow._canonicalize_existing_path` now emits a `logging.warning`.
-- Test count moved from 334 passed / 1 failed to 344 passed / 0 failed.
+- Test count moved from 334 passed / 1 failed to 346 passed / 0 failed after the follow-up review fixes in this working tree.
 
 ## What Was Fixed In The Prior Pass
 
@@ -39,7 +39,6 @@ The repo currently has local, uncommitted doc/workspace changes. Do not assume a
 
 ## Current MCP Workflow Status
 
-- Core MCP tools available: `daily_review`, `goal_create`, `goal_list`, `goal_get`, `goal_update`, `goal_archive`
 - Core MCP tools available: `daily_review`, `goal_capture`, `goal_create`, `goal_list`, `goal_get`, `goal_update`, `goal_archive`
 - Runtime smoke test: [tests/test_core_mcp_stdio.py](/Users/akmini/Documents/minx-mcp/tests/test_core_mcp_stdio.py)
 - LLM provider path: optional `core/llm_config` with `provider: "openai_compatible"`
@@ -62,7 +61,8 @@ Slice 2 repo-scope acceptance criteria are satisfied, and the repo also implemen
 - `daily_review` returns a protected projection with redaction metadata at the MCP boundary
 - category drift covers category-, merchant-, and account-scoped goals
 - review output excludes non-`normal` events as the current sensitivity policy
-- `uv run python -m pytest tests -q` currently yields `334 passed, 1 failed`; the remaining failure is the wheel-packaging test environment path described below
+- `GoalProgress.summary` should be treated as human-facing copy rather than a strict machine contract; downstream code should use structured progress fields instead of parsing prose
+- `uv run python -m pytest tests -q` is green
 - `.venv/bin/python -m mypy` is green
 
 The next agent should not treat Slice 2.1 as untouched, and should not start from a blank "implement conversational goals/trust hardening" assumption. The higher-value next move is to finish the cleanup/hardening gaps in the current baseline and then move to Slice 3 rather than replanning Core-side 2.1 work.
@@ -73,7 +73,7 @@ From the current repo baseline, the recommended next implementation slice is now
 
 - **Slice 3: Meals MCP**
 
-All hardening follow-ups from the prior baseline are now complete. The repo is clean and verified at 344 tests / 0 failures.
+All hardening follow-ups from the prior baseline are now complete. The repo baseline is verified at 346 tests / 0 failures, but the current worktree still contains local uncommitted changes and should not be treated as clean.
 
 Harness-specific instance setup and client orchestration remain intentionally deferred until later harness-adaptation work.
 
@@ -115,7 +115,7 @@ Latest results from the current working tree:
 - Command: `.venv/bin/python -m pytest tests/test_core_server.py tests/test_goal_progress.py tests/test_goals.py tests/test_detectors.py tests/test_llm.py tests/test_core_mcp_stdio.py -q`
 - Result: `81 passed in 0.81s`
 - Command: `uv run python -m pytest tests -q`
-- Result: `344 passed in 1.90s`
+- Result: `346 passed in 1.98s`
 - Command: `uv run python -m mypy`
 - Result: `Success: no issues found in 50 source files`
 
@@ -144,6 +144,7 @@ These were the Slice 2 cleanup gate checks and are now complete:
 
 - The roadmap/design text described `detect_category_drift` as a 4-week rolling-average comparison. The shipped Slice 2 cleanup uses the smaller equal-length immediately preceding baseline instead.
 - `goal_get` is still the only goal tool that exposes derived progress; the other goal tool response shapes remain goal-only/list-only.
+- `GoalProgress.summary` remains intentionally human-facing helper text rather than a stability-pinned machine contract.
 - The repo has already implemented the Core-side portion of Slice 2.1 (`goal_capture` and the protected `daily_review` boundary), even though earlier roadmap wording described that slice as future work.
 - The roadmap has now been refreshed so the remaining deferred items live in explicit later work (`Slice 3+` domain expansion, later harness-adaptation slices, and `Slice 6`) instead of being implied as shipped Slice 2 work.
 

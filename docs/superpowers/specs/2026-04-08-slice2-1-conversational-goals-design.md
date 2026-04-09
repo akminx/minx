@@ -1,12 +1,12 @@
 # Slice 2.1 Phase B: Conversational Goals Design
 
 **Date:** 2026-04-08
-**Status:** Drafted for review
+**Status:** Implemented for the repo-scoped Core/harness-agnostic work
 **Parent:** [2026-04-06-minx-roadmap-slices.md](2026-04-06-minx-roadmap-slices.md)
 
 ## Goal
 
-Finish the repo-scoped portion of `Slice 2.1` by adding a transport-agnostic conversational goal interpretation surface to `minx-core`, while keeping actual Hermes or Discord wiring outside this repo.
+Define and document the repo-scoped portion of `Slice 2.1`: a transport-agnostic conversational goal interpretation surface in `minx-core`, while keeping actual harness instance setup outside this repo.
 
 This phase assumes Phase A trust hardening exists already:
 
@@ -20,7 +20,7 @@ The project architecture already established the intended split:
 - Core owns interpretation and goal logic
 - harnesses own conversation style and rendering
 
-That means the missing repo-side piece is not Discord-specific wiring. The missing piece is a reusable interpretation layer that can accept conversational goal language and turn it into a stable Core action proposal.
+That means the repo-side job is not Discord-specific wiring. The repo-side job is a reusable interpretation layer that can accept conversational goal language and turn it into a stable Core action proposal.
 
 If we put that logic directly in Hermes, we would recreate the same business rules outside Core:
 
@@ -65,7 +65,7 @@ This phase does not include:
 
 ## Proposed Tool: `goal_capture`
 
-Add a new Core MCP tool:
+Core exposes a Core MCP tool:
 
 - `goal_capture`
 
@@ -161,7 +161,6 @@ The response includes:
 Phase B clarification types should be a pinned small enum:
 
 - `missing_target`
-- `missing_period`
 - `ambiguous_goal`
 - `ambiguous_subject`
 - `missing_goal`
@@ -585,9 +584,9 @@ Phase B is successful when:
 
 ## Follow-On Work
 
-Once Phase B lands, repo-scoped Slice 2.1 is complete:
+This repo now satisfies the repo-scoped Slice 2.1 conversational-goals outcome:
 
 - Phase A: trust hardening at the review boundary
 - Phase B: conversational goal interpretation over Core tools
 
-After that, the next major repo slice should be Slice 3 unless the product priority changes again.
+After that, the next major repo slice should be Slice 3 unless product priorities change again. Harness-specific instance setup remains intentionally deferred to later harness-adaptation work outside this repo.

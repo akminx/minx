@@ -65,6 +65,7 @@ You can override these with:
 - The Core MCP server exposes `daily_review`, `goal_capture`, `goal_create`, `goal_list`, `goal_get`, `goal_update`, and `goal_archive`.
 - `daily_review` returns a protected client-facing projection with explicit redaction metadata rather than the raw internal review artifact.
 - `goal_get` returns both the stored goal DTO and derived progress for an optional `review_date`; progress is `null` outside the goal lifetime.
+- Goal progress `summary` text is human-facing convenience copy, not a strict downstream machine contract; clients should rely on structured fields like `status`, `actual_value`, `target_value`, and the current window instead of parsing summary wording.
 - `goal_list()` defaults to active goals, while `goal_list(status=...)` can query other lifecycle states explicitly.
 - Goal progress clamps to the goal lifetime, goal updates can intentionally clear `ends_on` and `notes`, and category drift is based on a real equal-length prior baseline instead of goal status alone.
 - Goal drift/category drift work for category-, merchant-, and account-scoped finance goals, and non-`normal` events are excluded from the review timeline/output path.
