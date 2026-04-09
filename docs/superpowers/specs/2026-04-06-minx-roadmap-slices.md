@@ -4,7 +4,34 @@
 **Status:** Active
 **Parent:** [Minx Life OS Architecture Design](2026-04-06-minx-life-os-architecture-design.md)
 
-Each slice gets its own spec, plan, and implementation cycle. Slices are ordered by dependency and value delivery.
+Each slice gets its own spec, plan, and implementation cycle. The roadmap is ordered by dependency and by trust: Minx should first become useful, then cross-domain, then harness-aware, then durable, and only after that more autonomous.
+
+## Current Projection
+
+The roadmap now follows four arcs:
+
+- **Foundation:** establish portable Core state, structured review, goals, and safe review boundaries
+- **Domain Expansion:** add concrete life domains so Minx has a real cross-domain picture
+- **Interaction + Trust:** add harness-specific flows, sensitivity policy, and ambient inputs without moving business logic out of Core
+- **Intelligence + Autonomy:** add durable memory, reproducibility, bounded playbooks, and richer surfaces
+
+From the current repo baseline, the recommended execution order is:
+
+1. Slice 2.1: Conversational Goals + Trust Hardening
+2. Slice 3: Meals MCP
+3. Slice 4: Training MCP
+4. Slice 5: Harness Adaptation + Ambient Inputs
+5. Slice 6: Durable Memory + Review Reproducibility
+6. Slice 7: Ideas/Journal MCP
+7. Slice 8: Proactive Autonomy
+8. Slice 9: Dashboard + Richer Surfaces
+
+This ordering preserves the architecture doc's north star:
+
+- Minx Core stays the owner of interpretation
+- domains stay the owner of facts
+- Hermes/Discord stays a thin conversational shell
+- autonomy waits until memory, trust, and review durability are mature enough
 
 ---
 
@@ -29,36 +56,71 @@ Each slice gets its own spec, plan, and implementation cycle. Slices are ordered
 - Quiet day handling
 - Core MCP server with `daily_review` tool (harness entry point)
 
-**Delivers:** First end-to-end cross-domain value. Any harness triggers a review via the Core MCP `daily_review` tool and renders a structured artifact to Discord + vault.
+**Delivers:** First end-to-end value. Any harness can trigger a review through Core and receive a structured artifact plus a vault-facing markdown projection.
 
-**Dependencies:** None (builds on existing Finance MCP + shared platform)
+**Dependencies:** None
 
 **Implementation notes:**
-- Insight dedup uses `(review_date, insight_type, dedupe_key)` instead of the spec's `(review_date, insight_type, summary)`. `dedupe_key` is an explicit field on `InsightCandidate`, giving callers control over identity rather than relying on summary text.
-- Finance read API exposes `get_import_job_issues()` (covering both failed and stale jobs) instead of the spec's `get_failed_imports()`.
-- The `insights` table omits `event_count` from the spec; dedup is handled entirely through `dedupe_key`.
-- `ReviewDurabilityError` provides partial-failure semantics: if the in-memory review is built but a durability sink (detector DB write or vault note) fails, the error carries the artifact on `exc.artifact` and per-sink details on `exc.failures`.
+- Insight dedup uses `(review_date, insight_type, dedupe_key)` instead of summary text.
+- Finance read API exposes `get_import_job_issues()` instead of the earlier `get_failed_imports()` wording.
+- `ReviewDurabilityError` carries the built artifact plus per-sink failures when SQLite/vault durability only partially succeeds.
 
 ---
 
 ## Slice 2: Goals + Deeper Detection
 
-**Status:** Not started
+**Status:** Implemented for the repo-contained Core scope
+**Spec:** [2026-04-07-slice2-goals-drift-design.md](2026-04-07-slice2-goals-drift-design.md)
 
 **Scope:**
 - Goals table and CRUD in Minx Core
-- Goal-setting through Hermes/Discord (conversational creation)
+- Harness-friendly Core goal tool surface for later conversational clients
 - GoalProgress read model
 - `detect_goal_drift` detector: trajectory vs spending/activity targets
-- `detect_category_drift` detector: 4-week rolling average comparison
-- Event `sensitivity` column + redaction policy for sensitive events
-- Insight expiration: filter-on-read (`WHERE expires_at IS NULL OR expires_at > now()`)
-- Read model snapshots stored alongside insights for reproducibility
-- Richer LLM evaluation with goal context
+- `detect_category_drift` detector: recent equal-length baseline comparison for goal-relevant filters
+- Goal-aware daily review artifact and fallback narrative
+- Optional OpenAI-compatible LLM enrichment
+- Review-path handling for non-`normal` events
 
-**Delivers:** Minx tracks what the user cares about and measures against it. Detection gets smarter with data history.
+**Delivers:** Minx can track what the user cares about, compute current progress, and reflect that in the review without depending on a specific harness.
 
-**Dependencies:** Slice 1 (event contract, review pipeline, detectors)
+**Dependencies:** Slice 1
+
+**Implementation notes:**
+- `goal_get` returns both the stored goal DTO and derived progress, with `progress: null` outside the goal lifetime.
+- `goal_list()` defaults to active goals; `goal_list(status=...)` is the explicit path for other lifecycle states.
+- Goal progress uses the natural period window intersected with the goal lifetime.
+- `detect_category_drift` compares the current elapsed span against the immediately preceding equal-length baseline span and works for category-, merchant-, and account-scoped goals.
+- `daily_review` now exposes structured fields at the MCP boundary instead of only counts and markdown.
+
+**Still deferred after Slice 2:**
+- Hermes/Discord conversational goal capture
+- generalized redaction policy beyond coarse review-path exclusion
+- insight expiration filtering
+- read-model snapshot persistence for reproducibility
+
+---
+
+## Slice 2.1: Conversational Goals + Trust Hardening
+
+**Status:** Not started
+
+**Scope:**
+- Hermes/Discord conversational goal capture as a thin client over Core goal tools
+- prompt/policy layer that translates natural language into structured `goal_create` and `goal_update` calls
+- stronger sensitivity policy for review inputs and outputs
+- redaction rules for sensitive events and goal-related artifacts
+- review/client contract checks so harnesses consume the structured review artifact deliberately
+- end-to-end goal flow verification from conversational surface -> Core tools -> review output
+
+**Delivers:** The first real Hermes-style goal experience, plus a trust boundary that keeps richer conversational surfaces from leaking sensitive content.
+
+**Dependencies:** Slice 2
+
+**Why this exists as a separate slice:**
+- It keeps business logic in Core and lets Hermes stay thin.
+- It gives trust/privacy work a home instead of pretending it is free follow-up polish.
+- It prevents us from moving into more public or proactive surfaces before the review boundary is safe enough.
 
 ---
 
@@ -68,17 +130,16 @@ Each slice gets its own spec, plan, and implementation cycle. Slices are ordered
 
 **Scope:**
 - Meals domain MCP server: meal logs, foods/ingredients, recipes, nutrition facts
-- Service layer, SQLite schema, MCP tools following Finance pattern
+- Service layer, SQLite schema, MCP tools following the Finance pattern
 - Event emission: `meal.logged`, `nutrition.day_updated`, `meal.plan_updated`
-- Reuses shared platform: contracts, jobs, vault writer, event infrastructure
 - NutritionSnapshot read model in Minx Core
 - Meals-specific detectors: nutrition gaps, protein tracking, meal frequency
 - Cross-domain detectors: restaurant spend vs meal prep days
-- DailyReview updated to include nutrition section
+- DailyReview updated to include nutrition context
 
-**Delivers:** Second domain live. Cross-domain insights become real — correlating spending with eating habits.
+**Delivers:** The first meaningful second domain. Cross-domain insight becomes real instead of aspirational.
 
-**Dependencies:** Slice 1 (event contract, shared platform patterns)
+**Dependencies:** Slice 1
 
 ---
 
@@ -88,55 +149,61 @@ Each slice gets its own spec, plan, and implementation cycle. Slices are ordered
 
 **Scope:**
 - Training domain MCP server: workout plans, exercise library, session logs, progression
-- Service layer, SQLite schema, MCP tools following Finance/Meals pattern
+- Service layer, SQLite schema, MCP tools following the Finance/Meals pattern
 - Event emission: `workout.completed`, `training.program_updated`, `training.milestone_reached`
 - TrainingSnapshot read model in Minx Core
 - Training-specific detectors: adherence trends, volume progression, recovery signals
 - Cross-domain detectors: training + nutrition correlation, training + spending patterns
-- DailyReview updated to include training section
+- DailyReview updated to include training context
 
-**Delivers:** Third domain. Finance, nutrition, and training all in one daily review.
+**Delivers:** A third domain that makes Minx feel like a real Life OS rather than a finance review with extras.
 
-**Dependencies:** Slice 1 (event contract), Slice 3 (cross-domain patterns established)
+**Dependencies:** Slice 1, ideally after Slice 3
 
 ---
 
-## Slice 5: Harness Adaptation + Poll Adapter
+## Slice 5: Harness Adaptation + Ambient Inputs
 
 **Status:** Not started
 
 **Scope:**
-- Harness registry: harnesses identify themselves, Core selects behavior profile
-- Behavior profiles: context budget, response length, retrieval depth, autonomy level, output format
-- Hermes profile: concise, conversational, proactive, summary-heavy
-- Claude Code profile: deeper retrieval, structured output, tool-forward
-- Profile auto-detection with manual override
+- Harness registry: harnesses identify themselves, Core selects a behavior profile
+- Behavior profiles: context budget, response length, retrieval depth, output format, autonomy posture
+- Hermes/Discord profile: concise, conversational, proactive, summary-heavy
+- CLI/Codex-style profile: deeper retrieval, structured output, tool-forward behavior
 - Poll adapter infrastructure: base class, interval, idempotency, state tracking, error handling
-- Vault poll adapter: surfaces journal/ideas content into Minx Core without a dedicated MCP
-- Poll adapter integrated into review pipeline as secondary data source
+- Vault poll adapter for journal/ideas or other ambient inputs before a dedicated MCP exists
+- clear separation between ambient inputs and source-of-truth domains
 
-**Delivers:** Minx behaves appropriately per context. Vault content flows into reviews without needing a Journal MCP yet.
+**Delivers:** Minx behaves like one assistant across multiple shells without forcing all clients into the same response shape or waiting for every future domain to exist first.
 
-**Dependencies:** Slice 1 (review pipeline), at least one additional domain (slice 3 or 4) to make adaptation meaningful
+**Dependencies:** Slice 1, plus at least one additional domain from Slices 3-4
+
+**Notes:**
+- This slice is about interaction posture and ambient ingestion, not durable memory yet.
+- It is the bridge between “portable Core” and “real multi-harness product.”
 
 ---
 
-## Slice 6: Memory Promotion + Durable Memory
+## Slice 6: Durable Memory + Review Reproducibility
 
 **Status:** Not started
 
 **Scope:**
-- Structured durable memory system: preferences, recurring patterns, stable constraints
-- Memory store (separate from insights): facts Minx has learned about the user
-- Auto-promotion policy: low-risk patterns promoted automatically (recurring meals, recurring merchants, soft preferences)
-- Confirmation gate: identity-level or commitment-level memories require user approval
-- Recurring pattern detection across domains
-- Memory retrieval integrated into review pipeline (personalized insights)
-- Memory used for context: "you usually spend less in April", "you prefer morning workouts"
+- structured durable memory store for stable preferences, recurring patterns, and constraints
+- memory promotion policy with confirmation gates for high-risk memories
+- insight expiration filtering so stale detector output does not accumulate forever
+- read-model snapshot persistence or equivalent reproducibility mechanism for review/debug history
+- retrieval path that can explain why Minx said something on a given day
+- review pipeline integration for durable memory without collapsing into transcript recall
 
-**Delivers:** Minx remembers and uses what it learns. Reviews gain personal context over time.
+**Delivers:** Minx becomes explainable and durable. Reviews gain long-term context, and future autonomy/dashboard work has a stable foundation to build on.
 
-**Dependencies:** Slice 1 (review pipeline, insight records), multiple domains active (slices 3-4) for cross-domain patterns
+**Dependencies:** Slice 1, plus meaningful domain activity from Slices 3-4 and ideally Slice 5
+
+**Why this comes before autonomy:**
+- bounded autonomy without durable memory and reproducibility is hard to trust
+- dashboards and audits also need stable historical grounding
 
 ---
 
@@ -146,17 +213,17 @@ Each slice gets its own spec, plan, and implementation cycle. Slices are ordered
 
 **Scope:**
 - Journal domain MCP server: entries, reflections, captured ideas, linked references
-- Service layer, SQLite schema, MCP tools following established pattern
+- Service layer, SQLite schema, MCP tools following the established domain pattern
 - Event emission: `idea.captured`, `journal.entry_added`, `journal.reflection_added`
 - JournalSnapshot read model in Minx Core
-- Journal recap section in DailyReview
-- Open loop detection for unfinished thoughts/intentions
+- Journal recap in DailyReview
+- Open loop detection for unfinished thoughts and intentions
 - Cross-domain detectors: journal mood + spending/training correlation
-- Replaces vault poll adapter for journal content with structured source of truth
+- gradual replacement of ad hoc ambient vault ingestion where a structured source becomes better
 
-**Delivers:** Fourth domain. Daily review covers spending, nutrition, training, and reflections.
+**Delivers:** Reflection becomes a first-class domain instead of a side channel, which makes Minx more like a real personal OS and less like a structured tracking stack.
 
-**Dependencies:** Slice 1 (event contract), Slice 5 (vault poll adapter may be replaced)
+**Dependencies:** Slice 1, and benefits from Slice 5 for ambient-input posture
 
 ---
 
@@ -165,21 +232,19 @@ Each slice gets its own spec, plan, and implementation cycle. Slices are ordered
 **Status:** Not started
 
 **Scope:**
-- Playbook infrastructure: each playbook has trigger, bounded action, success metric, kill switch, owner
-- First playbooks:
-  - Daily review auto-trigger (scheduled, no user action needed)
-  - Weekly summary auto-generate
-- Guardrailed automation:
-  - Auto-categorize high-confidence transactions (>95% match on existing rules)
-  - Meal plan reminders based on grocery patterns
-  - Training session reminders based on program schedule
-- Escalation policy: when to act vs when to ask
-- Audit trail for all autonomous actions
-- User-facing controls: enable/disable per playbook, configure triggers
+- Playbook infrastructure: trigger, bounded action, success metric, kill switch, owner
+- first playbooks:
+  - daily review auto-trigger
+  - weekly summary auto-generate
+  - tightly scoped high-confidence maintenance actions
+- escalation policy: when Minx acts vs when it asks
+- audit trail for autonomous actions
+- user-facing controls per playbook
+- goal-aware and memory-aware action selection
 
-**Delivers:** Minx starts doing things without being asked — carefully, with guardrails and kill switches.
+**Delivers:** Minx starts doing bounded, trustworthy work without drifting into a vague always-on agent loop.
 
-**Dependencies:** Slice 1 (review pipeline), Slice 2 (goals for target-aware automation), scheduling infrastructure
+**Dependencies:** Slice 2, Slice 5, Slice 6, and stable scheduling infrastructure
 
 ---
 
@@ -188,50 +253,53 @@ Each slice gets its own spec, plan, and implementation cycle. Slices are ordered
 **Status:** Not started
 
 **Scope:**
-- Web dashboard: HTTP app serving review data, goal progress, domain summaries
-- Dashboard cards backed by read models (reuses existing read model infrastructure)
-- Historical review browsing (query past DailyReview artifacts)
-- Multi-surface rendering: Discord digest, vault note, dashboard cards, future clients all from the same DailyReview artifact
-- Goal progress visualization
-- Spending and nutrition trend charts
-- Training adherence calendar view
+- web dashboard serving review data, goal progress, domain summaries, and historical artifacts
+- dashboard cards backed by the same read models and durable review state as other surfaces
+- historical review browsing
+- richer visualizations for goals, spending, nutrition, and training
+- multi-surface rendering from the same underlying review artifact and memory layers
 
-**Delivers:** Visual interface into the Life OS state. The same data that drives Discord digests now drives a dashboard.
+**Delivers:** Visual interface into the Life OS state. The same structured system that powers Discord and CLI can drive a richer dashboard without a parallel logic stack.
 
-**Dependencies:** Slice 1 (review pipeline, read models), Slice 2 (goals), ideally slices 3-4 (multiple domains for richer dashboard)
+**Dependencies:** Slice 1, Slice 2, and ideally Slices 3-6
 
 ---
 
 ## Dependency Graph
 
-```
+```text
 Slice 1 (Events + Review)
     |
     +---> Slice 2 (Goals + Detection)
     |         |
+    |         +---> Slice 2.1 (Conversational Goals + Trust)
+    |
     +---> Slice 3 (Meals MCP)
     |         |
     |         +---> Slice 4 (Training MCP)
-    |         |         |
-    |         +---------+---> Slice 6 (Memory)
-    |                             |
-    +---> Slice 5 (Harness + Poll)  |
-    |         |                     |
-    |         +---> Slice 7 (Journal MCP)
-    |
-    +---> Slice 8 (Autonomy) <--- Slice 2
-    |
-    +---> Slice 9 (Dashboard) <--- Slices 2, 3, 4
-```
+    |                    |
+    |                    +------+
+    |                           |
+    +-----------------------> Slice 5 (Harness + Ambient Inputs)
+                                |
+                                +---> Slice 6 (Memory + Reproducibility)
+                                |          |
+                                |          +---> Slice 8 (Autonomy)
+                                |
+                                +---> Slice 7 (Ideas/Journal MCP)
+                                           |
+                                           +---> Slice 9 (Dashboard + Richer Surfaces)
 
-Slice 1 is the foundation for everything. Slices 2-4 can be parallelized after slice 1. Slices 5-7 depend on having multiple domains. Slices 8-9 are the capstone layers.
+Slice 9 also depends on Slice 2 and benefits strongly from Slices 3-6.
+```
 
 ## Principles Across All Slices
 
 - Each slice gets its own spec, plan, and implementation cycle
 - Domains own facts, Minx Core owns interpretation
-- Event-driven integration: domains emit, Core consumes
-- Harnesses own conversation style and rendering
-- New domains follow the Finance pattern (service layer, SQLite, MCP tools, event emission)
-- Anti-bloat: a feature only ships if it improves capture, review, planning, or goal alignment
-- Every autonomous behavior has a trigger, bounded action, success metric, and kill switch
+- Event-driven integration remains the default
+- Harnesses own conversation style and rendering, not business logic
+- New domains should follow the Finance pattern unless there is a strong reason not to
+- Trust work is a real product surface, not invisible infrastructure
+- Durable memory must stay queryable and explainable, not collapse into transcript sprawl
+- Autonomy only expands after review, trust, and memory layers are credible

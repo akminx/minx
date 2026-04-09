@@ -66,6 +66,7 @@ async def generate_daily_review(
                         spending=read_models.spending,
                         open_loops=read_models.open_loops,
                         detector_insights=detector_insights,
+                        goal_progress=read_models.goal_progress,
                     ),
                     timeout=LLM_TIMEOUT_SECONDS,
                 )
@@ -92,6 +93,7 @@ async def generate_daily_review(
             timeline=read_models.timeline,
             spending=read_models.spending,
             open_loops=read_models.open_loops,
+            goal_progress=read_models.goal_progress,
             insights=insights,
             narrative=narrative,
             next_day_focus=next_day_focus,
@@ -190,6 +192,15 @@ def render_daily_review_markdown(review: DailyReview) -> str:
             "## Spending",
             *spending_lines,
             "",
+            "## Goals",
+            *(
+                [
+                    f"- [{goal.status}] {goal.title}: {goal.summary}"
+                    for goal in review.goal_progress
+                ]
+                or ["- No active goals."]
+            ),
+            "",
             "## Insights",
             *insight_lines,
             "",
@@ -239,6 +250,7 @@ def _build_fallback_narrative(read_models: ReadModels) -> str:
         not read_models.timeline.entries
         and read_models.spending.total_spent_cents == 0
         and not read_models.open_loops.loops
+        and not read_models.goal_progress
     ):
         return f"Quiet day. No notable events or open loops for {read_models.timeline.date}."
 
@@ -260,6 +272,14 @@ def _build_fallback_narrative(read_models: ReadModels) -> str:
         narrative_parts.append("1 item needs attention.")
     else:
         narrative_parts.append(f"{loop_count} items need attention.")
+
+    off_track = [g for g in read_models.goal_progress if g.status == "off_track"]
+    if off_track:
+        narrative_parts.append(
+            f"{len(off_track)} active goal{'s are' if len(off_track) != 1 else ' is'} off track."
+        )
+    for goal in read_models.goal_progress:
+        narrative_parts.append(f"{goal.title}: {goal.summary}")
     return " ".join(narrative_parts)
 
 

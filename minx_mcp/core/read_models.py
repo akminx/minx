@@ -4,6 +4,8 @@ from datetime import date, datetime, timedelta
 from sqlite3 import Connection
 
 from minx_mcp.core.events import Event, query_events
+from minx_mcp.core.goal_progress import build_goal_progress
+from minx_mcp.core.goals import GoalService
 from minx_mcp.core.models import (
     DailyTimeline,
     FinanceReadInterface,
@@ -26,6 +28,7 @@ def build_daily_timeline(conn: Connection, review_date: str) -> DailyTimeline:
         end=review_date,
         timezone=timezone_name,
     )
+    review_events = [event for event in events if event.sensitivity == "normal"]
     entries = [
         TimelineEntry(
             occurred_at=event.occurred_at,
@@ -34,7 +37,7 @@ def build_daily_timeline(conn: Connection, review_date: str) -> DailyTimeline:
             summary=_summarize_event(event),
             entity_ref=event.entity_ref,
         )
-        for event in events
+        for event in review_events
     ]
     return DailyTimeline(date=review_date, entries=entries)
 
@@ -133,10 +136,14 @@ def build_read_models(
     review_date: str,
     finance_api: FinanceReadInterface | None = None,
 ) -> ReadModels:
+    finance_api = finance_api or FinanceReadAPI(conn)
+    goals = GoalService(conn).list_active_goals(review_date)
     return ReadModels(
         timeline=build_daily_timeline(conn, review_date),
         spending=build_spending_snapshot(conn, review_date, finance_api=finance_api),
         open_loops=build_open_loops_snapshot(conn, review_date, finance_api=finance_api),
+        goal_progress=build_goal_progress(review_date, goals, finance_api),
+        finance_api=finance_api,
     )
 
 

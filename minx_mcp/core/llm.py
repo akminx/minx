@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from minx_mcp.config import get_settings
 from minx_mcp.core.models import (
     DailyTimeline,
+    GoalProgress,
     InsightCandidate,
     LLMInterface,
     LLMReviewResult,
@@ -33,6 +34,9 @@ class LLMProviderError(LLMError):
 
 class LLMResponseError(LLMError):
     """Raised when provider output cannot be normalized."""
+
+
+MALFORMED_PROVIDER_RESPONSE_MESSAGE = "Provider returned malformed response envelope"
 
 
 class _InsightCandidatePayload(BaseModel):
@@ -69,12 +73,14 @@ class JSONBackedLLM:
         spending: SpendingSnapshot,
         open_loops: OpenLoopsSnapshot,
         detector_insights: list[InsightCandidate],
+        goal_progress: list[GoalProgress] | None = None,
     ) -> LLMReviewResult:
         prompt = _render_review_prompt(
             timeline=timeline,
             spending=spending,
             open_loops=open_loops,
             detector_insights=detector_insights,
+            goal_progress=goal_progress or [],
         )
         try:
             response = await self._runner(prompt)
@@ -85,7 +91,20 @@ class JSONBackedLLM:
         return normalize_review_result(response)
 
 
-_PROVIDER_BUILDERS: dict[str, Callable[[dict[str, Any]], LLMInterface | None]] = {}
+def _build_openai_compatible(config: dict[str, Any]) -> LLMInterface:
+    from minx_mcp.core.llm_openai import OpenAICompatibleLLM
+
+    return OpenAICompatibleLLM(
+        base_url=str(config["base_url"]),
+        model=str(config["model"]),
+        api_key_env=str(config["api_key_env"]),
+        timeout_seconds=float(config.get("timeout_seconds", 30.0)),
+    )
+
+
+_PROVIDER_BUILDERS: dict[str, Callable[[dict[str, Any]], LLMInterface | None]] = {
+    "openai_compatible": _build_openai_compatible,
+}
 
 
 def create_llm(
@@ -151,6 +170,29 @@ def normalize_review_result(payload: str | dict[str, Any]) -> LLMReviewResult:
     )
 
 
+def extract_openai_message_content(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        raise LLMProviderError(MALFORMED_PROVIDER_RESPONSE_MESSAGE)
+
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise LLMProviderError(MALFORMED_PROVIDER_RESPONSE_MESSAGE)
+
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        raise LLMProviderError(MALFORMED_PROVIDER_RESPONSE_MESSAGE)
+
+    message = first_choice.get("message")
+    if not isinstance(message, dict):
+        raise LLMProviderError(MALFORMED_PROVIDER_RESPONSE_MESSAGE)
+
+    content = message.get("content")
+    if not isinstance(content, str):
+        raise LLMProviderError(MALFORMED_PROVIDER_RESPONSE_MESSAGE)
+
+    return content
+
+
 def _load_default_config(db_path: str | Path | None = None) -> dict[str, Any] | None:
     resolved_db_path = Path(db_path) if db_path is not None else get_settings().db_path
     conn = get_connection(resolved_db_path)
@@ -170,6 +212,7 @@ def _render_review_prompt(
     spending: SpendingSnapshot,
     open_loops: OpenLoopsSnapshot,
     detector_insights: list[InsightCandidate],
+    goal_progress: list[GoalProgress] | None = None,
 ) -> str:
     timeline_lines = [
         f"- {entry.occurred_at} | {entry.domain} | {entry.summary}"
@@ -183,6 +226,11 @@ def _render_review_prompt(
         f"- {insight.severity} | {insight.summary}"
         for insight in detector_insights
     ] or ["- No detector insights."]
+
+    goal_lines = [
+        f"- {goal.title} | status={goal.status} | actual={goal.actual_value} | target={goal.target_value} | summary={goal.summary}"
+        for goal in (goal_progress or [])
+    ] or ["- No active goals."]
 
     return "\n".join(
         [
@@ -199,6 +247,8 @@ def _render_review_prompt(
             ),
             "Open loops:",
             *open_loop_lines,
+            "Goals:",
+            *goal_lines,
             "Detector insights:",
             *detector_lines,
         ]

@@ -145,6 +145,32 @@ def test_build_daily_timeline_returns_empty_entries_for_quiet_day(tmp_path):
     assert timeline.entries == []
 
 
+def test_build_daily_timeline_excludes_sensitive_events_from_review_output(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    _seed_event(
+        conn,
+        event_type="finance.transactions_imported",
+        occurred_at="2026-03-15T05:15:00Z",
+        payload=_imported_payload(job_id="job-normal"),
+        sensitivity="normal",
+    )
+    _seed_event(
+        conn,
+        event_type="finance.transactions_imported",
+        occurred_at="2026-03-15T06:15:00Z",
+        payload=_imported_payload(job_id="job-sensitive"),
+        sensitivity="sensitive",
+    )
+    conn.commit()
+
+    from minx_mcp.core.read_models import build_daily_timeline
+
+    timeline = build_daily_timeline(conn, "2026-03-15")
+
+    assert len(timeline.entries) == 1
+    assert timeline.entries[0].entity_ref == "entity-1"
+
+
 def test_build_spending_snapshot_uses_finance_read_api_and_two_week_comparison(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
@@ -306,6 +332,26 @@ def test_build_open_loops_snapshot_returns_empty_for_quiet_day(tmp_path):
     assert snapshot.loops == []
 
 
+def test_build_open_loops_snapshot_ignores_uncategorized_inflow_only_day(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    _seed_batch(conn)
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-15",
+        description="Refund",
+        merchant="Unknown",
+        amount_cents=3400,
+        category_id=1,
+    )
+    conn.commit()
+
+    from minx_mcp.core.read_models import build_open_loops_snapshot
+
+    snapshot = build_open_loops_snapshot(conn, "2026-03-15")
+
+    assert snapshot.loops == []
+
+
 def test_build_read_models_uses_stored_timezone_preference(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     set_preference(conn, "core", "timezone", "America/Los_Angeles")
@@ -376,7 +422,14 @@ def test_build_read_models_returns_bundle(tmp_path):
     assert read_models.open_loops.date == "2026-03-15"
 
 
-def _seed_event(conn, *, event_type: str, occurred_at: str, payload: dict) -> int:
+def _seed_event(
+    conn,
+    *,
+    event_type: str,
+    occurred_at: str,
+    payload: dict,
+    sensitivity: str = "normal",
+) -> int:
     event_id = emit_event(
         conn,
         event_type=event_type,
@@ -385,6 +438,7 @@ def _seed_event(conn, *, event_type: str, occurred_at: str, payload: dict) -> in
         entity_ref="entity-pending",
         source="tests",
         payload=payload,
+        sensitivity=sensitivity,
     )
     assert event_id is not None
     conn.execute(

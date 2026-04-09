@@ -6,6 +6,8 @@ from sqlite3 import Connection
 
 from minx_mcp.jobs import STUCK_JOB_TIMEOUT_MINUTES
 
+_GOAL_INELIGIBLE_CATEGORY_NAMES = ("Income",)
+
 
 @dataclass(frozen=True)
 class CategorySpending:
@@ -127,7 +129,7 @@ class FinanceReadAPI:
         row = self._db.execute(
             """
             SELECT
-                COUNT(*) AS transaction_count,
+                COUNT(CASE WHEN t.amount_cents < 0 THEN 1 END) AS transaction_count,
                 COALESCE(ABS(SUM(CASE WHEN t.amount_cents < 0 THEN t.amount_cents END)), 0) AS total_spent_cents
             FROM finance_transactions t
             LEFT JOIN finance_categories c ON c.id = t.category_id
@@ -213,6 +215,107 @@ class FinanceReadAPI:
             prior_total_spent_cents=prior_total,
             category_deltas=category_deltas,
         )
+
+    def list_goal_category_names(self) -> list[str]:
+        placeholders = ", ".join("?" for _ in _GOAL_INELIGIBLE_CATEGORY_NAMES)
+        rows = self._db.execute(
+            f"""
+            SELECT name
+            FROM finance_categories
+            WHERE name NOT IN ({placeholders})
+            ORDER BY name ASC
+            """,
+            _GOAL_INELIGIBLE_CATEGORY_NAMES,
+        ).fetchall()
+        return [str(row["name"]) for row in rows]
+
+    def list_spending_merchant_names(self) -> list[str]:
+        rows = self._db.execute(
+            """
+            SELECT DISTINCT merchant
+            FROM finance_transactions
+            WHERE amount_cents < 0
+              AND COALESCE(TRIM(merchant), '') != ''
+            ORDER BY merchant ASC
+            """
+        ).fetchall()
+        return [str(row["merchant"]) for row in rows]
+
+    def get_filtered_spending_total(
+        self,
+        start_date: str,
+        end_date: str,
+        *,
+        category_names: list[str] | None = None,
+        merchant_names: list[str] | None = None,
+        account_names: list[str] | None = None,
+    ) -> int:
+        sql, params = _build_filtered_expense_query(
+            aggregate_sql="COALESCE(ABS(SUM(t.amount_cents)), 0) AS value",
+            start_date=start_date,
+            end_date=end_date,
+            category_names=category_names,
+            merchant_names=merchant_names,
+            account_names=account_names,
+        )
+        row = self._db.execute(sql, params).fetchone()
+        return int(row["value"])
+
+    def get_filtered_transaction_count(
+        self,
+        start_date: str,
+        end_date: str,
+        *,
+        category_names: list[str] | None = None,
+        merchant_names: list[str] | None = None,
+        account_names: list[str] | None = None,
+    ) -> int:
+        sql, params = _build_filtered_expense_query(
+            aggregate_sql="COUNT(*) AS value",
+            start_date=start_date,
+            end_date=end_date,
+            category_names=category_names,
+            merchant_names=merchant_names,
+            account_names=account_names,
+        )
+        row = self._db.execute(sql, params).fetchone()
+        return int(row["value"])
+
+
+def _build_filtered_expense_query(
+    *,
+    aggregate_sql: str,
+    start_date: str,
+    end_date: str,
+    category_names: list[str] | None = None,
+    merchant_names: list[str] | None = None,
+    account_names: list[str] | None = None,
+) -> tuple[str, list[str]]:
+    end_exclusive = _next_day(end_date)
+    clauses = [
+        "t.posted_at >= ?",
+        "t.posted_at < ?",
+        "t.amount_cents < 0",
+    ]
+    params: list[str] = [start_date, end_exclusive]
+    joins = ""
+    if category_names:
+        joins = "LEFT JOIN finance_categories c ON c.id = t.category_id"
+        placeholders = ", ".join("?" for _ in category_names)
+        clauses.append(f"COALESCE(c.name, 'Uncategorized') IN ({placeholders})")
+        params.extend(category_names)
+    if merchant_names:
+        placeholders = ", ".join("?" for _ in merchant_names)
+        clauses.append(f"t.merchant IN ({placeholders})")
+        params.extend(merchant_names)
+    if account_names:
+        joins += " LEFT JOIN finance_accounts a ON a.id = t.account_id"
+        placeholders = ", ".join("?" for _ in account_names)
+        clauses.append(f"a.name IN ({placeholders})")
+        params.extend(account_names)
+    where = " AND ".join(clauses)
+    sql = f"SELECT {aggregate_sql} FROM finance_transactions t {joins} WHERE {where}"
+    return sql, params
 
 
 def _read_total_spent_cents(db: Connection, start_date: str, end_exclusive: str) -> int:

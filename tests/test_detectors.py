@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from minx_mcp.core.models import (
     DailyTimeline,
+    FinanceReadInterface,
+    GoalProgress,
     InsightCandidate,
     OpenLoop,
     OpenLoopsSnapshot,
@@ -226,7 +230,372 @@ def test_detectors_registry_is_in_spec_order():
     assert [detector.__name__ for detector in DETECTORS] == [
         "detect_spending_spike",
         "detect_open_loops",
+        "detect_goal_drift",
+        "detect_category_drift",
     ]
+
+
+def test_detect_goal_drift_returns_off_track_goal_insight():
+    read_models = _build_read_models(
+        goal_progress=[
+            GoalProgress(
+                goal_id=1,
+                title="Dining out under $250",
+                metric_type="sum_below",
+                target_value=25_000,
+                actual_value=26_000,
+                remaining_value=0,
+                current_start="2026-03-01",
+                current_end="2026-03-31",
+                status="off_track",
+                summary="Off track: $260.00 of $250.00 $0.00 remaining.",
+                category_names=["Dining Out"],
+                merchant_names=[],
+                account_names=[],
+            )
+        ]
+    )
+
+    from minx_mcp.core.goal_detectors import detect_goal_drift
+
+    insights = detect_goal_drift(read_models)
+
+    assert len(insights) == 1
+    assert insights[0].insight_type == "core.goal_drift"
+    assert insights[0].severity == "warning"
+    assert insights[0].actionability == "action_needed"
+    assert "goal-1" in insights[0].dedupe_key
+
+
+def test_detect_goal_drift_returns_empty_for_on_track_goals():
+    read_models = _build_read_models(
+        goal_progress=[
+            GoalProgress(
+                goal_id=1,
+                title="Dining out under $250",
+                metric_type="sum_below",
+                target_value=25_000,
+                actual_value=5_000,
+                remaining_value=20_000,
+                current_start="2026-03-01",
+                current_end="2026-03-31",
+                status="on_track",
+                summary="On track.",
+                category_names=["Dining Out"],
+                merchant_names=[],
+                account_names=[],
+            )
+        ]
+    )
+
+    from minx_mcp.core.goal_detectors import detect_goal_drift
+
+    assert detect_goal_drift(read_models) == []
+
+
+def test_detect_category_drift_returns_alert_for_real_baseline_increase():
+    read_models = _build_read_models(
+        finance_api=_FinanceAPIDouble(
+            total_map={
+                ("2026-03-01", "2026-03-15", ("Dining Out",)): 15_000,
+                ("2026-02-14", "2026-02-28", ("Dining Out",)): 10_000,
+            }
+        ),
+        goal_progress=[
+            GoalProgress(
+                goal_id=1,
+                title="Dining out under $250",
+                metric_type="sum_below",
+                target_value=25_000,
+                actual_value=26_000,
+                remaining_value=0,
+                current_start="2026-03-01",
+                current_end="2026-03-31",
+                status="off_track",
+                summary="Off track.",
+                category_names=["Dining Out"],
+                merchant_names=[],
+                account_names=[],
+            )
+        ]
+    )
+
+    from minx_mcp.core.goal_detectors import detect_category_drift
+
+    insights = detect_category_drift(read_models)
+
+    assert len(insights) == 1
+    assert insights[0].insight_type == "finance.category_drift"
+    assert insights[0].severity == "alert"
+    assert insights[0].actionability == "action_needed"
+
+
+def test_detect_category_drift_returns_warning_for_real_baseline_increase():
+    read_models = _build_read_models(
+        finance_api=_FinanceAPIDouble(
+            total_map={
+                ("2026-03-01", "2026-03-15", ("Groceries",)): 12_500,
+                ("2026-02-14", "2026-02-28", ("Groceries",)): 10_000,
+            }
+        ),
+        goal_progress=[
+            GoalProgress(
+                goal_id=2,
+                title="Groceries under $400",
+                metric_type="sum_below",
+                target_value=40_000,
+                actual_value=20_000,
+                remaining_value=20_000,
+                current_start="2026-03-01",
+                current_end="2026-03-31",
+                status="on_track",
+                summary="On track.",
+                category_names=["Groceries"],
+                merchant_names=[],
+                account_names=[],
+            )
+        ]
+    )
+
+    from minx_mcp.core.goal_detectors import detect_category_drift
+
+    insights = detect_category_drift(read_models)
+
+    assert len(insights) == 1
+    assert insights[0].severity == "warning"
+    assert insights[0].actionability == "suggestion"
+    assert insights[0].supporting_signals == [
+        "Current span: $125.00",
+        "Prior span: $100.00",
+        "Delta: $25.00 (1.25x prior)",
+        "Goal: On track.",
+    ]
+
+
+def test_detect_category_drift_does_not_fire_when_goal_is_merely_watch_without_measured_drift():
+    read_models = _build_read_models(
+        finance_api=_FinanceAPIDouble(
+            total_map={
+                ("2026-03-01", "2026-03-15", ("Dining Out",)): 10_000,
+                ("2026-02-14", "2026-02-28", ("Dining Out",)): 9_500,
+            }
+        ),
+        goal_progress=[
+            GoalProgress(
+                goal_id=1,
+                title="Test",
+                metric_type="sum_below",
+                target_value=25_000,
+                actual_value=10_000,
+                remaining_value=15_000,
+                current_start="2026-03-01",
+                current_end="2026-03-31",
+                status="watch",
+                summary="Watch.",
+                category_names=["Dining Out"],
+                merchant_names=[],
+                account_names=[],
+            )
+        ]
+    )
+
+    from minx_mcp.core.goal_detectors import detect_category_drift
+
+    assert detect_category_drift(read_models) == []
+
+
+def test_detect_category_drift_does_not_fire_on_cold_start_baseline():
+    read_models = _build_read_models(
+        finance_api=_FinanceAPIDouble(
+            total_map={
+                ("2026-03-01", "2026-03-15", ("Dining Out",)): 20_000,
+                ("2026-02-14", "2026-02-28", ("Dining Out",)): 0,
+            }
+        ),
+        goal_progress=[
+            GoalProgress(
+                goal_id=3,
+                title="Dining Out",
+                metric_type="sum_below",
+                target_value=25_000,
+                actual_value=20_000,
+                remaining_value=5_000,
+                current_start="2026-03-01",
+                current_end="2026-03-31",
+                status="watch",
+                summary="Watch.",
+                category_names=["Dining Out"],
+                merchant_names=[],
+                account_names=[],
+            )
+        ],
+    )
+
+    from minx_mcp.core.goal_detectors import detect_category_drift
+
+    assert detect_category_drift(read_models) == []
+
+
+def test_detect_category_drift_uses_count_thresholds_for_warning_and_alert():
+    warning_models = _build_read_models(
+        finance_api=_FinanceAPIDouble(
+            count_map={
+                ("2026-03-01", "2026-03-15", ("Dining Out",)): 6,
+                ("2026-02-14", "2026-02-28", ("Dining Out",)): 4,
+            }
+        ),
+        goal_progress=[
+            GoalProgress(
+                goal_id=4,
+                title="Fewer dining trips",
+                metric_type="count_below",
+                target_value=10,
+                actual_value=6,
+                remaining_value=4,
+                current_start="2026-03-01",
+                current_end="2026-03-31",
+                status="on_track",
+                summary="On track.",
+                category_names=["Dining Out"],
+                merchant_names=[],
+                account_names=[],
+            )
+        ],
+    )
+    alert_models = _build_read_models(
+        finance_api=_FinanceAPIDouble(
+            count_map={
+                ("2026-03-01", "2026-03-15", ("Dining Out",)): 8,
+                ("2026-02-14", "2026-02-28", ("Dining Out",)): 4,
+            }
+        ),
+        goal_progress=[
+            GoalProgress(
+                goal_id=5,
+                title="Fewer dining trips",
+                metric_type="count_below",
+                target_value=10,
+                actual_value=8,
+                remaining_value=2,
+                current_start="2026-03-01",
+                current_end="2026-03-31",
+                status="watch",
+                summary="Watch.",
+                category_names=["Dining Out"],
+                merchant_names=[],
+                account_names=[],
+            )
+        ],
+    )
+
+    from minx_mcp.core.goal_detectors import detect_category_drift
+
+    warning = detect_category_drift(warning_models)
+    alert = detect_category_drift(alert_models)
+
+    assert len(warning) == 1
+    assert warning[0].severity == "warning"
+    assert len(alert) == 1
+    assert alert[0].severity == "alert"
+
+
+def test_detect_category_drift_supports_merchant_only_goals():
+    read_models = _build_read_models(
+        finance_api=_FinanceAPIDouble(
+            total_map={
+                (
+                    "2026-03-01",
+                    "2026-03-15",
+                    (),
+                    ("Cafe",),
+                    (),
+                ): 12_000,
+                (
+                    "2026-02-14",
+                    "2026-02-28",
+                    (),
+                    ("Cafe",),
+                    (),
+                ): 8_000,
+            }
+        ),
+        goal_progress=[
+            GoalProgress(
+                goal_id=6,
+                title="Cafe spend under $200",
+                metric_type="sum_below",
+                target_value=20_000,
+                actual_value=12_000,
+                remaining_value=8_000,
+                current_start="2026-03-01",
+                current_end="2026-03-31",
+                status="watch",
+                summary="Watch.",
+                category_names=[],
+                merchant_names=["Cafe"],
+                account_names=[],
+            )
+        ],
+    )
+
+    from minx_mcp.core.goal_detectors import detect_category_drift
+
+    insights = detect_category_drift(read_models)
+
+    assert len(insights) == 1
+    assert insights[0].insight_type == "finance.category_drift"
+    assert insights[0].summary == (
+        "Cafe spending is up versus the prior comparable span for Cafe spend under $200."
+    )
+
+
+def test_detect_category_drift_supports_account_only_goals():
+    read_models = _build_read_models(
+        finance_api=_FinanceAPIDouble(
+            count_map={
+                (
+                    "2026-03-01",
+                    "2026-03-15",
+                    (),
+                    (),
+                    ("DCU",),
+                ): 6,
+                (
+                    "2026-02-14",
+                    "2026-02-28",
+                    (),
+                    (),
+                    ("DCU",),
+                ): 4,
+            }
+        ),
+        goal_progress=[
+            GoalProgress(
+                goal_id=7,
+                title="Fewer DCU purchases",
+                metric_type="count_below",
+                target_value=10,
+                actual_value=6,
+                remaining_value=4,
+                current_start="2026-03-01",
+                current_end="2026-03-31",
+                status="watch",
+                summary="Watch.",
+                category_names=[],
+                merchant_names=[],
+                account_names=["DCU"],
+            )
+        ],
+    )
+
+    from minx_mcp.core.goal_detectors import detect_category_drift
+
+    insights = detect_category_drift(read_models)
+
+    assert len(insights) == 1
+    assert insights[0].summary == (
+        "DCU activity is up versus the prior comparable span for Fewer DCU purchases."
+    )
 
 
 def _build_read_models(
@@ -235,6 +604,8 @@ def _build_read_models(
     by_category: dict[str, int] | None = None,
     vs_prior_week_pct: float | None = 25.0,
     open_loops: list[OpenLoop] | None = None,
+    goal_progress: list[GoalProgress] | None = None,
+    finance_api: FinanceReadInterface | None = None,
 ) -> ReadModels:
     return ReadModels(
         timeline=DailyTimeline(date="2026-03-15", entries=[]),
@@ -251,6 +622,8 @@ def _build_read_models(
             date="2026-03-15",
             loops=open_loops or [],
         ),
+        goal_progress=goal_progress or [],
+        finance_api=finance_api,
     )
 
 
@@ -262,3 +635,53 @@ def _simplify(insight: InsightCandidate) -> tuple[str, str, str, str, list[str]]
         insight.actionability,
         insight.supporting_signals,
     )
+
+
+@dataclass
+class _FinanceAPIDouble:
+    total_map: dict[tuple[str, str, tuple[str, ...], tuple[str, ...], tuple[str, ...]], int] | None = None
+    count_map: dict[tuple[str, str, tuple[str, ...], tuple[str, ...], tuple[str, ...]], int] | None = None
+
+    def get_filtered_spending_total(
+        self,
+        start_date: str,
+        end_date: str,
+        *,
+        category_names: list[str] | None = None,
+        merchant_names: list[str] | None = None,
+        account_names: list[str] | None = None,
+    ) -> int:
+        key = (
+            start_date,
+            end_date,
+            tuple(category_names or ()),
+            tuple(merchant_names or ()),
+            tuple(account_names or ()),
+        )
+        total_map = self.total_map or {}
+        return total_map.get(
+            key,
+            total_map.get((start_date, end_date, tuple(category_names or ())), 0),
+        )
+
+    def get_filtered_transaction_count(
+        self,
+        start_date: str,
+        end_date: str,
+        *,
+        category_names: list[str] | None = None,
+        merchant_names: list[str] | None = None,
+        account_names: list[str] | None = None,
+    ) -> int:
+        key = (
+            start_date,
+            end_date,
+            tuple(category_names or ()),
+            tuple(merchant_names or ()),
+            tuple(account_names or ()),
+        )
+        count_map = self.count_map or {}
+        return count_map.get(
+            key,
+            count_map.get((start_date, end_date, tuple(category_names or ())), 0),
+        )

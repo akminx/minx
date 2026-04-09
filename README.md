@@ -62,7 +62,29 @@ You can override these with:
 - Finance stores money internally as integer cents and renders dollars at the MCP/report boundary.
 - Weekly and monthly finance reports are generated with explicit lifecycle state in SQLite.
 - The daily review pipeline is implemented and covered by tests. If persisting detector insights to SQLite or writing the vault note fails after the in-memory review is built, `generate_daily_review` raises `ReviewDurabilityError` with the `DailyReview` on `exc.artifact` and per-sink failures on `exc.failures` (LLM timeouts/errors still fall back to the detector-only narrative and do not trigger this).
-- The Core MCP server exposes a `daily_review` tool that any harness can call. It returns the structured review artifact including the rendered markdown.
+- The Core MCP server exposes `daily_review`, `goal_capture`, `goal_create`, `goal_list`, `goal_get`, `goal_update`, and `goal_archive`.
+- `daily_review` returns a protected client-facing projection with explicit redaction metadata rather than the raw internal review artifact.
+- `goal_get` returns both the stored goal DTO and derived progress for an optional `review_date`; progress is `null` outside the goal lifetime.
+- `goal_list()` defaults to active goals, while `goal_list(status=...)` can query other lifecycle states explicitly.
+- Goal progress clamps to the goal lifetime, goal updates can intentionally clear `ends_on` and `notes`, and category drift is based on a real equal-length prior baseline instead of goal status alone.
+- Goal drift/category drift work for category-, merchant-, and account-scoped finance goals, and non-`normal` events are excluded from the review timeline/output path.
+- Optional LLM enrichment can be loaded from the `core/llm_config` preference using the `openai_compatible` provider path.
+- A real stdio MCP smoke test now exists at [tests/test_core_mcp_stdio.py](/Users/akmini/Documents/minx-mcp/tests/test_core_mcp_stdio.py).
+
+## LLM config
+
+Set the `core/llm_config` preference to a payload like:
+
+```json
+{
+  "provider": "openai_compatible",
+  "base_url": "https://api.openai.com/v1",
+  "model": "gpt-4o-mini",
+  "api_key_env": "OPENAI_API_KEY"
+}
+```
+
+`api_key_env` must point to an environment variable; API keys are not stored in preferences.
 
 ## Known limitations
 
