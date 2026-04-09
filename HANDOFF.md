@@ -8,7 +8,7 @@ Status as of 2026-04-09: Slice 2 is stable, and the repo also now contains the r
 - Slice 2: Implemented for the repo-contained Core scope
 - Slice 2.1: Repo-scoped Core work implemented (`goal_capture`, protected `daily_review` projection, stdio coverage); harness-specific instance setup remains intentionally deferred
 
-The repo currently has local, uncommitted doc/workspace changes. Do not assume a clean worktree.
+The repo worktree is clean and in sync with `origin/main` as of 2026-04-09.
 
 ## What Was Fixed In The Hardening Pass (2026-04-09 follow-up)
 
