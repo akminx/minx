@@ -1,14 +1,70 @@
 # Project Handoff
 
-Status as of 2026-04-09: Slice 2 is stable, and the repo also now contains the repo-scoped Core portion of Slice 2.1 (`goal_capture` plus the protected `daily_review` boundary). Harness-specific instance setup is intentionally deferred to later slices. Hardening pass complete — all correctness/cleanup gaps from the prior baseline are now closed. The next move is Slice 3. Use this file as the canonical starting point for the next agent.
+Status as of 2026-04-09: Slice 2 and the repo-scoped Core portion of Slice 2.1 remain stable, and the repo now contains a broader Phase 1 pass of the approved LLM reliability + finance hardening work, including the first natural-language finance query path. Harness-specific instance setup is still intentionally deferred. The next highest-value move is to continue the approved reliability/hardening spec before jumping to Slice 3. Use this file as the canonical starting point for the next agent.
 
 ## Current State
 
 - Slice 1: Implemented
 - Slice 2: Implemented for the repo-contained Core scope
 - Slice 2.1: Repo-scoped Core work implemented (`goal_capture`, protected `daily_review` projection, stdio coverage); harness-specific instance setup remains intentionally deferred
+- LLM Reliability + Finance Hardening: Phase 1 partially implemented in the current worktree, with finance NL querying now added on top of the shared interpretation foundation
 
-The repo worktree is clean and in sync with `origin/main` as of 2026-04-09.
+The repo worktree contains local uncommitted changes from the new reliability/hardening pass and should not be treated as clean.
+
+## What Landed In The New Reliability + Finance Hardening Pass
+
+This pass implemented the first concrete slice of the approved spec and plan:
+
+- Approved spec: [docs/superpowers/specs/2026-04-09-llm-reliability-and-finance-hardening-design.md](/Users/akmini/Documents/minx-mcp/docs/superpowers/specs/2026-04-09-llm-reliability-and-finance-hardening-design.md)
+- Implementation plan: [docs/superpowers/plans/2026-04-09-llm-reliability-and-finance-hardening.md](/Users/akmini/Documents/minx-mcp/docs/superpowers/plans/2026-04-09-llm-reliability-and-finance-hardening.md)
+
+Implemented in this worktree:
+
+- Shared interpretation foundation:
+  - new package scaffold in `minx_mcp/core/interpretation/`
+  - typed interpretation result model in [minx_mcp/core/interpretation/models.py](/Users/akmini/Documents/minx-mcp/minx_mcp/core/interpretation/models.py)
+  - reusable structured interpretation runner in [minx_mcp/core/interpretation/runner.py](/Users/akmini/Documents/minx-mcp/minx_mcp/core/interpretation/runner.py)
+- Existing LLM path now exposes a reusable JSON-prompt entrypoint in [minx_mcp/core/llm.py](/Users/akmini/Documents/minx-mcp/minx_mcp/core/llm.py)
+- `goal_capture` now has an initial LLM-backed interpretation path with deterministic validation and fallback to the legacy path in [minx_mcp/core/goal_capture.py](/Users/akmini/Documents/minx-mcp/minx_mcp/core/goal_capture.py)
+- Finance import detection is no longer filename-only:
+  - staged detection helper in [minx_mcp/core/interpretation/import_detection.py](/Users/akmini/Documents/minx-mcp/minx_mcp/core/interpretation/import_detection.py)
+  - [minx_mcp/finance/importers.py](/Users/akmini/Documents/minx-mcp/minx_mcp/finance/importers.py) now falls back to sampled file content / extracted PDF text
+- Finance sensitive reads now support deterministic filters through service + MCP boundary:
+  - `start_date`
+  - `end_date`
+  - `category_name`
+  - `merchant`
+  - `account_name`
+  - `description_contains`
+- Finance now has an initial natural-language query path:
+  - new finance-query interpretation module in [minx_mcp/core/interpretation/finance_query.py](/Users/akmini/Documents/minx-mcp/minx_mcp/core/interpretation/finance_query.py)
+  - typed finance query plan models in [minx_mcp/core/models.py](/Users/akmini/Documents/minx-mcp/minx_mcp/core/models.py)
+  - new MCP-facing `finance_query` tool in [minx_mcp/finance/server.py](/Users/akmini/Documents/minx-mcp/minx_mcp/finance/server.py)
+  - deterministic execution for `list_transactions`, `sum_spending`, and `count_transactions` via [minx_mcp/finance/service.py](/Users/akmini/Documents/minx-mcp/minx_mcp/finance/service.py) and [minx_mcp/finance/analytics.py](/Users/akmini/Documents/minx-mcp/minx_mcp/finance/analytics.py)
+- The OpenAI-compatible provider path now supports JSON-only interpretation prompts in [minx_mcp/core/llm_openai.py](/Users/akmini/Documents/minx-mcp/minx_mcp/core/llm_openai.py)
+- `category_hint` is now wired on import insert with a deterministic best-effort category match in [minx_mcp/finance/service.py](/Users/akmini/Documents/minx-mcp/minx_mcp/finance/service.py)
+- Finance anomaly threshold is now preference-backed instead of hardcoded via [minx_mcp/preferences.py](/Users/akmini/Documents/minx-mcp/minx_mcp/preferences.py) and [minx_mcp/finance/analytics.py](/Users/akmini/Documents/minx-mcp/minx_mcp/finance/analytics.py)
+- New or expanded test coverage landed in:
+  - [tests/test_interpretation_runner.py](/Users/akmini/Documents/minx-mcp/tests/test_interpretation_runner.py)
+  - [tests/test_goal_capture.py](/Users/akmini/Documents/minx-mcp/tests/test_goal_capture.py)
+  - [tests/test_finance_parsers.py](/Users/akmini/Documents/minx-mcp/tests/test_finance_parsers.py)
+  - [tests/test_finance_query_interpretation.py](/Users/akmini/Documents/minx-mcp/tests/test_finance_query_interpretation.py)
+  - [tests/test_finance_service.py](/Users/akmini/Documents/minx-mcp/tests/test_finance_service.py)
+  - [tests/test_finance_server.py](/Users/akmini/Documents/minx-mcp/tests/test_finance_server.py)
+
+## What Is Still Outstanding From The Approved Spec
+
+The following approved Phase 1 / Phase 2 items have not been implemented yet:
+
+- richer shared interpretation context builders beyond the current foundation
+- staged finance rules inspired by Actual
+- merchant normalization / aliasing
+- import preview / dry-run
+- audit summary surfacing
+- interpretation observability/logging beyond the current minimal foundation
+- event/review reproducibility groundwork
+
+The next agent should continue from the approved spec/plan rather than replanning from scratch.
 
 ## What Was Fixed In The Hardening Pass (2026-04-09 follow-up)
 
@@ -67,13 +123,19 @@ Slice 2 repo-scope acceptance criteria are satisfied, and the repo also implemen
 
 The next agent should not treat Slice 2.1 as untouched, and should not start from a blank "implement conversational goals/trust hardening" assumption. The higher-value next move is to finish the cleanup/hardening gaps in the current baseline and then move to Slice 3 rather than replanning Core-side 2.1 work.
 
-## Recommended Next Slice
+## Recommended Next Move
 
-From the current repo baseline, the recommended next implementation slice is now:
+From the current repo baseline, the recommended next implementation move is now:
+
+- continue Phase 1 of the approved LLM reliability + finance hardening plan
+
+Concretely, the best next task is:
+
+- strengthen the new finance interpretation path with richer shared context builders, better clarification synthesis, and observability/logging
+
+Only after the approved reliability/hardening work is in a good place should the next agent shift focus to:
 
 - **Slice 3: Meals MCP**
-
-All hardening follow-ups from the prior baseline are now complete. The repo baseline is verified at 346 tests / 0 failures, but the current worktree still contains local uncommitted changes and should not be treated as clean.
 
 Harness-specific instance setup and client orchestration remain intentionally deferred until later harness-adaptation work.
 
@@ -109,6 +171,22 @@ These are not all necessarily bugs, but they are the next most likely places for
 ## Verification
 
 Latest results from the current working tree:
+
+- Command: `uv run python -m pytest tests/test_finance_query_interpretation.py tests/test_finance_server.py -q`
+- Result: `26 passed in 0.50s`
+- Command: `uv run python -m pytest tests/test_llm.py tests/test_interpretation_runner.py tests/test_finance_service.py tests/test_finance_server.py tests/test_finance_query_interpretation.py -q`
+- Result: `69 passed in 0.56s`
+- Command: `uv run python -m pytest tests -q`
+- Result: `362 passed in 2.02s`
+- Command: `uv run python -m mypy`
+- Result: `Success: no issues found in 55 source files`
+
+- Command: `uv run python -m pytest tests/test_interpretation_runner.py tests/test_llm.py tests/test_goal_capture.py tests/test_core_server.py tests/test_core_mcp_stdio.py tests/test_finance_parsers.py tests/test_finance_service.py tests/test_finance_server.py -q`
+- Result: `151 passed in 1.26s`
+- Command: `uv run python -m pytest tests -q`
+- Result: `359 passed in 2.24s`
+- Command: `uv run python -m mypy`
+- Result: `Success: no issues found in 54 source files`
 
 - Command: `.venv/bin/python -m pytest tests/test_core_server.py tests/test_goal_progress.py tests/test_goals.py tests/test_core_mcp_stdio.py -q`
 - Result: `50 passed in 0.69s`
@@ -150,6 +228,14 @@ These were the Slice 2 cleanup gate checks and are now complete:
 
 ## Best Next Starting Points
 
+- For continuing the current hardening pass, start with:
+  - [docs/superpowers/specs/2026-04-09-llm-reliability-and-finance-hardening-design.md](/Users/akmini/Documents/minx-mcp/docs/superpowers/specs/2026-04-09-llm-reliability-and-finance-hardening-design.md)
+  - [docs/superpowers/plans/2026-04-09-llm-reliability-and-finance-hardening.md](/Users/akmini/Documents/minx-mcp/docs/superpowers/plans/2026-04-09-llm-reliability-and-finance-hardening.md)
+  - [minx_mcp/core/interpretation](/Users/akmini/Documents/minx-mcp/minx_mcp/core/interpretation)
+  - [minx_mcp/core/goal_capture.py](/Users/akmini/Documents/minx-mcp/minx_mcp/core/goal_capture.py)
+  - [minx_mcp/finance/analytics.py](/Users/akmini/Documents/minx-mcp/minx_mcp/finance/analytics.py)
+  - [minx_mcp/finance/importers.py](/Users/akmini/Documents/minx-mcp/minx_mcp/finance/importers.py)
+  - [minx_mcp/finance/service.py](/Users/akmini/Documents/minx-mcp/minx_mcp/finance/service.py)
 - For Slice 3 planning, start with [docs/superpowers/specs/2026-04-06-minx-life-os-architecture-design.md](/Users/akmini/Documents/minx-mcp/docs/superpowers/specs/2026-04-06-minx-life-os-architecture-design.md), [docs/superpowers/specs/2026-04-06-minx-roadmap-slices.md](/Users/akmini/Documents/minx-mcp/docs/superpowers/specs/2026-04-06-minx-roadmap-slices.md), and the existing Finance domain patterns under [minx_mcp/finance](/Users/akmini/Documents/minx-mcp/minx_mcp/finance).
 - For later harness-specific adaptation work, start with [docs/superpowers/specs/2026-04-08-slice2-1-conversational-goals-design.md](/Users/akmini/Documents/minx-mcp/docs/superpowers/specs/2026-04-08-slice2-1-conversational-goals-design.md), [docs/superpowers/specs/2026-04-08-slice2-1-trust-hardening-design.md](/Users/akmini/Documents/minx-mcp/docs/superpowers/specs/2026-04-08-slice2-1-trust-hardening-design.md), and [docs/superpowers/specs/2026-04-06-minx-roadmap-slices.md](/Users/akmini/Documents/minx-mcp/docs/superpowers/specs/2026-04-06-minx-roadmap-slices.md).
 - Before making changes, rerun:

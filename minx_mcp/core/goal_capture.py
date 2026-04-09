@@ -5,6 +5,8 @@ from datetime import date, timedelta
 from typing import cast
 
 from minx_mcp.contracts import InvalidInputError
+from minx_mcp.core.interpretation.models import GoalCaptureInterpretation
+from minx_mcp.core.interpretation.runner import run_interpretation
 from minx_mcp.core.models import (
     FinanceReadInterface,
     GoalCaptureOption,
@@ -26,7 +28,18 @@ def capture_goal_message(
     review_date: str,
     finance_api: FinanceReadInterface,
     goals: list[GoalRecord],
+    llm: object | None = None,
 ) -> GoalCaptureResult:
+    if llm is not None:
+        interpreted = _capture_with_llm(
+            message=message,
+            review_date=review_date,
+            finance_api=finance_api,
+            llm=llm,
+        )
+        if interpreted is not None:
+            return interpreted
+
     normalized_message = _normalize_text(message)
 
     create_result = _capture_create(
@@ -51,6 +64,107 @@ def capture_goal_message(
         result_type="no_match",
         assistant_message="I couldn't map that to a supported finance goal action.",
     )
+
+
+def _capture_with_llm(
+    *,
+    message: str,
+    review_date: str,
+    finance_api: FinanceReadInterface,
+    llm: object,
+) -> GoalCaptureResult | None:
+    prompt = _render_goal_capture_prompt(message, review_date, finance_api)
+    try:
+        interpretation = _run_goal_capture_interpretation(llm, prompt)
+    except Exception:
+        return None
+
+    if interpretation.intent != "create":
+        return None
+    if interpretation.subject_kind not in {"category", "merchant"}:
+        return None
+    if not interpretation.subject:
+        return None
+    if interpretation.period not in {"daily", "weekly", "monthly"}:
+        return None
+    if interpretation.target_value is None or interpretation.target_value <= 0:
+        return None
+
+    canonical_subject = _resolve_exact_subject(
+        interpretation.subject_kind,
+        interpretation.subject,
+        finance_api,
+    )
+    if canonical_subject is None:
+        return None
+
+    payload = _build_create_payload(
+        subject=canonical_subject,
+        period=interpretation.period,
+        starts_on=_resolve_starts_on(
+            review_date,
+            message,
+            _normalize_text(message),
+            interpretation.period,
+        ),
+        target_value=interpretation.target_value,
+    )
+    if interpretation.subject_kind == "category":
+        payload["category_names"] = [canonical_subject]
+    else:
+        payload["merchant_names"] = [canonical_subject]
+    return GoalCaptureResult(
+        result_type="create",
+        action="goal_create",
+        payload=payload,
+        assistant_message=_build_create_assistant_message(canonical_subject),
+    )
+
+
+def _run_goal_capture_interpretation(llm: object, prompt: str) -> GoalCaptureInterpretation:
+    import asyncio
+
+    return asyncio.run(
+        run_interpretation(
+            llm=llm,
+            prompt=prompt,
+            result_model=GoalCaptureInterpretation,
+        )
+    )
+
+
+def _render_goal_capture_prompt(
+    message: str,
+    review_date: str,
+    finance_api: FinanceReadInterface,
+) -> str:
+    return "\n".join(
+        [
+            "Interpret the goal capture request as JSON.",
+            "Return keys: intent, confidence, subject_kind, subject, period, target_value.",
+            f"Message: {message}",
+            f"Review date: {review_date}",
+            "Known categories: " + ", ".join(finance_api.list_goal_category_names()),
+            "Known merchants: " + ", ".join(finance_api.list_spending_merchant_names()),
+        ]
+    )
+
+
+def _resolve_exact_subject(
+    subject_kind: str,
+    subject: str,
+    finance_api: FinanceReadInterface,
+) -> str | None:
+    candidates = (
+        finance_api.list_goal_category_names()
+        if subject_kind == "category"
+        else finance_api.list_spending_merchant_names()
+    )
+    normalized_subject = _normalize_text(subject)
+    for candidate in candidates:
+        if _normalize_text(candidate) == normalized_subject:
+            return candidate
+    return None
 
 
 def _capture_create(

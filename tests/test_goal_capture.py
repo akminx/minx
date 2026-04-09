@@ -12,7 +12,7 @@ class _StubFinanceRead:
         return ["Cafe", "Dining Out", "Groceries"]
 
     def list_spending_merchant_names(self) -> list[str]:
-        return ["Cafe", "Netflix"]
+        return ["Amazon", "Cafe", "Netflix"]
 
 
 class _AmbiguousSpellingsFinanceRead:
@@ -21,6 +21,15 @@ class _AmbiguousSpellingsFinanceRead:
 
     def list_spending_merchant_names(self) -> list[str]:
         return ["M M"]
+
+
+class _StubGoalCaptureLLM:
+    def __init__(self, payload: str) -> None:
+        self.payload = payload
+
+    async def run_json_prompt(self, prompt: str) -> str:
+        assert "Amazon" in prompt
+        return self.payload
 
 
 def _goal_record(**overrides: object) -> GoalRecord:
@@ -362,6 +371,36 @@ def test_capture_goal_message_returns_no_match_for_unsupported_goal_family() -> 
                 account_names=[],
             )
         ],
+    )
+
+    assert result.result_type == "no_match"
+
+
+def test_capture_goal_message_uses_llm_for_natural_language_create_resolution() -> None:
+    result = capture_goal_message(
+        message="I want to track my Amazon spending under $200 monthly",
+        review_date="2026-03-15",
+        finance_api=_StubFinanceRead(),
+        goals=[],
+        llm=_StubGoalCaptureLLM(
+            '{"intent":"create","confidence":0.97,"subject_kind":"merchant","subject":"Amazon","period":"monthly","target_value":20000}'
+        ),
+    )
+
+    assert result.result_type == "create"
+    assert result.payload is not None
+    assert result.payload["merchant_names"] == ["Amazon"]
+    assert result.payload["target_value"] == 20_000
+    assert result.payload["period"] == "monthly"
+
+
+def test_capture_goal_message_falls_back_when_llm_output_is_invalid() -> None:
+    result = capture_goal_message(
+        message="I want to track my Amazon spending under $200 monthly",
+        review_date="2026-03-15",
+        finance_api=_StubFinanceRead(),
+        goals=[],
+        llm=_StubGoalCaptureLLM('{"intent":"invalid"}'),
     )
 
     assert result.result_type == "no_match"

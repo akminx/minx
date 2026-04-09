@@ -9,6 +9,15 @@ from minx_mcp.finance.server import SAFE_TOOLS, SENSITIVE_TOOLS, create_finance_
 from minx_mcp.finance.service import FinanceService
 
 
+class _StubFinanceQueryLLM:
+    def __init__(self, payload: str) -> None:
+        self.payload = payload
+
+    async def run_json_prompt(self, prompt: str) -> str:
+        assert "Whole Foods" in prompt
+        return self.payload
+
+
 def test_finance_server_registers_expected_tool_names(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
@@ -24,7 +33,7 @@ def test_finance_server_registers_expected_tool_names(tmp_path):
         "finance_generate_weekly_report",
         "finance_generate_monthly_report",
     ]
-    assert SENSITIVE_TOOLS == ["sensitive_finance_query"]
+    assert SENSITIVE_TOOLS == ["sensitive_finance_query", "finance_query"]
 
 
 def test_streamable_http_app_is_available(tmp_path):
@@ -259,6 +268,127 @@ def test_finance_categorize_tool_reports_actual_rows_updated(tmp_path):
     assert result == {
         "success": True,
         "data": {"updated": 1},
+        "error": None,
+        "error_code": None,
+    }
+
+
+def test_sensitive_finance_query_tool_accepts_filters(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    groceries_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    account_id = service.conn.execute(
+        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
+    ).fetchone()["id"]
+    service.conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, ?, 'csv', 'seed.csv', 'fp')
+        """,
+        (account_id,),
+    )
+    service.conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (?, 1, '2026-03-02', 'H-E-B Grocery', 'H-E-B', -4520, ?, 'manual')
+        """,
+        (account_id, groceries_id),
+    )
+    service.conn.commit()
+    server = create_finance_server(service)
+    sensitive_finance_query = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    result = sensitive_finance_query(
+        limit=5,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        category_name="Groceries",
+        merchant="H-E-B",
+        account_name="DCU",
+        description_contains="grocery",
+    )
+
+    assert result == {
+        "success": True,
+        "data": {
+            "transactions": [
+                {
+                    "id": 1,
+                    "posted_at": "2026-03-02",
+                    "description": "H-E-B Grocery",
+                    "account_name": "DCU",
+                    "category_name": "Groceries",
+                    "amount": -45.2,
+                }
+            ]
+        },
+        "error": None,
+        "error_code": None,
+    }
+
+
+def test_finance_query_tool_executes_validated_query_plan(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    groceries_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    account_id = service.conn.execute(
+        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
+    ).fetchone()["id"]
+    service.conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, ?, 'csv', 'seed.csv', 'fp')
+        """,
+        (account_id,),
+    )
+    service.conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (?, 1, '2026-03-12', 'Whole Foods Market', 'Whole Foods', -4520, ?, 'manual')
+        """,
+        (account_id, groceries_id),
+    )
+    service.conn.commit()
+    server = create_finance_server(
+        service,
+        llm=_StubFinanceQueryLLM(
+            (
+                '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31","merchant":"Whole Foods"},'
+                '"confidence":0.94,"needs_clarification":false}'
+            )
+        ),
+    )
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    result = finance_query("show me everything at Whole Foods last month", "2026-03-31")
+
+    assert result == {
+        "success": True,
+        "data": {
+            "result_type": "query",
+            "intent": "list_transactions",
+            "filters": {
+                "start_date": "2026-03-01",
+                "end_date": "2026-03-31",
+                "merchant": "Whole Foods",
+            },
+            "confidence": 0.94,
+            "transactions": [
+                {
+                    "id": 1,
+                    "posted_at": "2026-03-12",
+                    "description": "Whole Foods Market",
+                    "account_name": "DCU",
+                    "category_name": "Groceries",
+                    "amount": -45.2,
+                }
+            ],
+        },
         "error": None,
         "error_code": None,
     }

@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from minx_mcp.contracts import InvalidInputError
+from minx_mcp.core.interpretation.import_detection import detect_finance_source_kind
 from minx_mcp.finance.import_models import GenericCSVMapping, ParsedImportBatch
 from minx_mcp.finance.parsers.dcu import parse_dcu_csv, parse_dcu_pdf
 from minx_mcp.finance.parsers.discover import parse_discover_pdf
@@ -40,16 +41,7 @@ def stream_snapshot_copy_and_hash(source_path: Path, dest_path: Path) -> str:
 
 
 def detect_source_kind(path: Path) -> str:
-    name = path.name.lower()
-    if name.endswith("robinhood_transactions.csv"):
-        return "robinhood_csv"
-    if "free checking transactions.csv" in name:
-        return "dcu_csv"
-    if "discover" in name and path.suffix.lower() == ".pdf":
-        return "discover_pdf"
-    if name.startswith("stmt_") and path.suffix.lower() == ".pdf":
-        return "dcu_pdf"
-    raise InvalidInputError(f"Could not detect finance source for {path}")
+    return detect_finance_source_kind(path)
 
 
 def _parse_kind_from_snapshot(

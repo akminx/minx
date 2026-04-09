@@ -21,6 +21,35 @@ def test_detect_robinhood_csv(tmp_path):
     assert detect_source_kind(path) == "robinhood_csv"
 
 
+def test_detect_dcu_csv_from_content_when_filename_is_unhelpful(tmp_path):
+    path = tmp_path / "statement.csv"
+    path.write_text(
+        "Date,Description,Transaction Type,Amount\n"
+        "2026-03-01,Payroll,Deposit,1200.00\n"
+    )
+
+    assert detect_source_kind(path) == "dcu_csv"
+
+
+def test_detect_discover_pdf_from_sampled_text_when_filename_is_unhelpful(tmp_path, monkeypatch):
+    path = tmp_path / "statement.pdf"
+    path.write_text("stub")
+    monkeypatch.setattr(
+        "minx_mcp.document_text.extract_text",
+        lambda _: "Transactions\n03/01/26 03/01/26 H-E-B $ 42.16 Supermarkets\n",
+    )
+
+    assert detect_source_kind(path) == "discover_pdf"
+
+
+def test_detect_unknown_csv_reports_sampled_structure(tmp_path):
+    path = tmp_path / "statement.csv"
+    path.write_text("not a finance export\njust some notes\n")
+
+    with pytest.raises(InvalidInputError, match="not a finance export"):
+        detect_source_kind(path)
+
+
 def test_stream_snapshot_copy_and_hash_reads_in_chunks(tmp_path, monkeypatch):
     chunk_size = importers._READ_CHUNK
     payload = b"x" * chunk_size + b"y" * chunk_size + b"tail"
@@ -130,6 +159,18 @@ def test_parse_generic_csv_with_saved_mapping(tmp_path):
         mapping=mapping,
     )
     assert parsed.transactions[0].description == "Household"
+
+
+def test_parse_source_file_uses_content_detection_for_unhelpful_filename(tmp_path):
+    path = tmp_path / "statement.csv"
+    path.write_text(
+        "Date,Description,Transaction Type,Amount\n"
+        "2026-03-01,Payroll,Deposit,1200.00\n"
+    )
+
+    parsed = parse_source_file(path, account_name="DCU")
+
+    assert parsed.transactions[0].description == "Payroll"
 
 
 def test_parse_generic_csv_preserves_positive_amounts(tmp_path):

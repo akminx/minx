@@ -7,7 +7,13 @@ from sqlite3 import Connection
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import emit_event
 from minx_mcp.db import get_connection
-from minx_mcp.finance.analytics import find_anomalies, sensitive_query, summarize_finances
+from minx_mcp.finance.analytics import (
+    find_anomalies,
+    sensitive_query,
+    sensitive_query_count,
+    sensitive_query_total_cents,
+    summarize_finances,
+)
 from minx_mcp.finance.import_models import ParsedImportBatch, ParsedTransaction
 from minx_mcp.finance.import_workflow import run_finance_import
 from minx_mcp.finance.report_orchestration import run_monthly_report, run_weekly_report
@@ -133,6 +139,30 @@ class FinanceService:
         ).fetchall()
         return {"accounts": [dict(row) for row in rows]}
 
+    def list_account_names(self) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT name FROM finance_accounts ORDER BY name ASC"
+        ).fetchall()
+        return [str(row["name"]) for row in rows]
+
+    def list_transaction_category_names(self) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT name FROM finance_categories ORDER BY name ASC"
+        ).fetchall()
+        return [str(row["name"]) for row in rows]
+
+    def list_spending_merchant_names(self) -> list[str]:
+        rows = self.conn.execute(
+            """
+            SELECT DISTINCT merchant
+            FROM finance_transactions
+            WHERE amount_cents < 0
+              AND COALESCE(TRIM(merchant), '') != ''
+            ORDER BY merchant ASC
+            """
+        ).fetchall()
+        return [str(row["merchant"]) for row in rows]
+
     def missing_transaction_ids(self, transaction_ids: list[int]) -> list[int]:
         if not transaction_ids:
             return []
@@ -173,10 +203,71 @@ class FinanceService:
                 self.conn.commit()
         return {"items": items}
 
-    def sensitive_finance_query(self, limit: int = 50, session_ref: str | None = None) -> dict[str, object]:
+    def sensitive_finance_query(
+        self,
+        limit: int = 50,
+        session_ref: str | None = None,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        category_name: str | None = None,
+        merchant: str | None = None,
+        account_name: str | None = None,
+        description_contains: str | None = None,
+    ) -> dict[str, object]:
         if limit < 1 or limit > 500:
             raise InvalidInputError("limit must be between 1 and 500")
-        return sensitive_query(self.conn, limit=limit, session_ref=session_ref)
+        return sensitive_query(
+            self.conn,
+            limit=limit,
+            session_ref=session_ref,
+            start_date=start_date,
+            end_date=end_date,
+            category_name=category_name,
+            merchant=merchant,
+            account_name=account_name,
+            description_contains=description_contains,
+        )
+
+    def get_filtered_spending_total(
+        self,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        category_name: str | None = None,
+        merchant: str | None = None,
+        account_name: str | None = None,
+        description_contains: str | None = None,
+    ) -> int:
+        return sensitive_query_total_cents(
+            self.conn,
+            start_date=start_date,
+            end_date=end_date,
+            category_name=category_name,
+            merchant=merchant,
+            account_name=account_name,
+            description_contains=description_contains,
+        )
+
+    def get_filtered_transaction_count(
+        self,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        category_name: str | None = None,
+        merchant: str | None = None,
+        account_name: str | None = None,
+        description_contains: str | None = None,
+    ) -> int:
+        return sensitive_query_count(
+            self.conn,
+            start_date=start_date,
+            end_date=end_date,
+            category_name=category_name,
+            merchant=merchant,
+            account_name=account_name,
+            description_contains=description_contains,
+        )
 
     def generate_weekly_report(self, period_start: str, period_end: str) -> dict[str, object]:
         return run_weekly_report(self, period_start, period_end)
@@ -225,12 +316,16 @@ class FinanceService:
         batch_id: int,
         txn: ParsedTransaction,
     ) -> int:
+        category_id = self._best_effort_category_id(txn.category_hint)
+        category_source = "import" if category_id is not None else "uncategorized"
+        if category_id is None:
+            category_id = self._uncategorized_id()
         cursor = self.conn.execute(
             """
             INSERT INTO finance_transactions (
                 account_id, batch_id, posted_at, description, merchant, amount_cents,
                 category_id, category_source, external_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'uncategorized', ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 account_id,
@@ -239,7 +334,8 @@ class FinanceService:
                 txn.description,
                 txn.merchant,
                 txn.amount_cents,
-                self._uncategorized_id(),
+                category_id,
+                category_source,
                 txn.external_id,
             ),
         )
@@ -255,6 +351,19 @@ class FinanceService:
         if not row:
             raise NotFoundError(f"Unknown finance category: {category_name}")
         return int(row["id"])
+
+    def _best_effort_category_id(self, category_hint: str | None) -> int | None:
+        if not category_hint:
+            return None
+
+        normalized_hint = _normalize_category_name(category_hint)
+        rows = self.conn.execute(
+            "SELECT id, name FROM finance_categories ORDER BY name ASC"
+        ).fetchall()
+        for row in rows:
+            if _normalize_category_name(str(row["name"])) == normalized_hint:
+                return int(row["id"])
+        return None
 
     def _uncategorized_id(self) -> int:
         if self._uncategorized_category_id is None:
@@ -295,3 +404,5 @@ class FinanceService:
         return int(row["total_cents"])
 
 
+def _normalize_category_name(value: str) -> str:
+    return "".join(character for character in value.casefold() if character.isalnum())

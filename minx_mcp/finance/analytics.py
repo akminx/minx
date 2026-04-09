@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from sqlite3 import Connection
 
 from minx_mcp.audit import log_sensitive_access
 from minx_mcp.money import cents_to_dollars
-
-ANOMALY_THRESHOLD = -25_000
+from minx_mcp.preferences import get_finance_anomaly_threshold_cents
 
 
 def summarize_finances(conn: Connection) -> dict[str, object]:
@@ -35,12 +35,13 @@ def find_anomalies(
     period_start: str | None = None,
     end_exclusive: str | None = None,
 ) -> list[dict[str, object]]:
+    threshold = get_finance_anomaly_threshold_cents(conn)
     if period_start and end_exclusive:
         date_clause = "AND t.posted_at >= ? AND t.posted_at < ?"
-        params: tuple = (ANOMALY_THRESHOLD, period_start, end_exclusive)
+        params: tuple = (threshold, period_start, end_exclusive)
     else:
         date_clause = ""
-        params = (ANOMALY_THRESHOLD,)
+        params = (threshold,)
 
     return [
         {
@@ -99,7 +100,23 @@ def sensitive_query(
     conn: Connection,
     limit: int = 50,
     session_ref: str | None = None,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    category_name: str | None = None,
+    merchant: str | None = None,
+    account_name: str | None = None,
+    description_contains: str | None = None,
 ) -> dict[str, object]:
+    clauses, params = _build_sensitive_filter_clauses(
+        start_date=start_date,
+        end_date=end_date,
+        category_name=category_name,
+        merchant=merchant,
+        account_name=account_name,
+        description_contains=description_contains,
+    )
+    where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = [
         {
             "id": int(row["id"]),
@@ -110,7 +127,7 @@ def sensitive_query(
             "amount": cents_to_dollars(int(row["amount_cents"])),
         }
         for row in conn.execute(
-            """
+            f"""
             SELECT
                 t.id,
                 t.posted_at,
@@ -121,11 +138,115 @@ def sensitive_query(
             FROM finance_transactions t
             JOIN finance_accounts a ON a.id = t.account_id
             LEFT JOIN finance_categories c ON c.id = t.category_id
+            {where_clause}
             ORDER BY t.posted_at DESC, t.id DESC
             LIMIT ?
             """,
-            (limit,),
+            [*params, limit],
         ).fetchall()
     ]
     log_sensitive_access(conn, "sensitive_finance_query", session_ref, f"Returned {len(rows)} rows")
     return {"transactions": rows}
+
+
+def sensitive_query_total_cents(
+    conn: Connection,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    category_name: str | None = None,
+    merchant: str | None = None,
+    account_name: str | None = None,
+    description_contains: str | None = None,
+) -> int:
+    clauses, params = _build_sensitive_filter_clauses(
+        start_date=start_date,
+        end_date=end_date,
+        category_name=category_name,
+        merchant=merchant,
+        account_name=account_name,
+        description_contains=description_contains,
+    )
+    clauses.append("t.amount_cents < 0")
+    where_clause = f"WHERE {' AND '.join(clauses)}"
+    row = conn.execute(
+        f"""
+        SELECT COALESCE(ABS(SUM(t.amount_cents)), 0) AS total_cents
+        FROM finance_transactions t
+        JOIN finance_accounts a ON a.id = t.account_id
+        LEFT JOIN finance_categories c ON c.id = t.category_id
+        {where_clause}
+        """,
+        params,
+    ).fetchone()
+    return int(row["total_cents"])
+
+
+def sensitive_query_count(
+    conn: Connection,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    category_name: str | None = None,
+    merchant: str | None = None,
+    account_name: str | None = None,
+    description_contains: str | None = None,
+) -> int:
+    clauses, params = _build_sensitive_filter_clauses(
+        start_date=start_date,
+        end_date=end_date,
+        category_name=category_name,
+        merchant=merchant,
+        account_name=account_name,
+        description_contains=description_contains,
+    )
+    where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS total_count
+        FROM finance_transactions t
+        JOIN finance_accounts a ON a.id = t.account_id
+        LEFT JOIN finance_categories c ON c.id = t.category_id
+        {where_clause}
+        """,
+        params,
+    ).fetchone()
+    return int(row["total_count"])
+
+
+def _build_sensitive_filter_clauses(
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    category_name: str | None,
+    merchant: str | None,
+    account_name: str | None,
+    description_contains: str | None,
+) -> tuple[list[str], list[object]]:
+    clauses: list[str] = []
+    params: list[object] = []
+
+    if start_date is not None:
+        clauses.append("t.posted_at >= ?")
+        params.append(start_date)
+    if end_date is not None:
+        clauses.append("t.posted_at < ?")
+        params.append(_next_day(end_date))
+    if category_name is not None:
+        clauses.append("COALESCE(c.name, 'Uncategorized') = ?")
+        params.append(category_name)
+    if merchant is not None:
+        clauses.append("t.merchant = ?")
+        params.append(merchant)
+    if account_name is not None:
+        clauses.append("a.name = ?")
+        params.append(account_name)
+    if description_contains is not None:
+        clauses.append("instr(lower(t.description), lower(?)) > 0")
+        params.append(description_contains)
+
+    return clauses, params
+
+
+def _next_day(value: str) -> str:
+    return (date.fromisoformat(value) + timedelta(days=1)).isoformat()

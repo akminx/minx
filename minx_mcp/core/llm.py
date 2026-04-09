@@ -4,7 +4,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -60,12 +60,28 @@ class _LLMReviewPayload(BaseModel):
     next_day_focus: list[str]
 
 
+class JSONPromptLLM(Protocol):
+    async def run_json_prompt(self, prompt: str) -> str: ...
+
+
 class JSONBackedLLM:
     def __init__(
         self,
         runner: Callable[[str], Awaitable[str | dict[str, Any]]],
     ) -> None:
         self._runner = runner
+
+    async def run_json_prompt(self, prompt: str) -> str:
+        try:
+            response = await self._runner(prompt)
+        except LLMError:
+            raise
+        except Exception as exc:  # pragma: no cover - exercised via tests
+            raise LLMProviderError(str(exc)) from exc
+
+        if isinstance(response, str):
+            return response
+        return json.dumps(response)
 
     async def evaluate_review(
         self,
