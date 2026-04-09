@@ -17,20 +17,19 @@ The roadmap now follows four arcs:
 
 From the current repo baseline, the recommended execution order is:
 
-1. Slice 2.1: Conversational Goals + Trust Hardening
-2. Slice 3: Meals MCP
-3. Slice 4: Training MCP
-4. Slice 5: Harness Adaptation + Ambient Inputs
-5. Slice 6: Durable Memory + Review Reproducibility
-6. Slice 7: Ideas/Journal MCP
-7. Slice 8: Proactive Autonomy
-8. Slice 9: Dashboard + Richer Surfaces
+1. Slice 3: Meals MCP
+2. Slice 4: Training MCP
+3. Slice 5: Harness Adaptation + Ambient Inputs
+4. Slice 6: Durable Memory + Review Reproducibility
+5. Slice 7: Ideas/Journal MCP
+6. Slice 8: Proactive Autonomy
+7. Slice 9: Dashboard + Richer Surfaces
 
 This ordering preserves the architecture doc's north star:
 
 - Minx Core stays the owner of interpretation
 - domains stay the owner of facts
-- Hermes/Discord stays a thin conversational shell
+- harness-specific instance setup stays outside Core and arrives later than the reusable Core contracts
 - autonomy waits until memory, trust, and review durability are mature enough
 
 ---
@@ -91,11 +90,11 @@ This ordering preserves the architecture doc's north star:
 - `goal_list()` defaults to active goals; `goal_list(status=...)` is the explicit path for other lifecycle states.
 - Goal progress uses the natural period window intersected with the goal lifetime.
 - `detect_category_drift` compares the current elapsed span against the immediately preceding equal-length baseline span and works for category-, merchant-, and account-scoped goals.
-- `daily_review` now exposes structured fields at the MCP boundary instead of only counts and markdown.
+- `daily_review` now returns a protected projection at the MCP boundary rather than the raw internal review artifact.
 
 **Still deferred after Slice 2:**
-- Hermes/Discord conversational goal capture
-- generalized redaction policy beyond coarse review-path exclusion
+- transport-agnostic conversational capture and protected review boundary hardening
+- generalized redaction policy beyond the default protected review contract
 - insight expiration filtering
 - read-model snapshot persistence for reproducibility
 
@@ -103,22 +102,32 @@ This ordering preserves the architecture doc's north star:
 
 ## Slice 2.1: Conversational Goals + Trust Hardening
 
-**Status:** Not started
+**Status:** Implemented for the repo-scoped Core/harness-agnostic work; external harness setup deferred
 
 **Scope:**
-- Hermes/Discord conversational goal capture as a thin client over Core goal tools
+- transport-agnostic conversational goal capture in Core
 - prompt/policy layer that translates natural language into structured `goal_create` and `goal_update` calls
 - stronger sensitivity policy for review inputs and outputs
 - redaction rules for sensitive events and goal-related artifacts
 - review/client contract checks so harnesses consume the structured review artifact deliberately
-- end-to-end goal flow verification from conversational surface -> Core tools -> review output
+- end-to-end goal flow verification from conversational input -> Core tools -> protected review output
 
-**Delivers:** The first real Hermes-style goal experience, plus a trust boundary that keeps richer conversational surfaces from leaking sensitive content.
+**Delivers:** A reusable Core goal-capture surface plus a protected review boundary that any MCP-capable harness can consume without embedding business logic in the client.
 
 **Dependencies:** Slice 2
 
+**Implementation notes:**
+- `goal_capture` now exists in Core as a deterministic `create` / `update` / `clarify` / `no_match` proposal tool.
+- `daily_review` now returns a protected client-facing projection with explicit redaction metadata by default.
+- Unit, server, stdio, and repo-level e2e tests cover the Core-side conversational-goal and protected-review flows.
+
+**Still deferred after repo-scoped Slice 2.1:**
+- Hermes/Discord or other harness-specific instance setup
+- session state, UI flow, and client orchestration outside Core
+- broader trust policy evolution beyond the default protected boundary
+
 **Why this exists as a separate slice:**
-- It keeps business logic in Core and lets Hermes stay thin.
+- It keeps business logic in Core and lets harness-specific shells stay thin.
 - It gives trust/privacy work a home instead of pretending it is free follow-up polish.
 - It prevents us from moving into more public or proactive surfaces before the review boundary is safe enough.
 

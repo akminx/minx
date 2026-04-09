@@ -4,7 +4,7 @@
 
 **Goal:** Align the Minx roadmap with the Life OS north star while preserving the reality of the current repo baseline and making deferred work explicit in later slices.
 
-**Architecture:** Treat the existing repo as the portable Core foundation, keep domain ownership outside Core, and sequence future work by trust: first make the goal/review boundary safe and conversational, then expand domains, then add harness adaptation and durable memory, and only after that push further into autonomy and dashboard surfaces.
+**Architecture:** Treat the existing repo as the portable Core foundation, keep domain ownership outside Core, and sequence future work by trust: first finish the reusable Core goal/review boundary, then expand domains, then add harness adaptation and durable memory, and only after that push further into autonomy and dashboard surfaces.
 
 **Tech Stack:** Python 3.12, SQLite, FastMCP, existing Minx Core/Finance modules, future Hermes or Discord harness integration, future domain MCP servers
 
@@ -44,10 +44,10 @@
 
 ## Task 2: Add The Missing Bridge Slice
 
-**Goal:** Insert the next slice that the product actually needs before broader expansion.
+**Goal:** Insert the bridge slice the product needed before broader expansion, while keeping its reusable Core work distinct from later harness-specific setup.
 
 - [ ] Add `Slice 2.1: Conversational Goals + Trust Hardening`.
-- [ ] Put Hermes/Discord conversational goal capture there as a thin client over Core tools.
+- [ ] Put transport-agnostic Core conversational goal capture there, with Hermes/Discord instance setup deferred later.
 - [ ] Put stronger sensitivity/redaction policy there instead of leaving it as “follow-up polish.”
 - [ ] Define this slice as the trust and interaction bridge between Core goals and broader surfaces.
 
@@ -117,8 +117,8 @@
 
 ## Recommended Execution Order
 
-- [ ] Execute `Slice 2.1` next if Hermes/Discord interaction is the near-term priority.
-- [ ] Execute `Slice 3` and `Slice 4` next if the priority is stronger cross-domain insight before more client polish.
+- [ ] Treat repo-scoped `Slice 2.1` as the completed Core bridge once `goal_capture` and the protected review boundary are shipped.
+- [ ] Execute `Slice 3` and `Slice 4` next if the priority is stronger cross-domain insight before more harness-specific client polish.
 - [ ] Land `Slice 5` before trying to make every harness feel equally good.
 - [ ] Land `Slice 6` before taking on serious autonomy or dashboard history/debug needs.
 - [ ] Treat `Slice 8` and `Slice 9` as capstone work, not as baseline product work.
@@ -131,7 +131,7 @@ When this roadmap is followed, Minx grows in the same order the architecture doc
 
 1. portable Core foundation
 2. goals and review interpretation
-3. safe conversational integration
+3. safe reusable Core-side conversational/trust integration
 4. multiple real domains
 5. harness-aware behavior
 6. durable memory and reproducibility

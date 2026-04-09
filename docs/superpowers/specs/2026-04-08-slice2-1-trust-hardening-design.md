@@ -1,12 +1,12 @@
 # Slice 2.1 Phase A: Core Trust Hardening Design
 
 **Date:** 2026-04-08
-**Status:** Drafted for review
+**Status:** Implemented for the repo-scoped Core review boundary
 **Parent:** [2026-04-06-minx-roadmap-slices.md](2026-04-06-minx-roadmap-slices.md)
 
 ## Goal
 
-Harden the `minx-core` review boundary so richer clients can consume `daily_review` safely without seeing sensitive freeform output by default.
+Define and document the hardened `minx-core` review boundary so richer clients can consume `daily_review` safely without seeing sensitive freeform output by default.
 
 This phase is the first implementation cut of `Slice 2.1: Conversational Goals + Trust Hardening`, but it intentionally scopes to Core-only trust policy work that fits this repo today.
 
@@ -64,7 +64,7 @@ This phase does not include:
 
 ## Current Baseline
 
-Today, `daily_review` builds a `DailyReview` artifact in Core and returns most of it directly at the MCP boundary.
+Before this work, `daily_review` built a `DailyReview` artifact in Core and returned most of it directly at the MCP boundary.
 
 The current repo already has one coarse trust rule:
 
@@ -381,4 +381,4 @@ This phase is successful when:
 
 ## Follow-On Work
 
-Once this phase is landed, the next Slice 2.1 step can add a thin conversational goal adapter over the safer Core contract instead of binding clients directly to raw review prose.
+This phase is now the repo-scoped trust half of Slice 2.1. Harness-specific instance setup can build on this safer Core contract later without binding clients directly to raw review prose.
