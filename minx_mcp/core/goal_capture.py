@@ -187,7 +187,8 @@ def _capture_update(
             review_date=review_date,
         )
     if len(supported_candidates) > 1:
-        assert payload is not None
+        if payload is None:
+            raise RuntimeError("payload must be set when update kind is not retarget_missing_target")
         return GoalCaptureResult(
             result_type="clarify",
             action="goal_update",
@@ -210,7 +211,8 @@ def _capture_update(
         )
 
     goal = supported_candidates[0]
-    assert payload is not None
+    if payload is None:
+        raise RuntimeError("payload must be set when update kind is not retarget_missing_target")
     return GoalCaptureResult(
         result_type="update",
         action="goal_update",

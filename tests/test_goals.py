@@ -230,3 +230,52 @@ def test_goal_service_update_can_clear_ends_on(tmp_path):
     )
 
     assert updated.ends_on is None
+
+
+def test_goal_service_rejects_blank_category_name(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    service = GoalService(conn)
+
+    with pytest.raises(InvalidInputError, match="category_names must not contain blank entries"):
+        service.create_goal(_make_valid_input(category_names=["  "]))
+
+
+def test_goal_service_rejects_blank_merchant_name(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    service = GoalService(conn)
+
+    with pytest.raises(InvalidInputError, match="merchant_names must not contain blank entries"):
+        service.create_goal(_make_valid_input(
+            category_names=[],
+            merchant_names=[""],
+            account_names=["Checking"],
+        ))
+
+
+def test_goal_service_rejects_blank_account_name(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    service = GoalService(conn)
+
+    with pytest.raises(InvalidInputError, match="account_names must not contain blank entries"):
+        service.create_goal(_make_valid_input(
+            category_names=[],
+            merchant_names=[],
+            account_names=["\t"],
+        ))
+
+
+def test_goal_service_normalizes_filter_names_on_create(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    service = GoalService(conn)
+
+    created = service.create_goal(_make_valid_input(category_names=["  Dining Out  "]))
+
+    assert created.category_names == ["Dining Out"]
+
+
+def test_goal_service_rejects_mixed_blank_and_valid_filter_members(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    service = GoalService(conn)
+
+    with pytest.raises(InvalidInputError, match="category_names must not contain blank entries"):
+        service.create_goal(_make_valid_input(category_names=["Dining Out", "  "]))

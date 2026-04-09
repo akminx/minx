@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import tempfile
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 from sqlite3 import Connection
 from typing import Any, Protocol
 
@@ -209,7 +212,7 @@ def _canonicalize_existing_path(path: Path, *, anchor: Path | None = None) -> Pa
                 if child.name.casefold() == part.casefold():
                     actual_part = child.name
                     break
-        except OSError:
-            pass
+        except OSError as exc:
+            _log.warning("Cannot list directory %s during path canonicalization: %s", current, exc)
         current = current / actual_part
     return current

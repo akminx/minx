@@ -20,6 +20,9 @@ class GoalService:
     def create_goal(self, payload: GoalCreateInput) -> GoalRecord:
         normalized_goal_type = _normalize_goal_type(payload.goal_type)
         normalized_title = _normalize_title(payload.title)
+        normalized_category_names = _normalize_filter_names(payload.category_names, "category_names")
+        normalized_merchant_names = _normalize_filter_names(payload.merchant_names, "merchant_names")
+        normalized_account_names = _normalize_filter_names(payload.account_names, "account_names")
         _validate_goal_state(
             goal_type=normalized_goal_type,
             title=normalized_title,
@@ -29,15 +32,15 @@ class GoalService:
             domain=payload.domain,
             starts_on=payload.starts_on,
             ends_on=payload.ends_on,
-            category_names=payload.category_names,
-            merchant_names=payload.merchant_names,
-            account_names=payload.account_names,
+            category_names=normalized_category_names,
+            merchant_names=normalized_merchant_names,
+            account_names=normalized_account_names,
         )
         filters_json = json.dumps(
             {
-                "category_names": payload.category_names,
-                "merchant_names": payload.merchant_names,
-                "account_names": payload.account_names,
+                "category_names": normalized_category_names,
+                "merchant_names": normalized_merchant_names,
+                "account_names": normalized_account_names,
             }
         )
         cursor = self._conn.execute(
@@ -237,6 +240,14 @@ def _normalize_goal_type(value: str) -> str:
     normalized = value.strip()
     if not normalized:
         raise InvalidInputError("goal_type must be non-empty")
+    return normalized
+
+
+def _normalize_filter_names(names: list[str], field_name: str) -> list[str]:
+    normalized = [name.strip() for name in names]
+    for member in normalized:
+        if not member:
+            raise InvalidInputError(f"{field_name} must not contain blank entries")
     return normalized
 
 

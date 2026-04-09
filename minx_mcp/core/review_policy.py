@@ -9,6 +9,7 @@ REDACTION_POLICY = "core_default_v1"
 ACTIVITY_LOW_MAX = 1
 ACTIVITY_MODERATE_MAX = 3
 MANY_THRESHOLD = 3
+_GOAL_NEEDS_ATTENTION_STATUSES = frozenset({"off_track", "watch"})
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,10 @@ class ProtectedDailyReview:
 
 def build_protected_review(review: DailyReview) -> ProtectedDailyReview:
     activity_level = _bucket_activity(len(review.timeline.entries))
-    goal_attention_level = _bucket_many_some_none(len(review.goal_progress))
+    goals_needing_attention = sum(
+        1 for gp in review.goal_progress if gp.status in _GOAL_NEEDS_ATTENTION_STATUSES
+    )
+    goal_attention_level = _bucket_many_some_none(goals_needing_attention)
     open_loop_level = _bucket_many_some_none(len(review.open_loops.loops))
     attention_areas = _build_attention_areas(
         review,
@@ -106,7 +110,7 @@ def _build_attention_areas(
     areas: list[str] = []
     if activity_level != "none":
         areas.append("activity")
-    if review.spending.total_spent_cents > 0 or review.spending.uncategorized_total_cents > 0:
+    if review.spending.uncategorized_total_cents > 0:
         areas.append("spending")
     if goal_attention_level != "none":
         areas.append("goals")

@@ -314,13 +314,8 @@ def test_built_wheel_includes_packaged_migrations(tmp_path):
     subprocess.run(
         [
             sys.executable,
-            "-m",
-            "pip",
-            "wheel",
-            ".",
-            "--no-deps",
-            "--no-build-isolation",
-            "-w",
+            "-c",
+            "import sys; from setuptools.build_meta import build_wheel; build_wheel(sys.argv[1])",
             str(wheel_dir),
         ],
         check=True,

@@ -833,6 +833,158 @@ def test_build_protected_review_handles_quiet_day() -> None:
     assert protected.next_day_focus == []
 
 
+def test_build_protected_review_does_not_flag_spending_for_normal_spending_day() -> None:
+    from minx_mcp.core.models import DailyReview, DailyTimeline, OpenLoopsSnapshot, SpendingSnapshot
+    from minx_mcp.core.review_policy import build_protected_review
+
+    protected = build_protected_review(
+        DailyReview(
+            date="2026-03-15",
+            timeline=DailyTimeline(date="2026-03-15", entries=[]),
+            spending=SpendingSnapshot(
+                date="2026-03-15",
+                total_spent_cents=12_000,
+                by_category={"Groceries": 12_000},
+                top_merchants=[("HEB", 12_000)],
+                vs_prior_week_pct=5.0,
+                uncategorized_count=0,
+                uncategorized_total_cents=0,
+            ),
+            open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
+            goal_progress=[],
+            insights=[],
+            narrative="raw",
+            next_day_focus=[],
+            llm_enriched=False,
+        )
+    )
+
+    assert "spending" not in protected.attention_areas
+    assert protected.narrative == "Protected summary: no flagged areas."
+    assert protected.next_day_focus == []
+
+
+def test_build_protected_review_flags_spending_when_uncategorized_spending_present() -> None:
+    from minx_mcp.core.models import DailyReview, DailyTimeline, OpenLoopsSnapshot, SpendingSnapshot
+    from minx_mcp.core.review_policy import build_protected_review
+
+    protected = build_protected_review(
+        DailyReview(
+            date="2026-03-15",
+            timeline=DailyTimeline(date="2026-03-15", entries=[]),
+            spending=SpendingSnapshot(
+                date="2026-03-15",
+                total_spent_cents=5_000,
+                by_category={},
+                top_merchants=[],
+                vs_prior_week_pct=None,
+                uncategorized_count=2,
+                uncategorized_total_cents=5_000,
+            ),
+            open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
+            goal_progress=[],
+            insights=[],
+            narrative="raw",
+            next_day_focus=[],
+            llm_enriched=False,
+        )
+    )
+
+    assert "spending" in protected.attention_areas
+
+
+def test_build_protected_review_does_not_flag_goals_when_all_on_track() -> None:
+    from minx_mcp.core.models import DailyReview, DailyTimeline, GoalProgress, OpenLoopsSnapshot, SpendingSnapshot
+    from minx_mcp.core.review_policy import build_protected_review
+
+    protected = build_protected_review(
+        DailyReview(
+            date="2026-03-15",
+            timeline=DailyTimeline(date="2026-03-15", entries=[]),
+            spending=SpendingSnapshot(
+                date="2026-03-15",
+                total_spent_cents=0,
+                by_category={},
+                top_merchants=[],
+                vs_prior_week_pct=None,
+                uncategorized_count=0,
+                uncategorized_total_cents=0,
+            ),
+            open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
+            goal_progress=[
+                GoalProgress(
+                    goal_id=1,
+                    title="Dining Out Cap",
+                    metric_type="sum_below",
+                    target_value=25_000,
+                    actual_value=10_000,
+                    remaining_value=15_000,
+                    current_start="2026-03-01",
+                    current_end="2026-03-31",
+                    status="on_track",
+                    summary="On track.",
+                    category_names=["Dining Out"],
+                    merchant_names=[],
+                    account_names=[],
+                )
+            ],
+            insights=[],
+            narrative="raw",
+            next_day_focus=[],
+            llm_enriched=False,
+        )
+    )
+
+    assert "goals" not in protected.attention_areas
+    assert protected.goal_attention_level == "none"
+
+
+def test_build_protected_review_flags_goals_when_off_track() -> None:
+    from minx_mcp.core.models import DailyReview, DailyTimeline, GoalProgress, OpenLoopsSnapshot, SpendingSnapshot
+    from minx_mcp.core.review_policy import build_protected_review
+
+    protected = build_protected_review(
+        DailyReview(
+            date="2026-03-15",
+            timeline=DailyTimeline(date="2026-03-15", entries=[]),
+            spending=SpendingSnapshot(
+                date="2026-03-15",
+                total_spent_cents=0,
+                by_category={},
+                top_merchants=[],
+                vs_prior_week_pct=None,
+                uncategorized_count=0,
+                uncategorized_total_cents=0,
+            ),
+            open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
+            goal_progress=[
+                GoalProgress(
+                    goal_id=1,
+                    title="Dining Out Cap",
+                    metric_type="sum_below",
+                    target_value=25_000,
+                    actual_value=30_000,
+                    remaining_value=0,
+                    current_start="2026-03-01",
+                    current_end="2026-03-31",
+                    status="off_track",
+                    summary="Over limit.",
+                    category_names=["Dining Out"],
+                    merchant_names=[],
+                    account_names=[],
+                )
+            ],
+            insights=[],
+            narrative="raw",
+            next_day_focus=[],
+            llm_enriched=False,
+        )
+    )
+
+    assert "goals" in protected.attention_areas
+    assert protected.goal_attention_level in {"some", "many"}
+
+
 def test_build_protected_review_does_not_flag_spending_for_uncategorized_inflow_only_day() -> None:
     from minx_mcp.core.models import DailyReview, DailyTimeline, OpenLoopsSnapshot, SpendingSnapshot
     from minx_mcp.core.review_policy import build_protected_review
