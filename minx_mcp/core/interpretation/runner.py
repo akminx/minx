@@ -25,13 +25,7 @@ async def run_interpretation(*, llm: object, prompt: str, result_model: type[T])
                 return _validate_interpretation_payload(payload, result_model)
             raise
         except (TypeError, json.JSONDecodeError, ValidationError) as exc:
-            prompt_summary = f"model={result_model.__name__} prompt_len={len(prompt)}"
-            error_repr: object = type(exc).__name__
-            log_interpretation_failure(
-                task=result_model.__name__,
-                prompt_summary=prompt_summary,
-                error=error_repr,
-            )
+            _log_schema_validation_failure(prompt=prompt, result_model=result_model, error=exc)
             raise RuntimeError("Interpretation schema validation failed") from exc
         except Exception as exc:
             prompt_summary = f"model={result_model.__name__} prompt_len={len(prompt)}"
@@ -50,15 +44,7 @@ async def run_interpretation(*, llm: object, prompt: str, result_model: type[T])
         payload = await runner(prompt)
         return _validate_interpretation_payload(payload, result_model)
     except (TypeError, json.JSONDecodeError, ValidationError) as exc:
-        prompt_summary = f"model={result_model.__name__} prompt_len={len(prompt)}"
-        # Validation and decode errors can embed raw model output, which may
-        # include user text. Log only the exception type.
-        error_repr: object = type(exc).__name__
-        log_interpretation_failure(
-            task=result_model.__name__,
-            prompt_summary=prompt_summary,
-            error=error_repr,
-        )
+        _log_schema_validation_failure(prompt=prompt, result_model=result_model, error=exc)
         raise RuntimeError("Interpretation schema validation failed") from exc
     except Exception as exc:
         prompt_summary = f"model={result_model.__name__} prompt_len={len(prompt)}"
@@ -77,3 +63,19 @@ def _validate_interpretation_payload(payload: Any, result_model: type[T]) -> T:
         data = json.loads(payload)
         return result_model.model_validate(data)
     return result_model.model_validate(payload)
+
+
+def _log_schema_validation_failure(
+    *,
+    prompt: str,
+    result_model: type[T],
+    error: Exception,
+) -> None:
+    prompt_summary = f"model={result_model.__name__} prompt_len={len(prompt)}"
+    # Validation and decode errors can embed raw model output, which may
+    # include user text. Log only the exception type.
+    log_interpretation_failure(
+        task=result_model.__name__,
+        prompt_summary=prompt_summary,
+        error=type(error).__name__,
+    )

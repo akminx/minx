@@ -66,6 +66,13 @@ def get_insight_history(
             }
         )
 
+    recurrence_rows = sorted(
+        (
+            (insight_type_value, pattern_key, count)
+            for (insight_type_value, pattern_key), count in pattern_counter.items()
+        ),
+        key=lambda item: (-item[2], item[1]),
+    )
     recurrences = [
         {
             "insight_type": insight_type_value,
@@ -74,9 +81,8 @@ def get_insight_history(
             "window_days": days,
             "description": f"Occurred {count} times in the last {days} days",
         }
-        for (insight_type_value, pattern_key), count in pattern_counter.items()
+        for insight_type_value, pattern_key, count in recurrence_rows
     ]
-    recurrences.sort(key=lambda item: (-int(item["occurrences"]), str(item["pattern_key"])))
 
     return {
         "window": {

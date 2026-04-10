@@ -188,17 +188,65 @@ def _validate_structured_update_payload(
 
 
 def _validate_goal_create_input_shape(payload: dict[str, object]) -> None:
-    try:
-        GoalCreateInput(**payload)
-    except TypeError as exc:
-        raise InvalidInputError(f"invalid structured goal_create payload: {exc}") from exc
+    _parse_goal_create_input(payload)
 
 
 def _validate_goal_update_input_shape(payload: dict[str, object]) -> None:
-    try:
-        GoalUpdateInput(**payload)
-    except TypeError as exc:
-        raise InvalidInputError(f"invalid structured goal_update payload: {exc}") from exc
+    _parse_goal_update_input(payload)
+
+
+def _parse_goal_create_input(payload: dict[str, object]) -> GoalCreateInput:
+    required_keys = {
+        "goal_type",
+        "title",
+        "metric_type",
+        "target_value",
+        "period",
+        "domain",
+        "category_names",
+        "merchant_names",
+        "account_names",
+        "starts_on",
+        "ends_on",
+        "notes",
+    }
+    _require_exact_keys(payload, required_keys, context="goal_create")
+    return GoalCreateInput(
+        goal_type=_require_str(payload, "goal_type"),
+        title=_require_str(payload, "title"),
+        metric_type=_require_str(payload, "metric_type"),
+        target_value=_require_int(payload, "target_value"),
+        period=_require_str(payload, "period"),
+        domain=_require_str(payload, "domain"),
+        category_names=_require_str_list(payload, "category_names"),
+        merchant_names=_require_str_list(payload, "merchant_names"),
+        account_names=_require_str_list(payload, "account_names"),
+        starts_on=_require_str(payload, "starts_on"),
+        ends_on=_require_optional_str(payload, "ends_on"),
+        notes=_require_optional_str(payload, "notes"),
+    )
+
+
+def _parse_goal_update_input(payload: dict[str, object]) -> GoalUpdateInput:
+    allowed_keys = {
+        "title",
+        "target_value",
+        "status",
+        "ends_on",
+        "notes",
+        "clear_ends_on",
+        "clear_notes",
+    }
+    _reject_unknown_keys(payload, allowed_keys, context="goal_update")
+    return GoalUpdateInput(
+        title=_require_optional_str(payload, "title") if "title" in payload else None,
+        target_value=_require_int(payload, "target_value") if "target_value" in payload else None,
+        status=_require_optional_str(payload, "status") if "status" in payload else None,
+        ends_on=_require_optional_str(payload, "ends_on") if "ends_on" in payload else None,
+        notes=_require_optional_str(payload, "notes") if "notes" in payload else None,
+        clear_ends_on=_require_bool(payload, "clear_ends_on", default=False),
+        clear_notes=_require_bool(payload, "clear_notes", default=False),
+    )
 
 
 def _require_str(payload: dict[str, object], key: str) -> str:
@@ -221,6 +269,15 @@ def _require_int(payload: dict[str, object], key: str) -> int:
     value = payload.get(key)
     if not isinstance(value, int) or isinstance(value, bool):
         raise InvalidInputError(f"{key} must be an integer")
+    return value
+
+
+def _require_bool(payload: dict[str, object], key: str, *, default: bool) -> bool:
+    if key not in payload:
+        return default
+    value = payload[key]
+    if not isinstance(value, bool):
+        raise InvalidInputError(f"{key} must be a boolean")
     return value
 
 
@@ -250,3 +307,28 @@ def _validate_canonical_names(
                 if resolved == name:
                     continue
             raise InvalidInputError(f"{kind} must contain canonical names only")
+
+
+def _require_exact_keys(
+    payload: dict[str, object],
+    required_keys: set[str],
+    *,
+    context: str,
+) -> None:
+    missing_keys = required_keys - set(payload)
+    if missing_keys:
+        missing_list = ", ".join(sorted(missing_keys))
+        raise InvalidInputError(f"{context} payload is missing required fields: {missing_list}")
+    _reject_unknown_keys(payload, required_keys, context=context)
+
+
+def _reject_unknown_keys(
+    payload: dict[str, object],
+    allowed_keys: set[str],
+    *,
+    context: str,
+) -> None:
+    unknown_keys = set(payload) - allowed_keys
+    if unknown_keys:
+        unknown_list = ", ".join(sorted(unknown_keys))
+        raise InvalidInputError(f"{context} payload has unknown fields: {unknown_list}")
