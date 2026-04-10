@@ -40,7 +40,7 @@ def test_import_to_summary_to_report_flow(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_goal_capture_to_review_flow_exercises_repo_scoped_core_contracts(tmp_path: Path) -> None:
+async def test_goal_parse_to_snapshot_flow_exercises_repo_scoped_core_contracts(tmp_path: Path) -> None:
     db_path = tmp_path / "minx.db"
     conn = get_connection(db_path)
     conn.execute(
@@ -84,13 +84,13 @@ async def test_goal_capture_to_review_flow_exercises_repo_scoped_core_contracts(
     conn.close()
 
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    goal_capture = server._tool_manager.get_tool("goal_capture").fn
+    goal_parse = server._tool_manager.get_tool("goal_parse").fn
     goal_create = server._tool_manager.get_tool("goal_create").fn
     goal_get = server._tool_manager.get_tool("goal_get").fn
     goal_update = server._tool_manager.get_tool("goal_update").fn
-    daily_review = server._tool_manager.get_tool("daily_review").fn
+    daily_snapshot = server._tool_manager.get_tool("get_daily_snapshot").fn
 
-    capture_create = await goal_capture(
+    capture_create = await goal_parse(
         message="Make a goal to spend less than $250 on dining out this month",
         review_date="2026-03-15",
     )
@@ -105,7 +105,7 @@ async def test_goal_capture_to_review_flow_exercises_repo_scoped_core_contracts(
     assert progress_before["success"] is True
     assert progress_before["data"]["progress"]["actual_value"] == 1200
 
-    capture_update = await goal_capture(
+    capture_update = await goal_parse(
         message="Pause my dining out goal",
         review_date="2026-03-15",
     )
@@ -119,11 +119,11 @@ async def test_goal_capture_to_review_flow_exercises_repo_scoped_core_contracts(
     assert updated["success"] is True
     assert updated["data"]["goal"]["status"] == "paused"
 
-    review = await daily_review("2026-03-15", False)
-    assert review["success"] is True
-    assert review["data"]["redaction_applied"] is True
-    assert "goal_progress" not in review["data"]
-    assert "markdown" not in review["data"]
+    snapshot = await daily_snapshot("2026-03-15", False)
+    assert snapshot["success"] is True
+    assert snapshot["data"]["date"] == "2026-03-15"
+    assert snapshot["data"]["goal_progress"] == []
+    assert "signals" in snapshot["data"]
 
 
 class _TestConfig:

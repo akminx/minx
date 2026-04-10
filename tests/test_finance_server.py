@@ -421,6 +421,47 @@ def test_finance_query_tool_executes_validated_query_plan(tmp_path):
     }
 
 
+def test_finance_query_structured_path_rejects_unknown_canonical_filter_values(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    for kwargs in (
+        {"intent": "list_transactions", "filters": {"merchant": "Whole Fuds"}},
+        {"intent": "list_transactions", "filters": {"category_name": "Groceriez"}},
+        {"intent": "list_transactions", "filters": {"account_name": "Checkinggg"}},
+    ):
+        result = _call_tool_sync(finance_query, **kwargs)
+        assert result["success"] is False
+        assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_finance_query_rejects_injected_non_json_capable_llm(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service, llm=object())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    result = _call_tool_sync(finance_query, "show me transactions", "2026-03-31")
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_finance_query_legacy_blank_message_reports_message_field_name(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service, llm=object())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    result = _call_tool_sync(finance_query, "   ", "2026-03-31")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "message must not be empty",
+        "error_code": "INVALID_INPUT",
+    }
+
+
 def test_finance_query_uses_service_db_path_for_default_llm_resolution(tmp_path, monkeypatch):
     calls: dict[str, object] = {}
 

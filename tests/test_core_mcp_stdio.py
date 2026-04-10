@@ -13,7 +13,7 @@ from minx_mcp.db import get_connection
 
 
 @pytest.mark.asyncio
-async def test_core_server_stdio_goal_capture_flow(tmp_path: Path) -> None:
+async def test_core_server_stdio_goal_parse_flow(tmp_path: Path) -> None:
     db_path = tmp_path / "minx.db"
     conn = get_connection(db_path)
     conn.execute(
@@ -74,17 +74,20 @@ async def test_core_server_stdio_goal_capture_flow(tmp_path: Path) -> None:
             tools_result = await session.list_tools()
             tool_names = [tool.name for tool in tools_result.tools]
             assert tool_names == [
-                "daily_review",
+                "get_daily_snapshot",
                 "goal_create",
                 "goal_list",
                 "goal_get",
                 "goal_update",
                 "goal_archive",
-                "goal_capture",
+                "goal_parse",
+                "get_insight_history",
+                "get_goal_trajectory",
+                "persist_note",
             ]
 
             captured_create = await session.call_tool(
-                "goal_capture",
+                "goal_parse",
                 {
                     "message": "Make a goal to spend less than $250 on dining out this month",
                     "review_date": "2026-03-15",
@@ -114,7 +117,7 @@ async def test_core_server_stdio_goal_capture_flow(tmp_path: Path) -> None:
             assert fetched.structuredContent["data"]["progress"]["actual_value"] == 1200
 
             captured_update = await session.call_tool(
-                "goal_capture",
+                "goal_parse",
                 {"message": "Pause my dining out goal", "review_date": "2026-03-15"},
             )
             assert captured_update.isError is False
@@ -132,14 +135,12 @@ async def test_core_server_stdio_goal_capture_flow(tmp_path: Path) -> None:
             assert updated.structuredContent["success"] is True
             assert updated.structuredContent["data"]["goal"]["status"] == "paused"
 
-            review = await session.call_tool(
-                "daily_review",
+            snapshot = await session.call_tool(
+                "get_daily_snapshot",
                 {"review_date": "2026-03-15", "force": False},
             )
-            assert review.isError is False
-            assert review.structuredContent["success"] is True
-            assert review.structuredContent["data"]["date"] == "2026-03-15"
-            assert review.structuredContent["data"]["redaction_applied"] is True
-            assert "goal_progress" not in review.structuredContent["data"]
-            assert review.structuredContent["data"]["redaction_policy"] == "core_default_v1"
-            assert "markdown" not in review.structuredContent["data"]
+            assert snapshot.isError is False
+            assert snapshot.structuredContent["success"] is True
+            assert snapshot.structuredContent["data"]["date"] == "2026-03-15"
+            assert "goal_progress" in snapshot.structuredContent["data"]
+            assert "signals" in snapshot.structuredContent["data"]

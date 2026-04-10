@@ -8,7 +8,7 @@ from typing import Protocol
 from mcp.server.fastmcp import FastMCP
 
 from minx_mcp.contracts import ConflictError, InvalidInputError, wrap_async_tool_call, wrap_tool_call
-from minx_mcp.core.goal_capture import capture_goal_message
+from minx_mcp.core.goal_parse import parse_goal_input
 from minx_mcp.core.goal_progress import build_progress_for_goal
 from minx_mcp.core.goals import GoalService
 from minx_mcp.core.llm import create_llm
@@ -19,11 +19,11 @@ from minx_mcp.core.models import (
     GoalProgress,
     GoalRecord,
     GoalUpdateInput,
-    ReviewContext,
-    ReviewDurabilityError,
+    SnapshotContext,
 )
-from minx_mcp.core.review import generate_daily_review
-from minx_mcp.core.review_policy import build_protected_review
+from minx_mcp.core.history import get_insight_history
+from minx_mcp.core.snapshot import build_daily_snapshot
+from minx_mcp.core.trajectory import get_goal_trajectory
 from minx_mcp.db import get_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
 from minx_mcp.vault_writer import VaultWriter
@@ -40,14 +40,12 @@ class CoreServiceConfig(Protocol):
 def create_core_server(config: CoreServiceConfig) -> FastMCP:
     mcp = FastMCP("minx-core", stateless_http=True, json_response=True)
 
-    @mcp.tool(name="daily_review")
-    async def daily_review(
+    @mcp.tool(name="get_daily_snapshot")
+    async def get_daily_snapshot_tool(
         review_date: str | None = None,
         force: bool = False,
     ) -> dict[str, object]:
-        return await wrap_async_tool_call(
-            lambda: _daily_review_tool_call(config, review_date, force),
-        )
+        return await wrap_async_tool_call(lambda: _daily_snapshot(config, review_date, force))
 
     @mcp.tool(name="goal_create")
     def goal_create(
@@ -123,47 +121,76 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
     def goal_archive(goal_id: int) -> dict[str, object]:
         return wrap_tool_call(lambda: _goal_archive(config, goal_id))
 
-    @mcp.tool(name="goal_capture")
-    async def goal_capture(
-        message: str,
+    @mcp.tool(name="goal_parse")
+    async def goal_parse(
+        message: str | None = None,
+        structured_input: dict | None = None,
         review_date: str | None = None,
     ) -> dict[str, object]:
-        return await wrap_async_tool_call(lambda: _goal_capture(config, message, review_date))
+        return await wrap_async_tool_call(
+            lambda: _goal_parse(config, message, structured_input, review_date)
+        )
+
+    @mcp.tool(name="get_insight_history")
+    def insight_history(
+        days: int = 28,
+        insight_type: str | None = None,
+        goal_id: int | None = None,
+        end_date: str | None = None,
+    ) -> dict[str, object]:
+        return wrap_tool_call(
+            lambda: get_insight_history(
+                config.db_path,
+                days=days,
+                insight_type=insight_type,
+                goal_id=goal_id,
+                end_date=end_date,
+            )
+        )
+
+    @mcp.tool(name="get_goal_trajectory")
+    def goal_trajectory(
+        goal_id: int,
+        periods: int = 4,
+        as_of_date: str | None = None,
+    ) -> dict[str, object]:
+        return wrap_tool_call(
+            lambda: get_goal_trajectory(
+                config.db_path,
+                goal_id=goal_id,
+                periods=periods,
+                as_of_date=as_of_date,
+            )
+        )
+
+    @mcp.tool(name="persist_note")
+    def persist_note(
+        relative_path: str,
+        content: str,
+        overwrite: bool = False,
+    ) -> dict[str, object]:
+        return wrap_tool_call(
+            lambda: _persist_note(config, relative_path, content, overwrite)
+        )
 
     return mcp
 
 
-async def _daily_review(
+async def _daily_snapshot(
     config: CoreServiceConfig,
     review_date: str | None,
     force: bool,
 ) -> dict[str, object]:
     effective_date = _resolve_review_date(review_date)
-    ctx = ReviewContext(
+    ctx = SnapshotContext(
         db_path=config.db_path,
         finance_api=None,
-        vault_writer=VaultWriter(config.vault_path, ("Minx",)),
-        llm=None,
     )
-    artifact = await generate_daily_review(effective_date, ctx, force=force)
-    return asdict(build_protected_review(artifact))
-
-
-async def _daily_review_tool_call(
-    config: CoreServiceConfig,
-    review_date: str | None,
-    force: bool,
-) -> dict[str, object]:
-    try:
-        return await _daily_review(config, review_date, force)
-    except ReviewDurabilityError as exc:
-        protected = asdict(build_protected_review(exc.artifact))
-        protected["recoverable"] = True
-        protected["durability_failures"] = [
-            {"sink": failure.sink, "error": str(failure.error)}
-            for failure in exc.failures
-        ]
-        raise ConflictError(str(exc), data=protected) from exc
+    artifact = await build_daily_snapshot(effective_date, ctx, force=force)
+    data = asdict(artifact)
+    if data["persistence_warning"] is None:
+        data.pop("persistence_warning")
+    return data
 
 
 def _goal_create(config: CoreServiceConfig, payload: GoalCreateInput) -> dict[str, object]:
@@ -229,16 +256,19 @@ def _goal_archive(config: CoreServiceConfig, goal_id: int) -> dict[str, object]:
         conn.close()
 
 
-async def _goal_capture(
+async def _goal_parse(
     config: CoreServiceConfig,
-    message: str,
+    message: str | None,
+    structured_input: dict | None,
     review_date: str | None,
 ) -> dict[str, object]:
-    normalized_message = message.strip()
-    if not normalized_message:
-        raise InvalidInputError("message must be non-empty after trimming")
-    if len(normalized_message) > 500:
-        raise InvalidInputError("message must be at most 500 characters")
+    normalized_message = None
+    if message is not None:
+        normalized_message = message.strip()
+        if not normalized_message:
+            raise InvalidInputError("message must be non-empty after trimming")
+        if len(normalized_message) > 500:
+            raise InvalidInputError("message must be at most 500 characters")
 
     effective_review_date = _resolve_review_date(review_date)
     conn = get_connection(config.db_path)
@@ -252,14 +282,16 @@ async def _goal_capture(
         ]
         goals = active_goals + paused_goals
         llm = _resolve_goal_capture_llm(config)
-        result = await capture_goal_message(
-            message=normalized_message,
+        result = await parse_goal_input(
             review_date=effective_review_date,
             finance_api=FinanceReadAPI(conn),
+            goal_service=goal_service,
             goals=goals,
+            message=normalized_message,
+            structured_input=structured_input,
             llm=llm,
         )
-        return _goal_capture_result_to_dict(result)
+        return _goal_parse_result_to_dict(result)
     finally:
         conn.close()
 
@@ -292,7 +324,7 @@ def _goal_progress_to_dict(progress: GoalProgress | None) -> dict[str, object] |
     return asdict(progress)
 
 
-def _goal_capture_result_to_dict(result: GoalCaptureResult) -> dict[str, object]:
+def _goal_parse_result_to_dict(result: GoalCaptureResult) -> dict[str, object]:
     data: dict[str, object] = {
         "result_type": result.result_type,
     }
@@ -337,3 +369,21 @@ def _resolve_goal_capture_llm(config: CoreServiceConfig) -> object | None:
     if configured is None or not callable(getattr(configured, "run_json_prompt", None)):
         return None
     return configured
+
+
+def _persist_note(
+    config: CoreServiceConfig,
+    relative_path: str,
+    content: str,
+    overwrite: bool,
+) -> dict[str, object]:
+    writer = VaultWriter(config.vault_path, ("Minx",))
+    try:
+        resolved = writer.resolve_path(relative_path)
+    except ValueError as exc:
+        raise InvalidInputError(str(exc)) from exc
+    existed = resolved.exists()
+    if existed and not overwrite:
+        raise ConflictError("note already exists", data={"path": str(resolved)})
+    writer.write_markdown(relative_path, content)
+    return {"path": str(resolved), "overwritten" if existed else "created": True}

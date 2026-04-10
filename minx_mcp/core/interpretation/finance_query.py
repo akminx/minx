@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from difflib import get_close_matches
 import re
 from typing import Protocol
@@ -39,11 +39,16 @@ async def interpret_finance_query(
         prompt=prompt,
         result_model=FinanceQueryInterpretation,
     )
+    filters = _fill_deterministic_date_filters(
+        message=message,
+        review_date=review_date,
+        filters=_to_filters(raw),
+    )
 
     if raw.needs_clarification:
         return FinanceQueryPlan(
             intent=raw.intent,
-            filters=_to_filters(raw),
+            filters=filters,
             confidence=raw.confidence,
             needs_clarification=True,
             clarification_type=raw.clarification_type,
@@ -51,7 +56,6 @@ async def interpret_finance_query(
             options=raw.options,
         )
 
-    filters = _to_filters(raw)
     for field_name in ("start_date", "end_date"):
         value = getattr(filters, field_name)
         if value is not None:
@@ -148,6 +152,70 @@ def _render_finance_query_prompt(
             "Known accounts: " + ", ".join(ctx["account_names"]),
         ]
     )
+
+
+def _fill_deterministic_date_filters(
+    *,
+    message: str,
+    review_date: str,
+    filters: FinanceQueryFilters,
+) -> FinanceQueryFilters:
+    resolved = _resolve_date_filters_from_message(message, review_date)
+    if resolved is None:
+        return filters
+    start_date, end_date = resolved
+    return replace(
+        filters,
+        start_date=filters.start_date or start_date,
+        end_date=filters.end_date or end_date,
+    )
+
+
+def _resolve_date_filters_from_message(
+    message: str,
+    review_date: str,
+) -> tuple[str, str] | None:
+    review_day = date.fromisoformat(review_date)
+    normalized = message.casefold()
+
+    explicit_range = re.search(
+        r"\b(?:from|between)\s+(\d{4}-\d{2}-\d{2})\s+(?:to|and)\s+(\d{4}-\d{2}-\d{2})\b",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if explicit_range is not None:
+        return explicit_range.group(1), explicit_range.group(2)
+
+    explicit_day = re.search(r"\bon\s+(\d{4}-\d{2}-\d{2})\b", message, flags=re.IGNORECASE)
+    if explicit_day is not None:
+        value = explicit_day.group(1)
+        return value, value
+
+    if "yesterday" in normalized:
+        yesterday = review_day - timedelta(days=1)
+        value = yesterday.isoformat()
+        return value, value
+    if "today" in normalized:
+        value = review_day.isoformat()
+        return value, value
+    if "last week" in normalized:
+        current_week_start = review_day - timedelta(days=review_day.weekday())
+        start = current_week_start - timedelta(days=7)
+        end = current_week_start - timedelta(days=1)
+        return start.isoformat(), end.isoformat()
+    if "this week" in normalized:
+        start = review_day - timedelta(days=review_day.weekday())
+        return start.isoformat(), review_day.isoformat()
+    if "last month" in normalized:
+        current_month_start = review_day.replace(day=1)
+        end = current_month_start - timedelta(days=1)
+        start = end.replace(day=1)
+        return start.isoformat(), end.isoformat()
+    if "this month" in normalized:
+        start = review_day.replace(day=1)
+        return start.isoformat(), review_day.isoformat()
+
+    return None
 
 
 def _to_filters(raw: FinanceQueryInterpretation) -> FinanceQueryFilters:

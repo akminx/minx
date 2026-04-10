@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Protocol, Self
+from typing import Any, Protocol, Self
 
 from mcp.server.fastmcp import FastMCP
 
@@ -199,14 +199,21 @@ def create_finance_server(service: FinanceServiceLike, llm: object | None = None
 
     @mcp.tool(name="finance_query")
     async def finance_query(
-        message: str,
+        message: str | None = None,
         review_date: str | None = None,
         session_ref: str | None = None,
         limit: int = 50,
+        *,
+        intent: str | None = None,
+        filters: dict[str, Any] | None = None,
+        natural_query: str | None = None,
     ) -> dict[str, object]:
         return await wrap_async_tool_call(
             lambda: _finance_query(
                 service,
+                intent=intent,
+                filters=filters,
+                natural_query=natural_query,
                 message=message,
                 review_date=review_date,
                 session_ref=session_ref,
@@ -372,23 +379,46 @@ def _sensitive_finance_query(
 async def _finance_query(
     service: FinanceServiceLike,
     *,
-    message: str,
+    intent: str | None,
+    filters: dict[str, Any] | None,
+    natural_query: str | None,
+    message: str | None,
     review_date: str | None,
     session_ref: str | None,
     limit: int,
     llm: object | None,
 ) -> dict[str, object]:
-    _require_non_empty("message", message)
     if limit < 1 or limit > MAX_SENSITIVE_QUERY_LIMIT:
         raise InvalidInputError(f"limit must be between 1 and {MAX_SENSITIVE_QUERY_LIMIT}")
 
-    effective_review_date = review_date or date.today().isoformat()
-    _validate_iso_date(effective_review_date, field_name="review_date")
-    resolved_llm = _resolve_finance_query_llm(service, llm)
+    if natural_query is not None and message is not None:
+        raise InvalidInputError("message and natural_query may not both be provided")
+    effective_message = natural_query if natural_query is not None else message
+
+    if intent is not None and effective_message is not None:
+        raise InvalidInputError("structured and natural finance_query inputs may not be mixed")
+    if intent is None and effective_message is None:
+        raise InvalidInputError("finance_query requires either structured or natural input")
 
     with service:
+        if intent is not None:
+            validated_filters = _validate_structured_finance_filters(service, filters)
+            return _execute_finance_query_plan(
+                service,
+                intent=intent,
+                filters=validated_filters,
+                confidence=1.0,
+                session_ref=session_ref,
+                limit=limit,
+            )
+
+        assert effective_message is not None
+        _require_non_empty("message" if message is not None else "natural_query", effective_message)
+        effective_review_date = review_date or date.today().isoformat()
+        _validate_iso_date(effective_review_date, field_name="review_date")
+        resolved_llm = _resolve_finance_query_llm(service, llm)
         plan = await interpret_finance_query(
-            message=message,
+            message=effective_message,
             review_date=effective_review_date,
             finance_api=service,
             llm=resolved_llm,
@@ -404,57 +434,133 @@ async def _finance_query(
                 "options": plan.options,
             }
 
-        filters = plan.filters.to_public_dict()
-        _validate_date_range(filters.get("start_date"), filters.get("end_date"))
+        validated_filters = plan.filters.to_public_dict()
+        _validate_date_range(validated_filters.get("start_date"), validated_filters.get("end_date"))
         _validate_optional_text_filters(
-            category_name=filters.get("category_name"),
-            merchant=filters.get("merchant"),
-            account_name=filters.get("account_name"),
-            description_contains=filters.get("description_contains"),
+            category_name=validated_filters.get("category_name"),
+            merchant=validated_filters.get("merchant"),
+            account_name=validated_filters.get("account_name"),
+            description_contains=validated_filters.get("description_contains"),
         )
-        if plan.intent == "list_transactions":
-            result = service.sensitive_finance_query(
-                limit=limit,
-                session_ref=session_ref,
-                audit_tool_name="finance_query",
-                **filters,
-            )
-            return {
-                "result_type": "query",
-                "intent": plan.intent,
-                "filters": filters,
-                "confidence": plan.confidence,
-                "transactions": result["transactions"],
-            }
-        if plan.intent == "sum_spending":
-            total_cents = service.get_filtered_spending_total(
-                session_ref=session_ref,
-                **filters,
-            )
-            return {
-                "result_type": "query",
-                "intent": plan.intent,
-                "filters": filters,
-                "confidence": plan.confidence,
-                "total_spent": cents_to_dollars(total_cents),
-            }
-        if plan.intent == "count_transactions":
-            total_count = service.get_filtered_transaction_count(
-                session_ref=session_ref,
-                **filters,
-            )
-            return {
-                "result_type": "query",
-                "intent": plan.intent,
-                "filters": filters,
-                "confidence": plan.confidence,
-                "transaction_count": total_count,
-            }
-        raise InvalidInputError(f"Unsupported finance query intent: {plan.intent}")
+        return _execute_finance_query_plan(
+            service,
+            intent=plan.intent,
+            filters=validated_filters,
+            confidence=plan.confidence,
+            session_ref=session_ref,
+            limit=limit,
+        )
+
+
+def _validate_structured_finance_filters(
+    service: FinanceServiceLike,
+    filters: dict[str, Any] | None,
+) -> dict[str, str]:
+    allowed_keys = {
+        "start_date",
+        "end_date",
+        "category_name",
+        "merchant",
+        "account_name",
+        "description_contains",
+    }
+    if filters is None:
+        return {}
+    if not isinstance(filters, dict):
+        raise InvalidInputError("filters must be an object")
+    unknown_keys = set(filters) - allowed_keys
+    if unknown_keys:
+        unknown_list = ", ".join(sorted(unknown_keys))
+        raise InvalidInputError(f"Unknown finance_query filter keys: {unknown_list}")
+    normalized: dict[str, str] = {}
+    for key, value in filters.items():
+        if not isinstance(value, str):
+            raise InvalidInputError(f"{key} must be a string")
+        if not value.strip():
+            raise InvalidInputError(f"{key} must not be blank")
+        normalized[key] = value
+    _validate_date_range(normalized.get("start_date"), normalized.get("end_date"))
+    _validate_optional_text_filters(
+        category_name=normalized.get("category_name"),
+        merchant=normalized.get("merchant"),
+        account_name=normalized.get("account_name"),
+        description_contains=normalized.get("description_contains"),
+    )
+    _validate_structured_filter_canonical_values(service, normalized)
+    return normalized
+
+
+def _validate_structured_filter_canonical_values(
+    service: FinanceServiceLike,
+    filters: dict[str, str],
+) -> None:
+    category_name = filters.get("category_name")
+    if category_name is not None and category_name not in service.list_transaction_category_names():
+        raise InvalidInputError("category_name must be a known canonical category name")
+
+    merchant = filters.get("merchant")
+    if merchant is not None and merchant not in service.list_spending_merchant_names():
+        raise InvalidInputError("merchant must be a known canonical merchant name")
+
+    account_name = filters.get("account_name")
+    if account_name is not None and account_name not in service.list_account_names():
+        raise InvalidInputError("account_name must be a known canonical account name")
+
+
+def _execute_finance_query_plan(
+    service: FinanceServiceLike,
+    *,
+    intent: str,
+    filters: dict[str, str],
+    confidence: float,
+    session_ref: str | None,
+    limit: int,
+) -> dict[str, object]:
+    if intent == "list_transactions":
+        result = service.sensitive_finance_query(
+            limit=limit,
+            session_ref=session_ref,
+            audit_tool_name="finance_query",
+            **filters,
+        )
+        return {
+            "result_type": "query",
+            "intent": intent,
+            "filters": filters,
+            "confidence": confidence,
+            "transactions": result["transactions"],
+        }
+    if intent == "sum_spending":
+        total_cents = service.get_filtered_spending_total(
+            session_ref=session_ref,
+            **filters,
+        )
+        return {
+            "result_type": "query",
+            "intent": intent,
+            "filters": filters,
+            "confidence": confidence,
+            "total_spent": cents_to_dollars(total_cents),
+        }
+    if intent == "count_transactions":
+        total_count = service.get_filtered_transaction_count(
+            session_ref=session_ref,
+            **filters,
+        )
+        return {
+            "result_type": "query",
+            "intent": intent,
+            "filters": filters,
+            "confidence": confidence,
+            "transaction_count": total_count,
+        }
+    raise InvalidInputError(f"Unsupported finance query intent: {intent}")
 
 
 def _resolve_finance_query_llm(service: FinanceServiceLike, llm: object | None) -> object:
     if llm is not None:
+        if not callable(getattr(llm, "run_json_prompt", None)):
+            raise InvalidInputError("finance_query requires a configured JSON-capable LLM")
         return llm
 
     configured = create_llm(db_path=service.db_path)

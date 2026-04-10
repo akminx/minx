@@ -1,6 +1,6 @@
 # minx-mcp
 
-Shared Minx MCP platform with a finance domain and a daily review pipeline.
+Shared Minx MCP platform with a finance domain and a structured Core snapshot/history pipeline.
 
 ## Setup
 
@@ -28,7 +28,7 @@ python3 -m venv .venv
 .venv/bin/python -m minx_mcp.finance --transport http --host 127.0.0.1 --port 8000
 ```
 
-## Run core (daily review) over stdio
+## Run core over stdio
 
 ```bash
 .venv/bin/python -m minx_mcp.core --transport stdio
@@ -61,15 +61,15 @@ You can override these with:
 - Finance imports are restricted to the configured staging/import root.
 - Finance stores money internally as integer cents and renders dollars at the MCP/report boundary.
 - Weekly and monthly finance reports are generated with explicit lifecycle state in SQLite.
-- The daily review pipeline is implemented and covered by tests. If persisting detector insights to SQLite or writing the vault note fails after the in-memory review is built, `generate_daily_review` raises `ReviewDurabilityError` with the `DailyReview` on `exc.artifact` and per-sink failures on `exc.failures` (LLM timeouts/errors still fall back to the detector-only narrative and do not trigger this).
-- The Core MCP server exposes `daily_review`, `goal_capture`, `goal_create`, `goal_list`, `goal_get`, `goal_update`, and `goal_archive`.
-- `daily_review` returns a protected client-facing projection with explicit redaction metadata rather than the raw internal review artifact.
+- The Core snapshot pipeline is implemented and covered by tests. `get_daily_snapshot` returns structured read models, detector signals, and attention items, and surfaces detector persistence problems as an inline `persistence_warning` instead of failing the whole call.
+- The Core MCP server exposes `get_daily_snapshot`, `get_insight_history`, `get_goal_trajectory`, `persist_note`, `goal_parse`, `goal_create`, `goal_list`, `goal_get`, `goal_update`, and `goal_archive`.
 - `goal_get` returns both the stored goal DTO and derived progress for an optional `review_date`; progress is `null` outside the goal lifetime.
 - Goal progress `summary` text is human-facing convenience copy, not a strict downstream machine contract; clients should rely on structured fields like `status`, `actual_value`, `target_value`, and the current window instead of parsing summary wording.
 - `goal_list()` defaults to active goals, while `goal_list(status=...)` can query other lifecycle states explicitly.
 - Goal progress clamps to the goal lifetime, goal updates can intentionally clear `ends_on` and `notes`, and category drift is based on a real equal-length prior baseline instead of goal status alone.
 - Goal drift/category drift work for category-, merchant-, and account-scoped finance goals, and non-`normal` events are excluded from the review timeline/output path.
-- Optional LLM enrichment can be loaded from the `core/llm_config` preference using the `openai_compatible` provider path.
+- `goal_parse` supports both natural-language parsing and a structured-input validation path.
+- `finance_query` supports both natural-language interpretation and a structured `intent` + `filters` path.
 - A real stdio MCP smoke test now exists at [tests/test_core_mcp_stdio.py](/Users/akmini/Documents/minx-mcp/tests/test_core_mcp_stdio.py).
 
 ## LLM config
@@ -91,4 +91,4 @@ Set the `core/llm_config` preference to a payload like:
 
 - This is still a local single-user tool. There is no auth, multi-user coordination, or remote durability story beyond local SQLite and the filesystem.
 - Report generation is recoverable and tracked, but it is not globally atomic across SQLite and the vault filesystem.
-- The daily review pipeline is also not globally atomic across SQLite and the vault filesystem. Both durability sinks are attempted before returning, so a failed detector write can still leave an updated vault note from the same run.
+- Core detector persistence is local SQLite durability only. `get_daily_snapshot` remains useful when persistence fails, but historical queries may lag behind the latest snapshot until persistence succeeds.

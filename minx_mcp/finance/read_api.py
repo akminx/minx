@@ -229,6 +229,12 @@ class FinanceReadAPI:
         ).fetchall()
         return [str(row["name"]) for row in rows]
 
+    def list_account_names(self) -> list[str]:
+        rows = self._db.execute(
+            "SELECT name FROM finance_accounts ORDER BY name ASC"
+        ).fetchall()
+        return [str(row["name"]) for row in rows]
+
     def list_spending_merchant_names(self) -> list[str]:
         rows = self._db.execute(
             """

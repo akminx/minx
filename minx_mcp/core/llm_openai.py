@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
+from pydantic import BaseModel
 
 from minx_mcp.core.llm import (
     LLMProviderError,
@@ -33,6 +35,25 @@ class OpenAICompatibleLLM:
         payload = await self._post_chat_completion(prompt)
         return extract_openai_message_content(payload)
 
+    async def run_structured_prompt(
+        self,
+        prompt: str,
+        result_model: type[BaseModel],
+    ) -> dict[str, Any]:
+        payload = await self._post_chat_completion(
+            prompt,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": result_model.__name__,
+                    "schema": result_model.model_json_schema(),
+                    "strict": True,
+                },
+            },
+        )
+        content = extract_openai_message_content(payload)
+        return result_model.model_validate_json(content).model_dump()
+
     async def evaluate_review(
         self,
         timeline: DailyTimeline,
@@ -58,7 +79,11 @@ class OpenAICompatibleLLM:
         content = extract_openai_message_content(payload)
         return normalize_review_result(content)
 
-    async def _post_chat_completion(self, prompt: str) -> dict:
+    async def _post_chat_completion(
+        self,
+        prompt: str,
+        response_format: dict[str, Any] | None = None,
+    ) -> dict:
         api_key = os.getenv(self.api_key_env)
         if not api_key:
             raise LLMProviderError(
@@ -73,7 +98,7 @@ class OpenAICompatibleLLM:
                     json={
                         "model": self.model,
                         "messages": [{"role": "user", "content": prompt}],
-                        "response_format": {"type": "json_object"},
+                        "response_format": response_format or {"type": "json_object"},
                     },
                 )
                 response.raise_for_status()

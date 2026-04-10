@@ -20,6 +20,7 @@ class FinanceReadInterface(Protocol):
     def get_spending_summary(self, start_date: str, end_date: str): ...
     def get_uncategorized(self, start_date: str, end_date: str): ...
     def get_import_job_issues(self): ...
+    def list_account_names(self) -> list[str]: ...
     def get_period_comparison(
         self,
         current_start: str,
@@ -133,6 +134,24 @@ class DailyReview:
     narrative: str
     next_day_focus: list[str]
     llm_enriched: bool
+
+
+@dataclass(frozen=True)
+class PersistenceWarning:
+    sink: str
+    message: str
+
+
+@dataclass(frozen=True)
+class DailySnapshot:
+    date: str
+    timeline: DailyTimeline
+    spending: SpendingSnapshot
+    open_loops: OpenLoopsSnapshot
+    goal_progress: list[GoalProgress]
+    signals: list[InsightCandidate]
+    attention_items: list[str]
+    persistence_warning: PersistenceWarning | None = None
 
 
 @dataclass(frozen=True)
@@ -482,3 +501,9 @@ class ReviewContext:
     finance_api: FinanceReadInterface | None
     vault_writer: VaultWriterLike
     llm: LLMInterface | None = None
+
+
+@dataclass(frozen=True)
+class SnapshotContext:
+    db_path: str | Path
+    finance_api: FinanceReadInterface | None = None

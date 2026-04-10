@@ -174,3 +174,61 @@ def test_finance_query_interpretation_model_rejects_clarify_without_question() -
             clarification_type="ambiguous_merchant",
             question=None,
         )
+
+
+def test_finance_query_interpretation_fills_this_week_dates_when_llm_omits_them() -> None:
+    plan = interpret_finance_query(
+        message="how much did I spend on restaurants this week",
+        review_date="2026-03-15",
+        finance_api=_StubFinanceQueryRead(),
+        llm=_StubFinanceQueryLLM(
+            (
+                '{"intent":"sum_spending","filters":{"category_name":"Restaurants"},'
+                '"confidence":0.93,"needs_clarification":false}'
+            )
+        ),
+    )
+
+    assert plan.intent == "sum_spending"
+    assert plan.needs_clarification is False
+    assert plan.filters.start_date == "2026-03-09"
+    assert plan.filters.end_date == "2026-03-15"
+
+
+def test_finance_query_interpretation_fills_last_month_dates_when_llm_omits_them() -> None:
+    plan = interpret_finance_query(
+        message="show me everything at Whole Foods last month",
+        review_date="2026-03-31",
+        finance_api=_StubFinanceQueryRead(),
+        llm=_StubFinanceQueryLLM(
+            (
+                '{"intent":"list_transactions","filters":{"merchant":"Whole Foods"},'
+                '"confidence":0.94,"needs_clarification":false}'
+            )
+        ),
+    )
+
+    assert plan.intent == "list_transactions"
+    assert plan.needs_clarification is False
+    assert plan.filters.start_date == "2026-02-01"
+    assert plan.filters.end_date == "2026-02-28"
+
+
+def test_finance_query_interpretation_preserves_recoverable_dates_on_clarify() -> None:
+    plan = interpret_finance_query(
+        message="how much did I spend at Whole Fuds this week",
+        review_date="2026-03-15",
+        finance_api=_StubFinanceQueryRead(),
+        llm=_StubFinanceQueryLLM(
+            (
+                '{"intent":"sum_spending","filters":{"merchant":"Whole Fuds"},'
+                '"confidence":0.61,"needs_clarification":true,'
+                '"clarification_type":"unknown_merchant",'
+                '"question":"Which merchant did you mean?","options":["Whole Foods"]}'
+            )
+        ),
+    )
+
+    assert plan.needs_clarification is True
+    assert plan.filters.start_date == "2026-03-09"
+    assert plan.filters.end_date == "2026-03-15"

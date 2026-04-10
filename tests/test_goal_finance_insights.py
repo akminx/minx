@@ -1,12 +1,10 @@
 import pytest
 
 from minx_mcp.core.events import emit_event
-from minx_mcp.core.models import GoalCreateInput, ReviewContext
+from minx_mcp.core.models import GoalCreateInput, SnapshotContext
 from minx_mcp.core.goals import GoalService
-from minx_mcp.core.review import generate_daily_review
+from minx_mcp.core.snapshot import build_daily_snapshot
 from minx_mcp.db import get_connection
-from minx_mcp.finance.read_api import FinanceReadAPI
-from minx_mcp.vault_writer import VaultWriter
 
 
 @pytest.mark.asyncio
@@ -58,17 +56,14 @@ async def test_goal_finance_insight_flags_monthly_spending_cap_risk(tmp_path):
     )
     conn.commit()
 
-    artifact = await generate_daily_review(
+    artifact = await build_daily_snapshot(
         "2026-03-15",
-        ReviewContext(
+        SnapshotContext(
             db_path=db_path,
-            finance_api=FinanceReadAPI(conn),
-            vault_writer=VaultWriter(tmp_path / "vault", ("Minx",)),
-            llm=None,
         ),
     )
 
-    assert any("68%" in insight.summary for insight in artifact.insights)
+    assert any("68%" in insight.summary for insight in artifact.signals)
 
 
 @pytest.mark.asyncio
@@ -120,14 +115,11 @@ async def test_goal_finance_insight_skips_late_period_goals_that_are_still_on_pa
     )
     conn.commit()
 
-    artifact = await generate_daily_review(
+    artifact = await build_daily_snapshot(
         "2026-03-30",
-        ReviewContext(
+        SnapshotContext(
             db_path=db_path,
-            finance_api=FinanceReadAPI(conn),
-            vault_writer=VaultWriter(tmp_path / "vault", ("Minx",)),
-            llm=None,
         ),
     )
 
-    assert not any(insight.insight_type == "finance.goal_risk" for insight in artifact.insights)
+    assert not any(insight.insight_type == "finance.goal_risk" for insight in artifact.signals)
