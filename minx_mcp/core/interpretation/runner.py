@@ -35,6 +35,6 @@ async def run_interpretation(*, llm: object, prompt: str, result_model: type[T])
         log_interpretation_failure(
             task=result_model.__name__,
             prompt_summary=prompt_summary,
-            error=exc,
+            error=type(exc).__name__,
         )
         raise

@@ -22,17 +22,22 @@ def test_log_interpretation_failure_summary_appears_in_logs(caplog):
     assert "schema failure" in caplog.text
 
 
-def test_log_interpretation_failure_does_not_leak_raw_user_text(caplog):
-    """Passing a summary (not the raw message) means raw text never enters logs."""
+def test_log_interpretation_failure_does_not_filter_caller_provided_error_content(caplog):
+    """The logging helper logs what it receives — callers must pass safe content.
+    This test verifies a safe caller gets safe log output."""
     import logging
-    raw_user_text = "show me everything I spent at Whole Foods last month"
+    raw_user_text = "show me everything at Whole Foods last month"
     with caplog.at_level(logging.WARNING, logger="minx_mcp.core.interpretation.logging"):
         log_interpretation_failure(
             task="finance_query",
-            prompt_summary="message_len=51 merchants=1",
-            error=RuntimeError("schema failure"),
+            prompt_summary=f"message_len={len(raw_user_text)} merchants=1",
+            error=RuntimeError("schema failure"),  # technical error, not user text
         )
+    # The raw user message should not appear because we passed a safe summary and safe error
     assert raw_user_text not in caplog.text
+    # The safe summary and error type should appear
+    assert f"message_len={len(raw_user_text)}" in caplog.text
+    assert "schema failure" in caplog.text
 
 
 def test_build_finance_query_context_caps_merchant_list():
