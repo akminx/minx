@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 from datetime import date
 from pathlib import Path
 
@@ -26,6 +28,14 @@ from minx_mcp.core.server import (
 )
 from minx_mcp.db import get_connection
 from minx_mcp.preferences import set_preference
+
+
+def _call_tool_sync(fn, *args, **kwargs):
+    result = fn(*args, **kwargs)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
+
 
 # -- Goal tool tests --
 
@@ -82,7 +92,7 @@ def test_goal_capture_returns_invalid_input_for_blank_message(tmp_path: Path) ->
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(message="   ", review_date="2026-03-15")
+    result = _call_tool_sync(goal_capture, message="   ", review_date="2026-03-15")
 
     assert result == {
         "success": False,
@@ -98,7 +108,7 @@ def test_goal_capture_returns_create_payload_with_explicit_starts_on(tmp_path: P
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $250 on dining out this month",
         review_date="2026-03-20",
     )
@@ -134,7 +144,7 @@ def test_goal_capture_uses_configured_llm_when_available(tmp_path: Path) -> None
         server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
         goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-        result = goal_capture(
+        result = _call_tool_sync(goal_capture, 
             message="I want to track my Amazon spending under $200 monthly",
             review_date="2026-03-15",
         )
@@ -173,7 +183,7 @@ def test_goal_capture_falls_back_when_configured_llm_payload_is_malformed(
         server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
         goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-        result = goal_capture(
+        result = _call_tool_sync(goal_capture, 
             message="Make a goal to spend less than $250 on dining out this month",
             review_date="2026-03-15",
         )
@@ -193,7 +203,7 @@ def test_goal_capture_returns_invalid_input_for_overlong_message(tmp_path: Path)
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(message="x" * 501, review_date="2026-03-15")
+    result = _call_tool_sync(goal_capture, message="x" * 501, review_date="2026-03-15")
 
     assert result == {
         "success": False,
@@ -209,7 +219,7 @@ def test_goal_capture_returns_invalid_input_for_bad_review_date(tmp_path: Path) 
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $250 on dining out this month",
         review_date="2026-03-99",
     )
@@ -228,7 +238,7 @@ def test_goal_capture_supports_today_phrase_with_daily_period(tmp_path: Path) ->
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $25 on dining out today",
         review_date="2026-03-15",
     )
@@ -245,7 +255,7 @@ def test_goal_capture_honors_explicit_iso_start_date(tmp_path: Path) -> None:
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $25 on dining out starting 2026-04-10",
         review_date="2026-03-15",
     )
@@ -261,11 +271,11 @@ def test_goal_capture_accepts_valid_non_20xx_explicit_start_dates(tmp_path: Path
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    older = goal_capture(
+    older = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $25 on dining out starting 1999-04-10",
         review_date="2026-03-15",
     )
-    future = goal_capture(
+    future = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $25 on dining out starting 2100-04-10",
         review_date="2026-03-15",
     )
@@ -282,7 +292,7 @@ def test_goal_capture_rejects_invalid_explicit_start_date(tmp_path: Path) -> Non
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $25 on dining out starting 2026-04-99",
         review_date="2026-03-15",
     )
@@ -328,7 +338,7 @@ def test_goal_capture_returns_resolved_resume_payload_for_ambiguous_create_subje
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $60 at Cafe this week",
         review_date="2026-03-15",
     )
@@ -419,7 +429,7 @@ def test_goal_capture_preserves_ambiguous_subject_when_configured_llm_is_availab
         server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
         goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-        result = goal_capture(
+        result = _call_tool_sync(goal_capture, 
             message="Track spending for Cafe this week under $60",
             review_date="2026-03-15",
         )
@@ -465,7 +475,7 @@ def test_goal_capture_preserves_distinct_merchant_spelling_in_ambiguous_create_c
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $60 at M&M this week",
         review_date="2026-03-15",
     )
@@ -522,7 +532,7 @@ def test_goal_capture_returns_ambiguous_goal_contract_for_multiple_matches(
         starts_on="2026-03-09",
     )
 
-    result = goal_capture(message="Pause my dining out goal", review_date="2026-03-15")
+    result = _call_tool_sync(goal_capture, message="Pause my dining out goal", review_date="2026-03-15")
 
     assert result["success"] is True
     assert result["data"]["result_type"] == "clarify"
@@ -567,7 +577,7 @@ def test_goal_capture_returns_missing_target_for_retarget_without_amount(tmp_pat
         starts_on="2026-03-01",
     )
 
-    result = goal_capture(message="Change my dining out goal", review_date="2026-03-15")
+    result = _call_tool_sync(goal_capture, message="Change my dining out goal", review_date="2026-03-15")
 
     assert result["success"] is True
     assert result["data"]["result_type"] == "clarify"
@@ -943,11 +953,11 @@ def test_goal_capture_repo_e2e_flow_exercises_progress_before_protected_review(
     get_connection(db_path).close()
     config = _TestConfig(db_path, tmp_path / "vault")
 
-    create_result = _goal_capture(
+    create_result = asyncio.run(_goal_capture(
         config,
         "Make a goal to spend less than $250 on dining out this month",
         "2026-03-15",
-    )
+    ))
     created_goal = _goal_create(config, GoalCreateInput(**create_result["payload"]))
 
     conn = get_connection(db_path)
@@ -974,7 +984,7 @@ def test_goal_capture_repo_e2e_flow_exercises_progress_before_protected_review(
     progress_before_update = _goal_get(config, created_goal["goal"]["id"], "2026-03-15")
     assert progress_before_update["progress"]["actual_value"] == 1200
 
-    update_result = _goal_capture(config, "Pause my dining out goal", "2026-03-15")
+    update_result = asyncio.run(_goal_capture(config, "Pause my dining out goal", "2026-03-15"))
     _goal_update(config, update_result["goal_id"], GoalUpdateInput(**update_result["payload"]))
 
     progress_after_update = _goal_get(config, created_goal["goal"]["id"], "2026-03-15")
@@ -990,7 +1000,7 @@ async def test_goal_capture_repo_e2e_flow_keeps_protected_review_redacted(
     get_connection(db_path).close()
     config = _TestConfig(db_path, tmp_path / "vault")
 
-    create_result = _goal_capture(
+    create_result = await _goal_capture(
         config,
         "Make a goal to spend less than $250 on dining out this month",
         "2026-03-15",
