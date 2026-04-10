@@ -17,9 +17,11 @@ SAFE_TOOLS = [
     "safe_finance_summary",
     "safe_finance_accounts",
     "finance_import",
+    "finance_import_preview",
     "finance_categorize",
     "finance_add_category_rule",
     "finance_anomalies",
+    "finance_monitoring",
     "finance_job_status",
     "finance_generate_weekly_report",
     "finance_generate_monthly_report",
@@ -47,10 +49,17 @@ class FinanceServiceLike(Protocol):
         account_name: str,
         source_kind: str | None = None,
     ) -> dict[str, object]: ...
+    def finance_import_preview(
+        self,
+        source_ref: str,
+        account_name: str,
+        source_kind: str | None = None,
+    ) -> dict[str, object]: ...
     def missing_transaction_ids(self, transaction_ids: list[int]) -> list[int]: ...
     def finance_categorize(self, transaction_ids: list[int], category_name: str) -> int: ...
     def add_category_rule(self, category_name: str, match_kind: str, pattern: str) -> None: ...
     def finance_anomalies(self) -> dict[str, object]: ...
+    def finance_monitoring(self, *, period_start: str, period_end: str) -> dict[str, object]: ...
     def get_job(self, job_id: str) -> dict[str, object]: ...
     def generate_weekly_report(self, period_start: str, period_end: str) -> dict[str, object]: ...
     def generate_monthly_report(self, period_start: str, period_end: str) -> dict[str, object]: ...
@@ -112,6 +121,16 @@ def create_finance_server(service: FinanceServiceLike, llm: object | None = None
             lambda: _finance_import(service, source_ref, account_name, source_kind)
         )
 
+    @mcp.tool(name="finance_import_preview")
+    def finance_import_preview(
+        source_ref: str,
+        account_name: str,
+        source_kind: str | None = None,
+    ) -> dict[str, object]:
+        return wrap_tool_call(
+            lambda: _finance_import_preview(service, source_ref, account_name, source_kind)
+        )
+
     @mcp.tool(name="finance_categorize")
     def finance_categorize(transaction_ids: list[int], category_name: str) -> dict[str, object]:
         return wrap_tool_call(
@@ -131,6 +150,10 @@ def create_finance_server(service: FinanceServiceLike, llm: object | None = None
     @mcp.tool(name="finance_anomalies")
     def finance_anomalies() -> dict[str, object]:
         return wrap_tool_call(lambda: _finance_anomalies(service))
+
+    @mcp.tool(name="finance_monitoring")
+    def finance_monitoring(period_start: str, period_end: str) -> dict[str, object]:
+        return wrap_tool_call(lambda: _finance_monitoring(service, period_start, period_end))
 
     @mcp.tool(name="finance_job_status")
     def finance_job_status(job_id: str) -> dict[str, object]:
@@ -219,6 +242,20 @@ def _finance_import(
         return service.finance_import(source_ref, account_name, source_kind=source_kind)
 
 
+def _finance_import_preview(
+    service: FinanceServiceLike,
+    source_ref: str,
+    account_name: str,
+    source_kind: str | None,
+) -> dict[str, object]:
+    _require_non_empty("account_name", account_name)
+    _validate_source_ref(source_ref)
+    if source_kind is not None and source_kind not in SUPPORTED_SOURCE_KINDS:
+        raise InvalidInputError(f"Unsupported finance source kind: {source_kind}")
+    with service:
+        return service.finance_import_preview(source_ref, account_name, source_kind=source_kind)
+
+
 def _finance_categorize(
     service: FinanceServiceLike,
     transaction_ids: list[int],
@@ -260,6 +297,16 @@ def _finance_add_category_rule(
 def _finance_anomalies(service: FinanceServiceLike) -> dict[str, object]:
     with service:
         return service.finance_anomalies()
+
+
+def _finance_monitoring(
+    service: FinanceServiceLike,
+    period_start: str,
+    period_end: str,
+) -> dict[str, object]:
+    _validate_date_window(period_start, period_end)
+    with service:
+        return service.finance_monitoring(period_start=period_start, period_end=period_end)
 
 
 def _finance_job_status(service: FinanceServiceLike, job_id: str) -> dict[str, object]:

@@ -594,3 +594,18 @@ def test_safe_finance_summary_returns_dollars_from_cents_storage(tmp_path):
     summary = service.safe_finance_summary()
 
     assert summary["net_total"] == -12.5
+
+
+def test_import_persists_raw_and_canonical_merchant(tmp_path):
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n"
+        "2026-03-02,SQ *JOES CAFE 1234,Withdrawal,-45.20\n"
+    )
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+
+    service.finance_import(str(source), account_name="DCU")
+
+    tx = service.sensitive_finance_query(limit=1)["transactions"][0]
+    assert tx["merchant"] == "Joe's Cafe"
+    assert tx["raw_merchant"] == "SQ *JOES CAFE 1234"

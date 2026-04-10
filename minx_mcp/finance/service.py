@@ -8,6 +8,7 @@ from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import emit_event
 from minx_mcp.db import get_connection
 from minx_mcp.finance.analytics import (
+    build_finance_monitoring,
     find_anomalies,
     sensitive_query,
     sensitive_query_count,
@@ -15,7 +16,8 @@ from minx_mcp.finance.analytics import (
     summarize_finances,
 )
 from minx_mcp.finance.import_models import ParsedImportBatch, ParsedTransaction
-from minx_mcp.finance.import_workflow import run_finance_import
+from minx_mcp.finance.import_workflow import preview_finance_import, run_finance_import
+from minx_mcp.finance.normalization import normalize_merchant
 from minx_mcp.finance.report_orchestration import run_monthly_report, run_weekly_report
 from minx_mcp.jobs import get_job
 from minx_mcp.time_utils import utc_now_isoformat
@@ -64,6 +66,15 @@ class FinanceService:
         mapping: dict[str, object] | None = None,
     ) -> dict[str, object]:
         return run_finance_import(self, source_ref, account_name, source_kind, mapping)
+
+    def finance_import_preview(
+        self,
+        source_ref: str,
+        account_name: str,
+        source_kind: str | None = None,
+        mapping: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return preview_finance_import(self, source_ref, account_name, source_kind, mapping)
 
     def add_category_rule(self, category_name: str, match_kind: str, pattern: str) -> None:
         if not pattern.strip():
@@ -207,6 +218,13 @@ class FinanceService:
                 self.conn.commit()
         return {"items": items}
 
+    def finance_monitoring(self, *, period_start: str, period_end: str) -> dict[str, object]:
+        return build_finance_monitoring(
+            self.conn,
+            period_start=period_start,
+            period_end=period_end,
+        )
+
     def sensitive_finance_query(
         self,
         limit: int = 50,
@@ -330,19 +348,22 @@ class FinanceService:
         category_source = "import" if category_id is not None else "uncategorized"
         if category_id is None:
             category_id = self._uncategorized_id()
+        raw_merchant = txn.merchant
+        merchant = normalize_merchant(raw_merchant)
         cursor = self.conn.execute(
             """
             INSERT INTO finance_transactions (
-                account_id, batch_id, posted_at, description, merchant, amount_cents,
+                account_id, batch_id, posted_at, description, merchant, raw_merchant, amount_cents,
                 category_id, category_source, external_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 account_id,
                 batch_id,
                 txn.posted_at,
                 txn.description,
-                txn.merchant,
+                merchant,
+                raw_merchant,
                 txn.amount_cents,
                 category_id,
                 category_source,

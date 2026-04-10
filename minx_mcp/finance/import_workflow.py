@@ -180,6 +180,59 @@ def run_finance_import(
         snapshot_path.unlink(missing_ok=True)
 
 
+def preview_finance_import(
+    host: FinanceImportHost,
+    source_ref: str,
+    account_name: str,
+    source_kind: str | None = None,
+    mapping: dict[str, object] | None = None,
+) -> dict[str, object]:
+    path = Path(source_ref)
+    if not path.is_file():
+        raise InvalidInputError("source_ref must point to an existing file")
+    resolved_path = path.resolve()
+    account = host._account(account_name)
+    if source_kind is not None and source_kind not in SUPPORTED_SOURCE_KINDS:
+        raise InvalidInputError(f"Unsupported finance source kind: {source_kind}")
+    effective_source_kind = source_kind or detect_source_kind(resolved_path)
+    effective_mapping = mapping
+    if effective_source_kind == "generic_csv" and effective_mapping is None:
+        profile_name = str(account["import_profile"]) if account["import_profile"] else account_name
+        effective_mapping = get_csv_mapping(host.conn, profile_name)
+        if effective_mapping is None and profile_name != account_name:
+            effective_mapping = get_csv_mapping(host.conn, account_name)
+        if effective_mapping is None:
+            return {
+                "preview": {
+                    "result_type": "clarify",
+                    "reason": "missing_mapping",
+                    "source_kind": effective_source_kind,
+                }
+            }
+
+    parsed = parse_source_file(
+        resolved_path,
+        account_name,
+        effective_source_kind,
+        effective_mapping,
+    )
+    return {
+        "preview": {
+            "result_type": "preview",
+            "source_kind": effective_source_kind,
+            "sample_transactions": [
+                {
+                    "posted_at": txn.posted_at,
+                    "description": txn.description,
+                    "merchant": txn.merchant,
+                    "amount": txn.amount_cents / 100.0,
+                }
+                for txn in parsed.transactions[:10]
+            ],
+        }
+    }
+
+
 def _canonicalize_existing_path(path: Path, *, anchor: Path | None = None) -> Path:
     """Resolve path with case-insensitive segments.
 

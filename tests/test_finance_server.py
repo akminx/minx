@@ -35,14 +35,24 @@ def test_finance_server_registers_expected_tool_names(tmp_path):
         "safe_finance_summary",
         "safe_finance_accounts",
         "finance_import",
+        "finance_import_preview",
         "finance_categorize",
         "finance_add_category_rule",
         "finance_anomalies",
+        "finance_monitoring",
         "finance_job_status",
         "finance_generate_weekly_report",
         "finance_generate_monthly_report",
     ]
     assert SENSITIVE_TOOLS == ["sensitive_finance_query", "finance_query"]
+
+
+def test_finance_server_registers_phase2_safe_tool_names(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+
+    assert server._tool_manager.get_tool("finance_import_preview").name == "finance_import_preview"
+    assert server._tool_manager.get_tool("finance_monitoring").name == "finance_monitoring"
 
 
 def test_streamable_http_app_is_available(tmp_path):
@@ -327,6 +337,8 @@ def test_sensitive_finance_query_tool_accepts_filters(tmp_path):
                     "id": 1,
                     "posted_at": "2026-03-02",
                     "description": "H-E-B Grocery",
+                    "merchant": "H-E-B",
+                    "raw_merchant": None,
                     "account_name": "DCU",
                     "category_name": "Groceries",
                     "amount": -45.2,
@@ -396,6 +408,8 @@ def test_finance_query_tool_executes_validated_query_plan(tmp_path):
                     "id": 1,
                     "posted_at": "2026-03-12",
                     "description": "Whole Foods Market",
+                    "merchant": "Whole Foods",
+                    "raw_merchant": None,
                     "account_name": "DCU",
                     "category_name": "Groceries",
                     "amount": -45.2,

@@ -123,6 +123,8 @@ def sensitive_query(
             "id": int(row["id"]),
             "posted_at": str(row["posted_at"]),
             "description": str(row["description"]),
+            "merchant": row["merchant"],
+            "raw_merchant": row["raw_merchant"],
             "account_name": str(row["account_name"]),
             "category_name": row["category_name"],
             "amount": cents_to_dollars(int(row["amount_cents"])),
@@ -133,6 +135,8 @@ def sensitive_query(
                 t.id,
                 t.posted_at,
                 t.description,
+                t.merchant,
+                t.raw_merchant,
                 t.amount_cents,
                 a.name AS account_name,
                 c.name AS category_name
@@ -148,6 +152,128 @@ def sensitive_query(
     ]
     log_sensitive_access(conn, audit_tool_name, session_ref, f"Returned {len(rows)} rows")
     return {"transactions": rows}
+
+
+def build_finance_monitoring(
+    conn: Connection,
+    *,
+    period_start: str,
+    period_end: str,
+) -> dict[str, object]:
+    prior_start, prior_end = _prior_period_window(period_start, period_end)
+    current_rows = conn.execute(
+        """
+        SELECT
+            COALESCE(c.name, 'Uncategorized') AS category_name,
+            COALESCE(ABS(SUM(t.amount_cents)), 0) AS total_spent_cents
+        FROM finance_transactions t
+        LEFT JOIN finance_categories c ON c.id = t.category_id
+        WHERE t.posted_at >= ? AND t.posted_at <= ?
+          AND t.amount_cents < 0
+        GROUP BY COALESCE(c.name, 'Uncategorized')
+        ORDER BY total_spent_cents DESC, category_name ASC
+        """,
+        (period_start, period_end),
+    ).fetchall()
+    merchant_rows = conn.execute(
+        """
+        SELECT
+            COALESCE(t.merchant, 'Unknown') AS merchant,
+            COALESCE(ABS(SUM(t.amount_cents)), 0) AS total_spent_cents,
+            COUNT(*) AS transaction_count
+        FROM finance_transactions t
+        WHERE t.posted_at >= ? AND t.posted_at <= ?
+          AND t.amount_cents < 0
+        GROUP BY COALESCE(t.merchant, 'Unknown')
+        ORDER BY total_spent_cents DESC, merchant ASC
+        """,
+        (period_start, period_end),
+    ).fetchall()
+    income_rows = conn.execute(
+        """
+        SELECT
+            COALESCE(t.merchant, t.description, 'Unknown') AS merchant,
+            COUNT(*) AS transaction_count,
+            COALESCE(SUM(t.amount_cents), 0) AS total_income_cents
+        FROM finance_transactions t
+        LEFT JOIN finance_categories c ON c.id = t.category_id
+        WHERE t.posted_at >= ? AND t.posted_at <= ?
+          AND t.amount_cents > 0
+          AND COALESCE(c.name, '') = 'Income'
+        GROUP BY COALESCE(t.merchant, t.description, 'Unknown')
+        ORDER BY total_income_cents DESC, merchant ASC
+        """,
+        (period_start, period_end),
+    ).fetchall()
+    uncategorized_row = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS transaction_count,
+            COALESCE(ABS(SUM(t.amount_cents)), 0) AS total_spent_cents
+        FROM finance_transactions t
+        LEFT JOIN finance_categories c ON c.id = t.category_id
+        WHERE t.posted_at >= ? AND t.posted_at <= ?
+          AND t.amount_cents < 0
+          AND COALESCE(c.name, 'Uncategorized') = 'Uncategorized'
+        """,
+        (period_start, period_end),
+    ).fetchone()
+    prior_rows = {
+        str(row["category_name"]): int(row["total_spent_cents"])
+        for row in conn.execute(
+            """
+            SELECT
+                COALESCE(c.name, 'Uncategorized') AS category_name,
+                COALESCE(ABS(SUM(t.amount_cents)), 0) AS total_spent_cents
+            FROM finance_transactions t
+            LEFT JOIN finance_categories c ON c.id = t.category_id
+            WHERE t.posted_at >= ? AND t.posted_at <= ?
+              AND t.amount_cents < 0
+            GROUP BY COALESCE(c.name, 'Uncategorized')
+            """,
+            (prior_start, prior_end),
+        ).fetchall()
+    }
+    return {
+        "top_categories": [
+            {
+                "category_name": str(row["category_name"]),
+                "total_spent": cents_to_dollars(int(row["total_spent_cents"])),
+            }
+            for row in current_rows
+        ],
+        "top_merchants": [
+            {
+                "merchant": str(row["merchant"]),
+                "total_spent": cents_to_dollars(int(row["total_spent_cents"])),
+                "transaction_count": int(row["transaction_count"]),
+            }
+            for row in merchant_rows
+        ],
+        "income_patterns": [
+            {
+                "merchant": str(row["merchant"]),
+                "transaction_count": int(row["transaction_count"]),
+                "total_income": cents_to_dollars(int(row["total_income_cents"])),
+            }
+            for row in income_rows
+        ],
+        "uncategorized_summary": {
+            "transaction_count": int(uncategorized_row["transaction_count"]),
+            "total_spent": cents_to_dollars(int(uncategorized_row["total_spent_cents"])),
+        },
+        "changes_vs_prior_period": [
+            {
+                "category_name": str(row["category_name"]),
+                "current_total_spent": cents_to_dollars(int(row["total_spent_cents"])),
+                "prior_total_spent": cents_to_dollars(prior_rows.get(str(row["category_name"]), 0)),
+                "delta_spent": cents_to_dollars(
+                    int(row["total_spent_cents"]) - prior_rows.get(str(row["category_name"]), 0)
+                ),
+            }
+            for row in current_rows
+        ],
+    }
 
 
 def sensitive_query_total_cents(
@@ -217,6 +343,15 @@ def sensitive_query_count(
     ).fetchone()
     log_sensitive_access(conn, "finance_query", session_ref, "aggregate intent=count_transactions")
     return int(row["total_count"])
+
+
+def _prior_period_window(period_start: str, period_end: str) -> tuple[str, str]:
+    start = date.fromisoformat(period_start)
+    end = date.fromisoformat(period_end)
+    span_days = (end - start).days + 1
+    prior_end = start - timedelta(days=1)
+    prior_start = prior_end - timedelta(days=span_days - 1)
+    return prior_start.isoformat(), prior_end.isoformat()
 
 
 def _build_sensitive_filter_clauses(

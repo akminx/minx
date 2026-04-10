@@ -83,7 +83,7 @@ def test_migrations_are_idempotent(tmp_path):
     first.close()
     second = get_connection(db_path)
     count = second.execute("SELECT COUNT(*) AS c FROM _migrations").fetchone()["c"]
-    assert count == 7
+    assert count == 8
 
 
 def test_finance_seed_rows_exist(tmp_path):
@@ -119,7 +119,7 @@ def test_apply_migrations_handles_plain_sqlite_connections(tmp_path):
     db_module.apply_migrations(conn)
 
     count = conn.execute("SELECT COUNT(*) FROM _migrations").fetchone()[0]
-    assert count == 7
+    assert count == 8
     assert conn.row_factory is original_row_factory
 
 
@@ -335,6 +335,7 @@ def test_built_wheel_includes_packaged_migrations(tmp_path):
     assert "minx_mcp/schema/migrations/005_core.sql" in names
     assert "minx_mcp/schema/migrations/006_finance_report_lifecycle.sql" in names
     assert "minx_mcp/schema/migrations/007_core_goals.sql" in names
+    assert "minx_mcp/schema/migrations/008_finance_phase2.sql" in names
 
 
 def test_missing_migrations_preserve_row_factory(tmp_path, monkeypatch):
