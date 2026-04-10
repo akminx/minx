@@ -9,7 +9,7 @@ def log_interpretation_failure(
     *,
     task: str,
     prompt_summary: str,
-    error: Exception,
+    error: object,
 ) -> None:
     logger.warning(
         "interpretation_failed task=%s summary=%s error=%s",

@@ -164,6 +164,7 @@ def _render_goal_capture_prompt(
             "Return keys: intent, confidence, subject_kind, subject, period, target_value.",
             f"Message: {ctx['message']}",
             f"Review date: {ctx['review_date']}",
+            f"Active goals: {ctx['active_goals']}",
             "Known categories: " + ", ".join(ctx["category_names"]),
             "Known merchants: " + ", ".join(ctx["merchant_names"]),
         ]

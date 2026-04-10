@@ -19,7 +19,7 @@ def build_goal_capture_context(
                 "period": getattr(g, "period", None),
                 "target_value": getattr(g, "target_value", None),
             }
-            for g in active_goals
+            for g in active_goals[:10]
         ],
         "category_names": category_names[:50],
         "merchant_names": merchant_names[:50],
