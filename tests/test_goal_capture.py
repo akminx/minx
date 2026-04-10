@@ -31,6 +31,14 @@ class _AmbiguousSpellingsFinanceRead:
         return ["M M"]
 
 
+class _CanonicalMerchantFinanceRead:
+    def list_goal_category_names(self) -> list[str]:
+        return ["Dining Out"]
+
+    def list_spending_merchant_names(self) -> list[str]:
+        return ["Joe's Cafe"]
+
+
 class _StubGoalCaptureLLM:
     def __init__(self, payload: str, expected_substring: str | None = "Amazon") -> None:
         self.payload = payload
@@ -117,6 +125,31 @@ def test_capture_goal_message_builds_daily_create_payload_for_today_phrase() -> 
     assert result.payload is not None
     assert result.payload["period"] == "daily"
     assert result.payload["starts_on"] == "2026-03-15"
+
+
+def test_capture_goal_message_canonicalizes_statement_style_merchant_subject() -> None:
+    result = capture_goal_message(
+        message="Make a goal to spend less than $25 at SQ *JOES CAFE 1234 this month",
+        review_date="2026-03-15",
+        finance_api=_CanonicalMerchantFinanceRead(),
+        goals=[],
+    )
+
+    assert result.result_type == "create"
+    assert result.payload == {
+        "goal_type": "spending_cap",
+        "title": "Joe's Cafe Spending Cap",
+        "metric_type": "sum_below",
+        "target_value": 2_500,
+        "period": "monthly",
+        "domain": "finance",
+        "category_names": [],
+        "merchant_names": ["Joe's Cafe"],
+        "account_names": [],
+        "starts_on": "2026-03-01",
+        "ends_on": None,
+        "notes": None,
+    }
 
 
 def test_capture_goal_message_honors_explicit_iso_start_date() -> None:
@@ -314,6 +347,27 @@ def test_capture_goal_message_builds_create_assistant_message() -> None:
 
     assert result.result_type == "create"
     assert result.assistant_message is not None
+
+
+def test_capture_goal_message_matches_statement_style_merchant_for_goal_update() -> None:
+    result = capture_goal_message(
+        message="Pause my SQ *JOES CAFE 1234 goal",
+        review_date="2026-03-15",
+        finance_api=_CanonicalMerchantFinanceRead(),
+        goals=[
+            _goal_record(
+                id=9,
+                title="Joe's Cafe Spending Cap",
+                category_names=[],
+                merchant_names=["Joe's Cafe"],
+                account_names=[],
+            )
+        ],
+    )
+
+    assert result.result_type == "update"
+    assert result.goal_id == 9
+    assert result.payload == {"status": "paused"}
 
 
 def test_capture_goal_message_treats_unpause_as_resume_not_pause() -> None:

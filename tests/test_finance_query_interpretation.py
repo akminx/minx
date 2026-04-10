@@ -76,6 +76,58 @@ async def test_finance_query_interpretation_is_async_safe_inside_running_loop() 
     assert plan.needs_clarification is False
 
 
+@pytest.mark.asyncio
+async def test_finance_query_interpretation_canonicalizes_merchant_without_punctuation() -> None:
+    class ReadWithCanonicalMerchant(_StubFinanceQueryRead):
+        def list_spending_merchant_names(self) -> list[str]:
+            return ["Joe's Cafe"]
+
+    class MerchantLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            assert "Joe's Cafe" in prompt
+            return (
+                '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31","merchant":"joes cafe"},'
+                '"confidence":0.94,"needs_clarification":false}'
+            )
+
+    plan = await _interpret_finance_query(
+        message="show me everything at joes cafe last month",
+        review_date="2026-03-31",
+        finance_api=ReadWithCanonicalMerchant(),
+        llm=MerchantLLM(),
+    )
+
+    assert plan.needs_clarification is False
+    assert plan.filters.merchant == "Joe's Cafe"
+
+
+@pytest.mark.asyncio
+async def test_finance_query_interpretation_canonicalizes_statement_style_merchant_name() -> None:
+    class ReadWithCanonicalMerchant(_StubFinanceQueryRead):
+        def list_spending_merchant_names(self) -> list[str]:
+            return ["Joe's Cafe"]
+
+    class MerchantLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            assert "Joe's Cafe" in prompt
+            return (
+                '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31","merchant":"SQ *JOES CAFE 1234"},'
+                '"confidence":0.94,"needs_clarification":false}'
+            )
+
+    plan = await _interpret_finance_query(
+        message="show me everything at SQ *JOES CAFE 1234 last month",
+        review_date="2026-03-31",
+        finance_api=ReadWithCanonicalMerchant(),
+        llm=MerchantLLM(),
+    )
+
+    assert plan.needs_clarification is False
+    assert plan.filters.merchant == "Joe's Cafe"
+
+
 def test_finance_query_interpretation_returns_clarify_plan_for_ambiguous_merchant() -> None:
     plan = interpret_finance_query(
         message="show me everything at target last month",

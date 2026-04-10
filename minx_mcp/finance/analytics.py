@@ -175,6 +175,10 @@ def build_finance_monitoring(
         """,
         (period_start, period_end),
     ).fetchall()
+    current_totals = {
+        str(row["category_name"]): int(row["total_spent_cents"])
+        for row in current_rows
+    }
     merchant_rows = conn.execute(
         """
         SELECT
@@ -218,7 +222,7 @@ def build_finance_monitoring(
         """,
         (period_start, period_end),
     ).fetchone()
-    prior_rows = {
+    prior_totals = {
         str(row["category_name"]): int(row["total_spent_cents"])
         for row in conn.execute(
             """
@@ -234,6 +238,23 @@ def build_finance_monitoring(
             (prior_start, prior_end),
         ).fetchall()
     }
+    comparison_rows = [
+        {
+            "category_name": category_name,
+            "current_total_spent": cents_to_dollars(current_totals.get(category_name, 0)),
+            "prior_total_spent": cents_to_dollars(prior_totals.get(category_name, 0)),
+            "delta_spent": cents_to_dollars(
+                current_totals.get(category_name, 0) - prior_totals.get(category_name, 0)
+            ),
+        }
+        for category_name in sorted(
+            set(current_totals) | set(prior_totals),
+            key=lambda name: (
+                -(abs(current_totals.get(name, 0) - prior_totals.get(name, 0))),
+                name,
+            ),
+        )
+    ]
     return {
         "top_categories": [
             {
@@ -262,17 +283,7 @@ def build_finance_monitoring(
             "transaction_count": int(uncategorized_row["transaction_count"]),
             "total_spent": cents_to_dollars(int(uncategorized_row["total_spent_cents"])),
         },
-        "changes_vs_prior_period": [
-            {
-                "category_name": str(row["category_name"]),
-                "current_total_spent": cents_to_dollars(int(row["total_spent_cents"])),
-                "prior_total_spent": cents_to_dollars(prior_rows.get(str(row["category_name"]), 0)),
-                "delta_spent": cents_to_dollars(
-                    int(row["total_spent_cents"]) - prior_rows.get(str(row["category_name"]), 0)
-                ),
-            }
-            for row in current_rows
-        ],
+        "changes_vs_prior_period": comparison_rows,
     }
 
 

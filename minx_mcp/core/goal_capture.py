@@ -14,6 +14,7 @@ from minx_mcp.core.models import (
     GoalCaptureResult,
     GoalRecord,
 )
+from minx_mcp.finance.normalization import normalize_merchant
 from minx_mcp.money import format_cents
 from minx_mcp.money import parse_dollars_to_cents
 
@@ -193,6 +194,14 @@ def _resolve_exact_subject(
     for candidate in candidates:
         if _normalize_text(candidate) == normalized_subject:
             return candidate
+    if subject_kind == "merchant":
+        normalized_merchant = normalize_merchant(subject)
+        if normalized_merchant is not None:
+            normalized_merchant_text = _normalize_text(normalized_merchant)
+            for candidate in candidates:
+                candidate_merchant = normalize_merchant(candidate)
+                if candidate_merchant is not None and _normalize_text(candidate_merchant) == normalized_merchant_text:
+                    return candidate
     return None
 
 
@@ -451,10 +460,15 @@ def _summarize_goal_filters(goal: GoalRecord) -> str:
 
 def _goal_is_mentioned(goal: GoalRecord, normalized_message: str) -> bool:
     phrases = [goal.title, *goal.category_names, *goal.merchant_names, *goal.account_names]
+    compact_message = _compact_text(normalized_message)
     for phrase in phrases:
         normalized_phrase = _normalize_text(phrase)
         if normalized_phrase and _contains_exact_phrase(normalized_message, normalized_phrase):
             return True
+        if phrase in goal.merchant_names:
+            normalized_merchant = normalize_merchant(phrase)
+            if normalized_merchant is not None and _compact_text(normalized_merchant) in compact_message:
+                return True
     return False
 
 
@@ -509,6 +523,10 @@ def _resolve_subject(
     }
     category = category_map.get(normalized_subject)
     merchant = merchant_map.get(normalized_subject)
+    if merchant is None:
+        normalized_merchant = normalize_merchant(subject_text)
+        if normalized_merchant is not None:
+            merchant = merchant_map.get(_normalize_text(normalized_merchant))
     if category is not None and merchant is not None:
         return {"kind": "ambiguous", "category": category, "merchant": merchant}
     if category is not None:
@@ -710,6 +728,10 @@ def _build_create_title(subject: str) -> str:
 
 def _normalize_text(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def _compact_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
 def _contains_any_word(haystack: str, words: tuple[str, ...]) -> bool:

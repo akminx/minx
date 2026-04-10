@@ -18,6 +18,7 @@ from minx_mcp.finance.analytics import (
 from minx_mcp.finance.import_models import ParsedImportBatch, ParsedTransaction
 from minx_mcp.finance.import_workflow import preview_finance_import, run_finance_import
 from minx_mcp.finance.normalization import normalize_merchant
+from minx_mcp.finance.rules import Rule, apply_rules
 from minx_mcp.finance.report_orchestration import run_monthly_report, run_weekly_report
 from minx_mcp.jobs import get_job
 from minx_mcp.time_utils import utc_now_isoformat
@@ -90,35 +91,78 @@ class FinanceService:
         self.conn.commit()
 
     def apply_category_rules(self, batch_id: int | None = None, *, commit: bool = True) -> None:
-        rules = self.conn.execute(
+        uncategorized_id = self._uncategorized_id()
+        reset_where_clause = "WHERE category_source = 'rule'"
+        reset_params: list[object] = []
+        if batch_id is not None:
+            reset_where_clause += " AND batch_id = ?"
+            reset_params.append(batch_id)
+        self.conn.execute(
+            f"""
+            UPDATE finance_transactions
+            SET category_id = ?, category_source = 'uncategorized'
+            {reset_where_clause}
+            """,
+            [uncategorized_id, *reset_params],
+        )
+
+        stored_rules = self.conn.execute(
             """
             SELECT r.pattern, r.match_kind, r.category_id
             FROM finance_category_rules r
             ORDER BY r.priority ASC, r.id ASC
             """
         ).fetchall()
-        batch_clause = ""
-        batch_params: tuple[object, ...] = ()
-        if batch_id is not None:
-            batch_clause = " AND batch_id = ?"
-            batch_params = (batch_id,)
-        for rule in rules:
-            if rule["match_kind"] != "merchant_contains":
-                continue
-            escaped = (
-                rule["pattern"]
-                .replace("\\", "\\\\")
-                .replace("%", "\\%")
-                .replace("_", "\\_")
+        rules = [
+            Rule(
+                stage="categorize",
+                priority=0,
+                kind="categorize_merchant",
+                match=str(rule["pattern"]),
+                value=str(rule["category_id"]),
             )
+            for rule in stored_rules
+            if rule["match_kind"] == "merchant_contains"
+        ]
+        if not rules:
+            if commit:
+                self.conn.commit()
+            return
+
+        where_clause = "WHERE category_source != 'manual'"
+        params: list[object] = []
+        if batch_id is not None:
+            where_clause += " AND batch_id = ?"
+            params.append(batch_id)
+
+        rows = self.conn.execute(
+            f"""
+            SELECT id, merchant, raw_merchant
+            FROM finance_transactions
+            {where_clause}
+            ORDER BY id ASC
+            """,
+            params,
+        ).fetchall()
+        for row in rows:
+            applied = apply_rules(
+                {
+                    "merchant": row["merchant"],
+                    "raw_merchant": row["raw_merchant"],
+                    "category_name": None,
+                },
+                rules,
+            )
+            category_id = applied.get("category_name")
+            if not isinstance(category_id, str):
+                continue
             self.conn.execute(
                 """
                 UPDATE finance_transactions
                 SET category_id = ?, category_source = 'rule'
-                WHERE merchant LIKE ? ESCAPE '\\' AND category_source != 'manual'
-                """
-                + batch_clause,
-                (rule["category_id"], f"%{escaped}%", *batch_params),
+                WHERE id = ?
+                """,
+                (int(category_id), int(row["id"])),
             )
         if commit:
             self.conn.commit()

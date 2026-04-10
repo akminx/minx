@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date
 from difflib import get_close_matches
+import re
 from typing import Protocol
 
 from minx_mcp.contracts import InvalidInputError
+from minx_mcp.finance.normalization import normalize_merchant
 from minx_mcp.core.interpretation.context import build_finance_query_context
 from minx_mcp.core.interpretation.models import FinanceQueryInterpretation
 from minx_mcp.core.interpretation.runner import run_interpretation
@@ -162,10 +164,17 @@ def _to_filters(raw: FinanceQueryInterpretation) -> FinanceQueryFilters:
 def _canonicalize_value(value: str | None, candidates: list[str]) -> str | None:
     if value is None:
         return None
-    normalized_value = value.strip().casefold()
+    normalized_value = _normalize_lookup_value(value)
     for candidate in candidates:
-        if candidate.casefold() == normalized_value:
+        if _normalize_lookup_value(candidate) == normalized_value:
             return candidate
+    normalized_merchant_value = normalize_merchant(value)
+    if normalized_merchant_value is not None:
+        merchant_lookup = _normalize_lookup_value(normalized_merchant_value)
+        for candidate in candidates:
+            candidate_merchant = normalize_merchant(candidate)
+            if candidate_merchant is not None and _normalize_lookup_value(candidate_merchant) == merchant_lookup:
+                return candidate
     return None
 
 
@@ -183,6 +192,10 @@ def _validate_iso_date(value: str, *, field_name: str) -> None:
         date.fromisoformat(value)
     except ValueError as exc:
         raise InvalidInputError(f"{field_name} must be a valid ISO date") from exc
+
+
+def _normalize_lookup_value(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.casefold())
 
 
 def _clarify(

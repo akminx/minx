@@ -93,7 +93,11 @@ def detect_category_drift(read_models: ReadModels) -> list[InsightCandidate]:
 def detect_goal_finance_risks(read_models: ReadModels) -> list[InsightCandidate]:
     insights: list[InsightCandidate] = []
     for goal in read_models.goal_progress:
-        if not goal.metric_type.startswith("sum_below") or goal.target_value <= 0:
+        if (
+            not goal.metric_type.startswith("sum_below")
+            or goal.target_value <= 0
+            or goal.status == "on_track"
+        ):
             continue
         pct = round((goal.actual_value / goal.target_value) * 100)
         if pct < 60:
