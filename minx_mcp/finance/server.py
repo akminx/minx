@@ -72,6 +72,7 @@ class FinanceServiceLike(Protocol):
         merchant: str | None = None,
         account_name: str | None = None,
         description_contains: str | None = None,
+        session_ref: str | None = None,
     ) -> int: ...
     def get_filtered_transaction_count(
         self,
@@ -82,6 +83,7 @@ class FinanceServiceLike(Protocol):
         merchant: str | None = None,
         account_name: str | None = None,
         description_contains: str | None = None,
+        session_ref: str | None = None,
     ) -> int: ...
 
 
@@ -347,6 +349,10 @@ async def _finance_query(
             }
 
         filters = plan.filters.to_public_dict()
+        _validate_date_range(filters.get("start_date"), filters.get("end_date"))
+        description_contains = filters.get("description_contains")
+        if description_contains is not None and not description_contains.strip():
+            raise InvalidInputError("description_contains must not be blank")
         if plan.intent == "list_transactions":
             result = service.sensitive_finance_query(
                 limit=limit,
@@ -361,7 +367,10 @@ async def _finance_query(
                 "transactions": result["transactions"],
             }
         if plan.intent == "sum_spending":
-            total_cents = service.get_filtered_spending_total(**filters)
+            total_cents = service.get_filtered_spending_total(
+                session_ref=session_ref,
+                **filters,
+            )
             return {
                 "result_type": "query",
                 "intent": plan.intent,
@@ -370,7 +379,10 @@ async def _finance_query(
                 "total_spent": cents_to_dollars(total_cents),
             }
         if plan.intent == "count_transactions":
-            total_count = service.get_filtered_transaction_count(**filters)
+            total_count = service.get_filtered_transaction_count(
+                session_ref=session_ref,
+                **filters,
+            )
             return {
                 "result_type": "query",
                 "intent": plan.intent,
@@ -378,7 +390,7 @@ async def _finance_query(
                 "confidence": plan.confidence,
                 "transaction_count": total_count,
             }
-    raise InvalidInputError(f"Unsupported finance query intent: {plan.intent}")
+        raise InvalidInputError(f"Unsupported finance query intent: {plan.intent}")
 
 
 def _resolve_finance_query_llm(service: FinanceServiceLike, llm: object | None) -> object:

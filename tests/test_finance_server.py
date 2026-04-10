@@ -691,3 +691,87 @@ def test_safe_finance_summary_returns_internal_error_envelope_for_unexpected_exc
         "error_code": "INTERNAL_ERROR",
     }
     assert "boom" in caplog.text
+
+
+def test_finance_query_tool_threads_session_ref_into_sum_spending_audit_log(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+
+    class _SumLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"sum_spending","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31"},'
+                '"confidence":0.9,"needs_clarification":false}'
+            )
+
+    server = create_finance_server(service, llm=_SumLLM())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    _call_tool_sync(
+        finance_query,
+        "how much did I spend in March",
+        "2026-03-31",
+        session_ref="test-session-123",
+    )
+
+    row = service.conn.execute(
+        "SELECT session_ref FROM audit_log WHERE tool_name = 'finance_query'"
+    ).fetchone()
+    assert row is not None
+    assert row["session_ref"] == "test-session-123"
+
+
+def test_finance_query_tool_threads_session_ref_into_count_transactions_audit_log(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+
+    class _CountLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"count_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31"},'
+                '"confidence":0.9,"needs_clarification":false}'
+            )
+
+    server = create_finance_server(service, llm=_CountLLM())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    _call_tool_sync(
+        finance_query,
+        "how many transactions in March",
+        "2026-03-31",
+        session_ref="test-session-456",
+    )
+
+    row = service.conn.execute(
+        "SELECT session_ref FROM audit_log WHERE tool_name = 'finance_query'"
+    ).fetchone()
+    assert row is not None
+    assert row["session_ref"] == "test-session-456"
+
+
+def test_finance_query_tool_rejects_llm_reversed_date_range(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+
+    class _ReversedDateLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"sum_spending","filters":{"start_date":"2026-03-31",'
+                '"end_date":"2026-03-01"},'
+                '"confidence":0.9,"needs_clarification":false}'
+            )
+
+    server = create_finance_server(service, llm=_ReversedDateLLM())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    result = _call_tool_sync(
+        finance_query,
+        "how much did I spend last month",
+        "2026-03-31",
+    )
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "start_date must be on or before end_date",
+        "error_code": "INVALID_INPUT",
+    }

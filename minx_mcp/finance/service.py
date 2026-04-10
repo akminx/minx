@@ -238,6 +238,7 @@ class FinanceService:
         merchant: str | None = None,
         account_name: str | None = None,
         description_contains: str | None = None,
+        session_ref: str | None = None,
     ) -> int:
         return sensitive_query_total_cents(
             self.conn,
@@ -247,6 +248,7 @@ class FinanceService:
             merchant=merchant,
             account_name=account_name,
             description_contains=description_contains,
+            session_ref=session_ref,
         )
 
     def get_filtered_transaction_count(
@@ -258,6 +260,7 @@ class FinanceService:
         merchant: str | None = None,
         account_name: str | None = None,
         description_contains: str | None = None,
+        session_ref: str | None = None,
     ) -> int:
         return sensitive_query_count(
             self.conn,
@@ -267,6 +270,7 @@ class FinanceService:
             merchant=merchant,
             account_name=account_name,
             description_contains=description_contains,
+            session_ref=session_ref,
         )
 
     def generate_weekly_report(self, period_start: str, period_end: str) -> dict[str, object]:
