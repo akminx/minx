@@ -6,6 +6,7 @@ from difflib import get_close_matches
 from typing import Protocol
 
 from minx_mcp.contracts import InvalidInputError
+from minx_mcp.core.interpretation.context import build_finance_query_context
 from minx_mcp.core.interpretation.models import FinanceQueryInterpretation
 from minx_mcp.core.interpretation.runner import run_interpretation
 from minx_mcp.core.models import (
@@ -119,6 +120,13 @@ def _render_finance_query_prompt(
     review_date: str,
     finance_api: FinanceQueryReadProtocol,
 ) -> str:
+    ctx = build_finance_query_context(
+        message=message,
+        review_date=review_date,
+        category_names=finance_api.list_transaction_category_names(),
+        merchant_names=finance_api.list_spending_merchant_names(),
+        account_names=finance_api.list_account_names(),
+    )
     return "\n".join(
         [
             "Interpret the finance query request as JSON.",
@@ -131,11 +139,11 @@ def _render_finance_query_prompt(
                 "Return keys: intent, filters, confidence, needs_clarification, "
                 "clarification_type, question, options."
             ),
-            f"Message: {message}",
-            f"Review date: {review_date}",
-            "Known categories: " + ", ".join(finance_api.list_transaction_category_names()),
-            "Known merchants: " + ", ".join(finance_api.list_spending_merchant_names()),
-            "Known accounts: " + ", ".join(finance_api.list_account_names()),
+            f"Message: {ctx['message']}",
+            f"Review date: {ctx['review_date']}",
+            "Known categories: " + ", ".join(ctx["category_names"]),
+            "Known merchants: " + ", ".join(ctx["merchant_names"]),
+            "Known accounts: " + ", ".join(ctx["account_names"]),
         ]
     )
 

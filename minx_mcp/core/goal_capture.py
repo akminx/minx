@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from typing import cast
 
 from minx_mcp.contracts import InvalidInputError
+from minx_mcp.core.interpretation.context import build_goal_capture_context
 from minx_mcp.core.interpretation.models import GoalCaptureInterpretation
 from minx_mcp.core.interpretation.runner import run_interpretation
 from minx_mcp.core.models import (
@@ -150,14 +151,21 @@ def _render_goal_capture_prompt(
     review_date: str,
     finance_api: FinanceReadInterface,
 ) -> str:
+    ctx = build_goal_capture_context(
+        message=message,
+        review_date=review_date,
+        active_goals=[],
+        category_names=finance_api.list_goal_category_names(),
+        merchant_names=finance_api.list_spending_merchant_names(),
+    )
     return "\n".join(
         [
             "Interpret the goal capture request as JSON.",
             "Return keys: intent, confidence, subject_kind, subject, period, target_value.",
-            f"Message: {message}",
-            f"Review date: {review_date}",
-            "Known categories: " + ", ".join(finance_api.list_goal_category_names()),
-            "Known merchants: " + ", ".join(finance_api.list_spending_merchant_names()),
+            f"Message: {ctx['message']}",
+            f"Review date: {ctx['review_date']}",
+            "Known categories: " + ", ".join(ctx["category_names"]),
+            "Known merchants: " + ", ".join(ctx["merchant_names"]),
         ]
     )
 
