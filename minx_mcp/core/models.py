@@ -50,9 +50,6 @@ class FinanceReadInterface(Protocol):
     ) -> int: ...
 
 
-class VaultWriterLike(Protocol):
-    def write_markdown(self, relative_path: str, content: str) -> Path: ...
-
 
 @dataclass(frozen=True)
 class TimelineEntry:
@@ -123,18 +120,6 @@ class LLMReviewResult:
     next_day_focus: list[str]
 
 
-@dataclass(frozen=True)
-class DailyReview:
-    date: str
-    timeline: DailyTimeline
-    spending: SpendingSnapshot
-    open_loops: OpenLoopsSnapshot
-    goal_progress: list[GoalProgress]
-    insights: list[InsightCandidate]
-    narrative: str
-    next_day_focus: list[str]
-    llm_enriched: bool
-
 
 @dataclass(frozen=True)
 class PersistenceWarning:
@@ -161,23 +146,6 @@ class DurabilitySinkFailure:
     sink: str
     error: Exception
 
-
-class ReviewDurabilityError(Exception):
-    """Raised when the in-memory review was built but a durability sink failed.
-
-    ``artifact`` holds the generated review; callers may log, retry, or surface it.
-    ``failures`` lists each sink that failed (e.g. detector DB write, vault note).
-    """
-
-    def __init__(
-        self,
-        artifact: DailyReview,
-        failures: tuple[DurabilitySinkFailure, ...] | list[DurabilitySinkFailure],
-    ) -> None:
-        self.artifact = artifact
-        self.failures = tuple(failures)
-        sinks = ", ".join(f.sink for f in self.failures)
-        super().__init__(f"Daily review durability failed ({sinks})")
 
 
 @dataclass(frozen=True)
@@ -494,13 +462,6 @@ class GoalProgress:
     merchant_names: list[str]
     account_names: list[str]
 
-
-@dataclass(frozen=True)
-class ReviewContext:
-    db_path: str | Path
-    finance_api: FinanceReadInterface | None
-    vault_writer: VaultWriterLike
-    llm: LLMInterface | None = None
 
 
 @dataclass(frozen=True)
