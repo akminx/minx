@@ -17,13 +17,15 @@ The roadmap now follows four arcs:
 
 From the current repo baseline, the recommended execution order is:
 
-1. Slice 3: Meals MCP
-2. Slice 4: Training MCP
-3. Slice 5: Harness Adaptation + Ambient Inputs
+1. Slice 2.5: MCP Surface Refactor (reshape tool boundary for harness consumption)
+2. Slice 3: Meals MCP (SousChef port)
+3. Slice 4: Training MCP
 4. Slice 6: Durable Memory + Review Reproducibility
 5. Slice 7: Ideas/Journal MCP
 6. Slice 8: Proactive Autonomy
 7. Slice 9: Dashboard + Richer Surfaces
+
+Slice 5 (Harness Adaptation) has been removed. The MCP protocol itself provides portability. Harness-specific behavior lives in the harness (e.g. Hermes skill files), not in Core. See the MCP / Harness Responsibility Split section in the architecture design.
 
 This ordering preserves the architecture doc's north star:
 
@@ -133,6 +135,29 @@ This ordering preserves the architecture doc's north star:
 
 ---
 
+## Slice 2.5: MCP Surface Refactor
+
+**Status:** Not started
+**Spec:** [2026-04-10-slice2.5-mcp-surface-refactor-design.md](2026-04-10-slice2.5-mcp-surface-refactor-design.md)
+
+**Scope:**
+- Replace `daily_review` with `get_daily_snapshot` (structured data, silent signal persistence, no narrative)
+- Add `get_insight_history` tool (temporal signal queries with recurrence counts)
+- Add `get_goal_trajectory` tool (goal progress across historical periods with trend)
+- Add `persist_note` tool (generic vault write for harness-generated content)
+- Refactor `goal_capture` → `goal_parse` (parse-only, dual-path structured/natural input)
+- Add dual-path inputs to `finance_query` (structured filters OR natural language)
+- Remove narrative generation, markdown rendering, vault writing, and LLM review evaluation from Core
+- Update architecture doc and roadmap to reflect MCP/harness split
+
+**Delivers:** A Core MCP tool surface designed for smart harness consumption. Hermes (or any future harness) gets structured data, historical signals, and goal trajectories instead of pre-rendered narratives. The MCP becomes a portable data+signals provider that works with any MCP-capable harness.
+
+**Dependencies:** Slices 1, 2, 2.1
+
+**What stays unchanged:** All Finance MCP tools, all detectors, all read model builders, all domain logic, all shared platform code, all schema migrations.
+
+---
+
 ## Slice 3: Meals MCP
 
 **Status:** Not started
@@ -173,24 +198,11 @@ This ordering preserves the architecture doc's north star:
 
 ## Slice 5: Harness Adaptation + Ambient Inputs
 
-**Status:** Not started
+**Status:** Removed
 
-**Scope:**
-- Harness registry: harnesses identify themselves, Core selects a behavior profile
-- Behavior profiles: context budget, response length, retrieval depth, output format, autonomy posture
-- Hermes/Discord profile: concise, conversational, proactive, summary-heavy
-- CLI/Codex-style profile: deeper retrieval, structured output, tool-forward behavior
-- Poll adapter infrastructure: base class, interval, idempotency, state tracking, error handling
-- Vault poll adapter for journal/ideas or other ambient inputs before a dedicated MCP exists
-- clear separation between ambient inputs and source-of-truth domains
+This slice was removed in the Slice 2.5 redesign. The MCP protocol itself provides portability — harnesses adapt their own behavior through their skill/plugin systems (e.g. Hermes skill files). Minx Core does not need a harness registry, behavior profiles, or per-harness configuration. See the MCP / Harness Responsibility Split in the architecture design and the Slice 2.5 spec for details.
 
-**Delivers:** Minx behaves like one assistant across multiple shells without forcing all clients into the same response shape or waiting for every future domain to exist first.
-
-**Dependencies:** Slice 1, plus at least one additional domain from Slices 3-4
-
-**Notes:**
-- This slice is about interaction posture and ambient ingestion, not durable memory yet.
-- It is the bridge between “portable Core” and “real multi-harness product.”
+Ambient input ingestion (vault polling, journal scanning) remains harness-level work. Hermes already handles this through its journal-scan cron skill.
 
 ---
 
@@ -282,23 +294,23 @@ Slice 1 (Events + Review)
     +---> Slice 2 (Goals + Detection)
     |         |
     |         +---> Slice 2.1 (Conversational Goals + Trust)
+    |                    |
+    |                    +---> Slice 2.5 (MCP Surface Refactor)
     |
-    +---> Slice 3 (Meals MCP)
+    +---> Slice 3 (Meals MCP / SousChef port)
     |         |
     |         +---> Slice 4 (Training MCP)
-    |                    |
-    |                    +------+
-    |                           |
-    +-----------------------> Slice 5 (Harness + Ambient Inputs)
-                                |
-                                +---> Slice 6 (Memory + Reproducibility)
-                                |          |
-                                |          +---> Slice 8 (Autonomy)
-                                |
-                                +---> Slice 7 (Ideas/Journal MCP)
-                                           |
-                                           +---> Slice 9 (Dashboard + Richer Surfaces)
+    |
+    +---> Slice 6 (Memory + Reproducibility)
+    |         |
+    |         +---> Slice 8 (Autonomy)
+    |
+    +---> Slice 7 (Ideas/Journal MCP)
+              |
+              +---> Slice 9 (Dashboard + Richer Surfaces)
 
+Slice 5 (Harness Adaptation) removed — portability is provided by MCP protocol.
+Slice 2.5 should be done before Slice 3 to establish the harness-ready tool surface.
 Slice 9 also depends on Slice 2 and benefits strongly from Slices 3-6.
 ```
 

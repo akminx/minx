@@ -346,56 +346,45 @@ Minx should ask before promoting more identity-level or commitment-level memorie
 - personal constraints with strong implications
 - deeply personal identity claims
 
-## Harness Adaptation
+## MCP / Harness Responsibility Split
 
-Minx should feel like one assistant across multiple harnesses, but adapt behavior to the capabilities and constraints of each environment.
+Minx is portable because the MCP protocol is the adaptation layer. The MCP does not need to know which harness is calling it. It returns structured data; the harness decides how to present it.
 
-Minx Core should own a harness registry and behavior policy layer. Harnesses should identify themselves, and Minx Core should choose an operating profile automatically with optional manual override.
+### MCP Owns
 
-This profile may control:
+- domain data (CRUD, persistence, migrations)
+- deterministic detectors (threshold-based signal generation)
+- historical insight log (what was detected, when)
+- temporal aggregations (trends, trajectories, week-over-week)
+- read model snapshots (structured data for harness consumption)
+- data-integrity LLM work (classification, parsing, entity resolution)
+- vault persistence mechanics (atomic writes, path safety)
+- goal records, progress computation, and trajectory
 
-- context budget
-- response length
-- retrieval depth
-- tool classes allowed
-- autonomy level
-- interaction style
-- output format
+### Harness Owns
 
-Examples:
+- when to check in (cron, proactive triggers, scheduling)
+- what to tell the user (prioritization, suppression, personalization)
+- how to say it (narrative, voice, channel-appropriate format)
+- conversation memory (what was said before, what user responded)
+- cross-domain reasoning (connecting signals the MCP surfaces)
+- coaching and planning (goal guidance, next actions)
+- multi-turn dialogue (clarification, follow-up, confirmation)
+- where to post (Discord channels, vault notes, dashboards)
 
-- `Hermes / Discord`
-  - concise
-  - conversational
-  - proactive but lightweight
-  - summary-heavy
+### The Governing Rule
 
-- `Claude Code / Codex`
-  - deeper retrieval
-  - more structured output
-  - tool-forward
-  - less social overhead
+If the logic depends on the user's data or goals, it belongs in the MCP. If the logic depends on how you are talking to the user, it belongs in the harness.
 
-Harness adaptation may change behavior, but it must not fork truth. All harnesses should use the same underlying Minx state.
+### Dual-Path Tool Pattern
 
-## Hermes-Like Agent Experience
+MCP tools that involve LLM interpretation (query parsing, goal intent extraction, categorization) should accept both structured and natural language input. A smart harness can pre-parse with its own LLM and pass structured params directly. A dumb harness or cron job passes natural language and lets the MCP's internal LLM handle it. Same tool, same data outcome, works everywhere.
 
-Minx should feel like an agent similar to Hermes from the user side.
+### Portability
 
-The recommended split is:
+Harness adaptation is not a feature Minx Core needs to build. The MCP protocol itself provides portability. Any harness that speaks MCP can call the tools and get structured data. The harness adapts its own behavior — Minx Core does not need a harness registry, behavior profiles, or per-harness configuration.
 
-- `Minx Core` knows and remembers
-- `agent harness` performs and converses
-
-This means Hermes can provide the agentic shell today while Minx Core remains portable and reusable by other harnesses later.
-
-For the first daily review flow, the preferred interaction is:
-
-- Minx Core produces structured state and ranked insight candidates
-- Hermes requests those artifacts
-- Hermes renders the conversational review in Minx's voice
-
-This preserves the agent feel without burying all intelligence in one harness-specific prompt loop.
+Harness-specific skills (e.g. Hermes skill files) are thin wiring that maps MCP tools to the harness's interaction model. They should contain routing and formatting, not domain logic. When the harness changes, only the wiring rewrites — the MCP and its data are unchanged.
 
 ## Autonomy Strategy
 
