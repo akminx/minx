@@ -6,7 +6,7 @@ from typing import Protocol, Self
 
 from mcp.server.fastmcp import FastMCP
 
-from minx_mcp.contracts import InvalidInputError, NotFoundError, wrap_tool_call
+from minx_mcp.contracts import InvalidInputError, NotFoundError, wrap_async_tool_call, wrap_tool_call
 from minx_mcp.core.interpretation.finance_query import interpret_finance_query
 from minx_mcp.core.llm import create_llm
 from minx_mcp.money import cents_to_dollars
@@ -169,13 +169,13 @@ def create_finance_server(service: FinanceServiceLike, llm: object | None = None
         )
 
     @mcp.tool(name="finance_query")
-    def finance_query(
+    async def finance_query(
         message: str,
         review_date: str | None = None,
         session_ref: str | None = None,
         limit: int = 50,
     ) -> dict[str, object]:
-        return wrap_tool_call(
+        return await wrap_async_tool_call(
             lambda: _finance_query(
                 service,
                 message=message,
@@ -308,7 +308,7 @@ def _sensitive_finance_query(
         )
 
 
-def _finance_query(
+async def _finance_query(
     service: FinanceServiceLike,
     *,
     message: str,
@@ -326,7 +326,7 @@ def _finance_query(
     resolved_llm = _resolve_finance_query_llm(service, llm)
 
     with service:
-        plan = interpret_finance_query(
+        plan = await interpret_finance_query(
             message=message,
             review_date=effective_review_date,
             finance_api=service,

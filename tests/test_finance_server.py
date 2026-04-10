@@ -1,4 +1,6 @@
 import argparse
+import asyncio
+import inspect
 
 import pytest
 
@@ -16,6 +18,13 @@ class _StubFinanceQueryLLM:
     async def run_json_prompt(self, prompt: str) -> str:
         assert "Whole Foods" in prompt
         return self.payload
+
+
+def _call_tool_sync(fn, *args, **kwargs):
+    result = fn(*args, **kwargs)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
 
 
 def test_finance_server_registers_expected_tool_names(tmp_path):
@@ -365,7 +374,11 @@ def test_finance_query_tool_executes_validated_query_plan(tmp_path):
     )
     finance_query = server._tool_manager.get_tool("finance_query").fn
 
-    result = finance_query("show me everything at Whole Foods last month", "2026-03-31")
+    result = _call_tool_sync(
+        finance_query,
+        "show me everything at Whole Foods last month",
+        "2026-03-31",
+    )
 
     assert result == {
         "success": True,
@@ -392,6 +405,50 @@ def test_finance_query_tool_executes_validated_query_plan(tmp_path):
         "error": None,
         "error_code": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_finance_query_tool_is_async_safe_inside_running_loop(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    groceries_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    account_id = service.conn.execute(
+        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
+    ).fetchone()["id"]
+    service.conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, ?, 'csv', 'seed.csv', 'fp')
+        """,
+        (account_id,),
+    )
+    service.conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (?, 1, '2026-03-12', 'Whole Foods Market', 'Whole Foods', -4520, ?, 'manual')
+        """,
+        (account_id, groceries_id),
+    )
+    service.conn.commit()
+    server = create_finance_server(
+        service,
+        llm=_StubFinanceQueryLLM(
+            (
+                '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31","merchant":"Whole Foods"},'
+                '"confidence":0.94,"needs_clarification":false}'
+            )
+        ),
+    )
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    result = await finance_query("show me everything at Whole Foods last month", "2026-03-31")
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "query"
+    assert result["data"]["filters"]["merchant"] == "Whole Foods"
 
 
 def test_finance_job_status_returns_not_found_envelope_for_missing_job(tmp_path):

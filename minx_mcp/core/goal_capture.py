@@ -21,8 +21,7 @@ _SUPPORTED_CREATE_METRIC_TYPE = "sum_below"
 _SUPPORTED_CREATE_DOMAIN = "finance"
 _SUPPORTED_UPDATE_STATUSES = {"active", "paused"}
 
-
-def capture_goal_message(
+async def capture_goal_message(
     *,
     message: str,
     review_date: str,
@@ -31,7 +30,7 @@ def capture_goal_message(
     llm: object | None = None,
 ) -> GoalCaptureResult:
     if llm is not None:
-        interpreted = _capture_with_llm(
+        interpreted = await _capture_with_llm(
             message=message,
             review_date=review_date,
             finance_api=finance_api,
@@ -66,7 +65,7 @@ def capture_goal_message(
     )
 
 
-def _capture_with_llm(
+async def _capture_with_llm(
     *,
     message: str,
     review_date: str,
@@ -75,7 +74,7 @@ def _capture_with_llm(
 ) -> GoalCaptureResult | None:
     prompt = _render_goal_capture_prompt(message, review_date, finance_api)
     try:
-        interpretation = _run_goal_capture_interpretation(llm, prompt)
+        interpretation = await _run_goal_capture_interpretation(llm, prompt)
     except Exception:
         return None
 
@@ -138,15 +137,11 @@ def _capture_with_llm(
     )
 
 
-def _run_goal_capture_interpretation(llm: object, prompt: str) -> GoalCaptureInterpretation:
-    import asyncio
-
-    return asyncio.run(
-        run_interpretation(
-            llm=llm,
-            prompt=prompt,
-            result_model=GoalCaptureInterpretation,
-        )
+async def _run_goal_capture_interpretation(llm: object, prompt: str) -> GoalCaptureInterpretation:
+    return await run_interpretation(
+        llm=llm,
+        prompt=prompt,
+        result_model=GoalCaptureInterpretation,
     )
 
 

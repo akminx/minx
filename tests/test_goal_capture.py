@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
+
 import pytest
 
 from minx_mcp.contracts import InvalidInputError
-from minx_mcp.core.goal_capture import capture_goal_message
+from minx_mcp.core.goal_capture import capture_goal_message as _capture_goal_message
+from minx_mcp.core.server import create_core_server
+from minx_mcp.db import get_connection
 from minx_mcp.core.models import GoalCaptureOption, GoalCaptureResult, GoalRecord
 
 
@@ -24,12 +29,27 @@ class _AmbiguousSpellingsFinanceRead:
 
 
 class _StubGoalCaptureLLM:
-    def __init__(self, payload: str) -> None:
+    def __init__(self, payload: str, expected_substring: str | None = "Amazon") -> None:
         self.payload = payload
+        self.expected_substring = expected_substring
 
     async def run_json_prompt(self, prompt: str) -> str:
-        assert "Amazon" in prompt
+        if self.expected_substring is not None:
+            assert self.expected_substring in prompt
         return self.payload
+
+
+class _TestConfig:
+    def __init__(self, db_path, vault_path) -> None:
+        self.db_path = db_path
+        self.vault_path = vault_path
+
+
+def capture_goal_message(**kwargs):
+    result = _capture_goal_message(**kwargs)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
 
 
 def _goal_record(**overrides: object) -> GoalRecord:
@@ -392,6 +412,40 @@ def test_capture_goal_message_uses_llm_for_natural_language_create_resolution() 
     assert result.payload["merchant_names"] == ["Amazon"]
     assert result.payload["target_value"] == 20_000
     assert result.payload["period"] == "monthly"
+
+
+@pytest.mark.asyncio
+async def test_capture_goal_message_is_async_safe_inside_running_loop() -> None:
+    result = await _capture_goal_message(
+        message="I want to track my Amazon spending under $200 monthly",
+        review_date="2026-03-15",
+        finance_api=_StubFinanceRead(),
+        goals=[],
+        llm=_StubGoalCaptureLLM(
+            '{"intent":"create","confidence":0.97,"subject_kind":"merchant","subject":"Amazon","period":"monthly","target_value":20000}'
+        ),
+    )
+
+    assert result.result_type == "create"
+    assert result.payload is not None
+    assert result.payload["merchant_names"] == ["Amazon"]
+
+
+@pytest.mark.asyncio
+async def test_goal_capture_tool_is_async_safe_inside_running_loop(tmp_path) -> None:
+    db_path = tmp_path / "minx.db"
+    get_connection(db_path).close()
+    server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+    goal_capture = server._tool_manager.get_tool("goal_capture").fn
+
+    result = await goal_capture(
+        message="Make a goal to spend less than $250 on dining out this month",
+        review_date="2026-03-15",
+    )
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "create"
+    assert result["data"]["payload"]["starts_on"] == "2026-03-01"
 
 
 def test_capture_goal_message_falls_back_when_llm_output_is_invalid() -> None:

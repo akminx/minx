@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
 from datetime import date
 from difflib import get_close_matches
@@ -23,7 +22,7 @@ class FinanceQueryReadProtocol(Protocol):
     def list_account_names(self) -> list[str]: ...
 
 
-def interpret_finance_query(
+async def interpret_finance_query(
     *,
     message: str,
     review_date: str,
@@ -32,12 +31,10 @@ def interpret_finance_query(
 ) -> FinanceQueryPlan:
     _validate_iso_date(review_date, field_name="review_date")
     prompt = _render_finance_query_prompt(message, review_date, finance_api)
-    raw = asyncio.run(
-        run_interpretation(
-            llm=llm,
-            prompt=prompt,
-            result_model=FinanceQueryInterpretation,
-        )
+    raw = await run_interpretation(
+        llm=llm,
+        prompt=prompt,
+        result_model=FinanceQueryInterpretation,
     )
 
     if raw.needs_clarification:

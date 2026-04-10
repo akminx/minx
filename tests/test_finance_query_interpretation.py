@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from minx_mcp.core.interpretation.finance_query import interpret_finance_query
+import asyncio
+import inspect
+
+import pytest
+
+from minx_mcp.core.interpretation.finance_query import interpret_finance_query as _interpret_finance_query
 
 
 class _StubFinanceQueryRead:
@@ -23,6 +28,13 @@ class _StubFinanceQueryLLM:
         return self.payload
 
 
+def interpret_finance_query(**kwargs):
+    result = _interpret_finance_query(**kwargs)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
+
+
 def test_finance_query_interpretation_resolves_sum_spending_request() -> None:
     plan = interpret_finance_query(
         message="how much did I spend on restaurants this week",
@@ -41,6 +53,26 @@ def test_finance_query_interpretation_resolves_sum_spending_request() -> None:
     assert plan.filters.category_name == "Restaurants"
     assert plan.filters.start_date == "2026-03-09"
     assert plan.filters.end_date == "2026-03-15"
+    assert plan.needs_clarification is False
+
+
+@pytest.mark.asyncio
+async def test_finance_query_interpretation_is_async_safe_inside_running_loop() -> None:
+    plan = await _interpret_finance_query(
+        message="show me everything at Whole Foods last month",
+        review_date="2026-03-31",
+        finance_api=_StubFinanceQueryRead(),
+        llm=_StubFinanceQueryLLM(
+            (
+                '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31","merchant":"Whole Foods"},'
+                '"confidence":0.94,"needs_clarification":false}'
+            )
+        ),
+    )
+
+    assert plan.intent == "list_transactions"
+    assert plan.filters.merchant == "Whole Foods"
     assert plan.needs_clarification is False
 
 

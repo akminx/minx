@@ -124,11 +124,11 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         return wrap_tool_call(lambda: _goal_archive(config, goal_id))
 
     @mcp.tool(name="goal_capture")
-    def goal_capture(
+    async def goal_capture(
         message: str,
         review_date: str | None = None,
     ) -> dict[str, object]:
-        return wrap_tool_call(lambda: _goal_capture(config, message, review_date))
+        return await wrap_async_tool_call(lambda: _goal_capture(config, message, review_date))
 
     return mcp
 
@@ -229,7 +229,7 @@ def _goal_archive(config: CoreServiceConfig, goal_id: int) -> dict[str, object]:
         conn.close()
 
 
-def _goal_capture(
+async def _goal_capture(
     config: CoreServiceConfig,
     message: str,
     review_date: str | None,
@@ -246,7 +246,7 @@ def _goal_capture(
         goal_service = GoalService(conn)
         goals = goal_service.list_goals(status="active") + goal_service.list_goals(status="paused")
         llm = _resolve_goal_capture_llm(config)
-        result = capture_goal_message(
+        result = await capture_goal_message(
             message=normalized_message,
             review_date=effective_review_date,
             finance_api=FinanceReadAPI(conn),
