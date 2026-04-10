@@ -37,3 +37,16 @@ def save_csv_mapping(conn: Connection, profile_name: str, mapping: dict[str, obj
 def get_csv_mapping(conn: Connection, profile_name: str) -> dict[str, object] | None:
     mapping = get_preference(conn, "finance.csv_mapping", profile_name, None)
     return mapping if isinstance(mapping, dict) else None
+
+
+def get_finance_anomaly_threshold_cents(conn: Connection) -> int:
+    threshold = get_preference(conn, "finance", "anomaly_threshold_cents", -25_000)
+    if isinstance(threshold, bool):
+        return int(threshold)
+    if isinstance(threshold, int):
+        return threshold
+    if isinstance(threshold, float):
+        return int(threshold)
+    if isinstance(threshold, str):
+        return int(threshold)
+    return -25_000

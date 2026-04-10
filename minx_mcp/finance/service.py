@@ -7,9 +7,18 @@ from sqlite3 import Connection
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import emit_event
 from minx_mcp.db import get_connection
-from minx_mcp.finance.analytics import find_anomalies, sensitive_query, summarize_finances
+from minx_mcp.finance.analytics import (
+    build_finance_monitoring,
+    find_anomalies,
+    sensitive_query,
+    sensitive_query_count,
+    sensitive_query_total_cents,
+    summarize_finances,
+)
 from minx_mcp.finance.import_models import ParsedImportBatch, ParsedTransaction
-from minx_mcp.finance.import_workflow import run_finance_import
+from minx_mcp.finance.import_workflow import preview_finance_import, run_finance_import
+from minx_mcp.finance.normalization import normalize_merchant
+from minx_mcp.finance.rules import Rule, apply_rules
 from minx_mcp.finance.report_orchestration import run_monthly_report, run_weekly_report
 from minx_mcp.jobs import get_job
 from minx_mcp.time_utils import utc_now_isoformat
@@ -25,6 +34,10 @@ class FinanceService:
         self._uncategorized_category_id: int | None = None
         self.import_root = (import_root or db_path.parent).resolve()
         self.vault_writer = VaultWriter(vault_root, ("Finance",))
+
+    @property
+    def db_path(self) -> Path:
+        return self._db_path
 
     @property
     def conn(self) -> Connection:
@@ -55,6 +68,15 @@ class FinanceService:
     ) -> dict[str, object]:
         return run_finance_import(self, source_ref, account_name, source_kind, mapping)
 
+    def finance_import_preview(
+        self,
+        source_ref: str,
+        account_name: str,
+        source_kind: str | None = None,
+        mapping: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return preview_finance_import(self, source_ref, account_name, source_kind, mapping)
+
     def add_category_rule(self, category_name: str, match_kind: str, pattern: str) -> None:
         if not pattern.strip():
             raise InvalidInputError("pattern must not be empty")
@@ -69,35 +91,78 @@ class FinanceService:
         self.conn.commit()
 
     def apply_category_rules(self, batch_id: int | None = None, *, commit: bool = True) -> None:
-        rules = self.conn.execute(
+        uncategorized_id = self._uncategorized_id()
+        reset_where_clause = "WHERE category_source = 'rule'"
+        reset_params: list[object] = []
+        if batch_id is not None:
+            reset_where_clause += " AND batch_id = ?"
+            reset_params.append(batch_id)
+        self.conn.execute(
+            f"""
+            UPDATE finance_transactions
+            SET category_id = ?, category_source = 'uncategorized'
+            {reset_where_clause}
+            """,
+            [uncategorized_id, *reset_params],
+        )
+
+        stored_rules = self.conn.execute(
             """
             SELECT r.pattern, r.match_kind, r.category_id
             FROM finance_category_rules r
             ORDER BY r.priority ASC, r.id ASC
             """
         ).fetchall()
-        batch_clause = ""
-        batch_params: tuple[object, ...] = ()
-        if batch_id is not None:
-            batch_clause = " AND batch_id = ?"
-            batch_params = (batch_id,)
-        for rule in rules:
-            if rule["match_kind"] != "merchant_contains":
-                continue
-            escaped = (
-                rule["pattern"]
-                .replace("\\", "\\\\")
-                .replace("%", "\\%")
-                .replace("_", "\\_")
+        rules = [
+            Rule(
+                stage="categorize",
+                priority=0,
+                kind="categorize_merchant",
+                match=str(rule["pattern"]),
+                value=str(rule["category_id"]),
             )
+            for rule in stored_rules
+            if rule["match_kind"] == "merchant_contains"
+        ]
+        if not rules:
+            if commit:
+                self.conn.commit()
+            return
+
+        where_clause = "WHERE category_source != 'manual'"
+        params: list[object] = []
+        if batch_id is not None:
+            where_clause += " AND batch_id = ?"
+            params.append(batch_id)
+
+        rows = self.conn.execute(
+            f"""
+            SELECT id, merchant, raw_merchant
+            FROM finance_transactions
+            {where_clause}
+            ORDER BY id ASC
+            """,
+            params,
+        ).fetchall()
+        for row in rows:
+            applied = apply_rules(
+                {
+                    "merchant": row["merchant"],
+                    "raw_merchant": row["raw_merchant"],
+                    "category_name": None,
+                },
+                rules,
+            )
+            category_id = applied.get("category_name")
+            if not isinstance(category_id, str):
+                continue
             self.conn.execute(
                 """
                 UPDATE finance_transactions
                 SET category_id = ?, category_source = 'rule'
-                WHERE merchant LIKE ? ESCAPE '\\' AND category_source != 'manual'
-                """
-                + batch_clause,
-                (rule["category_id"], f"%{escaped}%", *batch_params),
+                WHERE id = ?
+                """,
+                (int(category_id), int(row["id"])),
             )
         if commit:
             self.conn.commit()
@@ -132,6 +197,30 @@ class FinanceService:
             "SELECT name, account_type, last_imported_at FROM finance_accounts ORDER BY name"
         ).fetchall()
         return {"accounts": [dict(row) for row in rows]}
+
+    def list_account_names(self) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT name FROM finance_accounts ORDER BY name ASC"
+        ).fetchall()
+        return [str(row["name"]) for row in rows]
+
+    def list_transaction_category_names(self) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT name FROM finance_categories ORDER BY name ASC"
+        ).fetchall()
+        return [str(row["name"]) for row in rows]
+
+    def list_spending_merchant_names(self) -> list[str]:
+        rows = self.conn.execute(
+            """
+            SELECT DISTINCT merchant
+            FROM finance_transactions
+            WHERE amount_cents < 0
+              AND COALESCE(TRIM(merchant), '') != ''
+            ORDER BY merchant ASC
+            """
+        ).fetchall()
+        return [str(row["merchant"]) for row in rows]
 
     def missing_transaction_ids(self, transaction_ids: list[int]) -> list[int]:
         if not transaction_ids:
@@ -173,10 +262,84 @@ class FinanceService:
                 self.conn.commit()
         return {"items": items}
 
-    def sensitive_finance_query(self, limit: int = 50, session_ref: str | None = None) -> dict[str, object]:
+    def finance_monitoring(self, *, period_start: str, period_end: str) -> dict[str, object]:
+        return build_finance_monitoring(
+            self.conn,
+            period_start=period_start,
+            period_end=period_end,
+        )
+
+    def sensitive_finance_query(
+        self,
+        limit: int = 50,
+        session_ref: str | None = None,
+        audit_tool_name: str = "sensitive_finance_query",
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        category_name: str | None = None,
+        merchant: str | None = None,
+        account_name: str | None = None,
+        description_contains: str | None = None,
+    ) -> dict[str, object]:
         if limit < 1 or limit > 500:
             raise InvalidInputError("limit must be between 1 and 500")
-        return sensitive_query(self.conn, limit=limit, session_ref=session_ref)
+        return sensitive_query(
+            self.conn,
+            limit=limit,
+            session_ref=session_ref,
+            audit_tool_name=audit_tool_name,
+            start_date=start_date,
+            end_date=end_date,
+            category_name=category_name,
+            merchant=merchant,
+            account_name=account_name,
+            description_contains=description_contains,
+        )
+
+    def get_filtered_spending_total(
+        self,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        category_name: str | None = None,
+        merchant: str | None = None,
+        account_name: str | None = None,
+        description_contains: str | None = None,
+        session_ref: str | None = None,
+    ) -> int:
+        return sensitive_query_total_cents(
+            self.conn,
+            start_date=start_date,
+            end_date=end_date,
+            category_name=category_name,
+            merchant=merchant,
+            account_name=account_name,
+            description_contains=description_contains,
+            session_ref=session_ref,
+        )
+
+    def get_filtered_transaction_count(
+        self,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        category_name: str | None = None,
+        merchant: str | None = None,
+        account_name: str | None = None,
+        description_contains: str | None = None,
+        session_ref: str | None = None,
+    ) -> int:
+        return sensitive_query_count(
+            self.conn,
+            start_date=start_date,
+            end_date=end_date,
+            category_name=category_name,
+            merchant=merchant,
+            account_name=account_name,
+            description_contains=description_contains,
+            session_ref=session_ref,
+        )
 
     def generate_weekly_report(self, period_start: str, period_end: str) -> dict[str, object]:
         return run_weekly_report(self, period_start, period_end)
@@ -225,21 +388,29 @@ class FinanceService:
         batch_id: int,
         txn: ParsedTransaction,
     ) -> int:
+        category_id = self._best_effort_category_id(txn.category_hint)
+        category_source = "import" if category_id is not None else "uncategorized"
+        if category_id is None:
+            category_id = self._uncategorized_id()
+        raw_merchant = txn.merchant
+        merchant = normalize_merchant(raw_merchant)
         cursor = self.conn.execute(
             """
             INSERT INTO finance_transactions (
-                account_id, batch_id, posted_at, description, merchant, amount_cents,
+                account_id, batch_id, posted_at, description, merchant, raw_merchant, amount_cents,
                 category_id, category_source, external_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'uncategorized', ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 account_id,
                 batch_id,
                 txn.posted_at,
                 txn.description,
-                txn.merchant,
+                merchant,
+                raw_merchant,
                 txn.amount_cents,
-                self._uncategorized_id(),
+                category_id,
+                category_source,
                 txn.external_id,
             ),
         )
@@ -255,6 +426,19 @@ class FinanceService:
         if not row:
             raise NotFoundError(f"Unknown finance category: {category_name}")
         return int(row["id"])
+
+    def _best_effort_category_id(self, category_hint: str | None) -> int | None:
+        if not category_hint:
+            return None
+
+        normalized_hint = _normalize_category_name(category_hint)
+        rows = self.conn.execute(
+            "SELECT id, name FROM finance_categories ORDER BY name ASC"
+        ).fetchall()
+        for row in rows:
+            if _normalize_category_name(str(row["name"])) == normalized_hint:
+                return int(row["id"])
+        return None
 
     def _uncategorized_id(self) -> int:
         if self._uncategorized_category_id is None:
@@ -295,3 +479,5 @@ class FinanceService:
         return int(row["total_cents"])
 
 
+def _normalize_category_name(value: str) -> str:
+    return "".join(character for character in value.casefold() if character.isalnum())

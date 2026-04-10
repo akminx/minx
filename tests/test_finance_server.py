@@ -1,4 +1,6 @@
 import argparse
+import asyncio
+import inspect
 
 import pytest
 
@@ -9,6 +11,22 @@ from minx_mcp.finance.server import SAFE_TOOLS, SENSITIVE_TOOLS, create_finance_
 from minx_mcp.finance.service import FinanceService
 
 
+class _StubFinanceQueryLLM:
+    def __init__(self, payload: str) -> None:
+        self.payload = payload
+
+    async def run_json_prompt(self, prompt: str) -> str:
+        assert "Whole Foods" in prompt
+        return self.payload
+
+
+def _call_tool_sync(fn, *args, **kwargs):
+    result = fn(*args, **kwargs)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
+
+
 def test_finance_server_registers_expected_tool_names(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
@@ -17,14 +35,24 @@ def test_finance_server_registers_expected_tool_names(tmp_path):
         "safe_finance_summary",
         "safe_finance_accounts",
         "finance_import",
+        "finance_import_preview",
         "finance_categorize",
         "finance_add_category_rule",
         "finance_anomalies",
+        "finance_monitoring",
         "finance_job_status",
         "finance_generate_weekly_report",
         "finance_generate_monthly_report",
     ]
-    assert SENSITIVE_TOOLS == ["sensitive_finance_query"]
+    assert SENSITIVE_TOOLS == ["sensitive_finance_query", "finance_query"]
+
+
+def test_finance_server_registers_phase2_safe_tool_names(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+
+    assert server._tool_manager.get_tool("finance_import_preview").name == "finance_import_preview"
+    assert server._tool_manager.get_tool("finance_monitoring").name == "finance_monitoring"
 
 
 def test_streamable_http_app_is_available(tmp_path):
@@ -264,6 +292,277 @@ def test_finance_categorize_tool_reports_actual_rows_updated(tmp_path):
     }
 
 
+def test_sensitive_finance_query_tool_accepts_filters(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    groceries_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    account_id = service.conn.execute(
+        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
+    ).fetchone()["id"]
+    service.conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, ?, 'csv', 'seed.csv', 'fp')
+        """,
+        (account_id,),
+    )
+    service.conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (?, 1, '2026-03-02', 'H-E-B Grocery', 'H-E-B', -4520, ?, 'manual')
+        """,
+        (account_id, groceries_id),
+    )
+    service.conn.commit()
+    server = create_finance_server(service)
+    sensitive_finance_query = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    result = sensitive_finance_query(
+        limit=5,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        category_name="Groceries",
+        merchant="H-E-B",
+        account_name="DCU",
+        description_contains="grocery",
+    )
+
+    assert result == {
+        "success": True,
+        "data": {
+            "transactions": [
+                {
+                    "id": 1,
+                    "posted_at": "2026-03-02",
+                    "description": "H-E-B Grocery",
+                    "merchant": "H-E-B",
+                    "raw_merchant": None,
+                    "account_name": "DCU",
+                    "category_name": "Groceries",
+                    "amount": -45.2,
+                }
+            ]
+        },
+        "error": None,
+        "error_code": None,
+    }
+
+
+def test_finance_query_tool_executes_validated_query_plan(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    groceries_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    account_id = service.conn.execute(
+        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
+    ).fetchone()["id"]
+    service.conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, ?, 'csv', 'seed.csv', 'fp')
+        """,
+        (account_id,),
+    )
+    service.conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (?, 1, '2026-03-12', 'Whole Foods Market', 'Whole Foods', -4520, ?, 'manual')
+        """,
+        (account_id, groceries_id),
+    )
+    service.conn.commit()
+    server = create_finance_server(
+        service,
+        llm=_StubFinanceQueryLLM(
+            (
+                '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31","merchant":"Whole Foods"},'
+                '"confidence":0.94,"needs_clarification":false}'
+            )
+        ),
+    )
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    result = _call_tool_sync(
+        finance_query,
+        "show me everything at Whole Foods last month",
+        "2026-03-31",
+    )
+
+    assert result == {
+        "success": True,
+        "data": {
+            "result_type": "query",
+            "intent": "list_transactions",
+            "filters": {
+                "start_date": "2026-03-01",
+                "end_date": "2026-03-31",
+                "merchant": "Whole Foods",
+            },
+            "confidence": 0.94,
+            "transactions": [
+                {
+                    "id": 1,
+                    "posted_at": "2026-03-12",
+                    "description": "Whole Foods Market",
+                    "merchant": "Whole Foods",
+                    "raw_merchant": None,
+                    "account_name": "DCU",
+                    "category_name": "Groceries",
+                    "amount": -45.2,
+                }
+            ],
+        },
+        "error": None,
+        "error_code": None,
+    }
+
+
+def test_finance_query_uses_service_db_path_for_default_llm_resolution(tmp_path, monkeypatch):
+    calls: dict[str, object] = {}
+
+    class _ConfiguredLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"list_transactions","filters":{},'
+                '"confidence":0.9,"needs_clarification":true,'
+                '"clarification_type":"missing_date_range",'
+                '"question":"Which date range should I use?"}'
+            )
+
+    class _ProtocolOnlyService:
+        def __init__(self, db_path):
+            self.db_path = db_path
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def safe_finance_summary(self):
+            return {}
+
+        def list_accounts(self):
+            return {"accounts": []}
+
+        def list_account_names(self):
+            return ["DCU"]
+
+        def list_transaction_category_names(self):
+            return ["Groceries"]
+
+        def list_spending_merchant_names(self):
+            return ["Whole Foods"]
+
+        def finance_import(self, source_ref, account_name, source_kind=None):
+            raise NotImplementedError
+
+        def missing_transaction_ids(self, transaction_ids):
+            return []
+
+        def finance_categorize(self, transaction_ids, category_name):
+            raise NotImplementedError
+
+        def add_category_rule(self, category_name, match_kind, pattern):
+            raise NotImplementedError
+
+        def finance_anomalies(self):
+            return {"items": []}
+
+        def get_job(self, job_id):
+            raise NotImplementedError
+
+        def generate_weekly_report(self, period_start, period_end):
+            raise NotImplementedError
+
+        def generate_monthly_report(self, period_start, period_end):
+            raise NotImplementedError
+
+        def sensitive_finance_query(self, limit=50, session_ref=None, **filters):
+            return {"transactions": []}
+
+        def get_filtered_spending_total(self, **filters):
+            return 0
+
+        def get_filtered_transaction_count(self, **filters):
+            return 0
+
+    def fake_create_llm(config=None, *, db_path=None):
+        calls["db_path"] = db_path
+        return _ConfiguredLLM()
+
+    monkeypatch.setattr("minx_mcp.finance.server.create_llm", fake_create_llm)
+    service = _ProtocolOnlyService(tmp_path / "custom.db")
+    server = create_finance_server(service)
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    result = _call_tool_sync(finance_query, "show me Whole Foods transactions", "2026-03-31")
+
+    assert calls["db_path"] == tmp_path / "custom.db"
+    assert result == {
+        "success": True,
+        "data": {
+            "result_type": "clarify",
+            "intent": "list_transactions",
+            "filters": {},
+            "confidence": 0.9,
+            "clarification_type": "missing_date_range",
+            "question": "Which date range should I use?",
+            "options": None,
+        },
+        "error": None,
+        "error_code": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_finance_query_tool_is_async_safe_inside_running_loop(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    groceries_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    account_id = service.conn.execute(
+        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
+    ).fetchone()["id"]
+    service.conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, ?, 'csv', 'seed.csv', 'fp')
+        """,
+        (account_id,),
+    )
+    service.conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (?, 1, '2026-03-12', 'Whole Foods Market', 'Whole Foods', -4520, ?, 'manual')
+        """,
+        (account_id, groceries_id),
+    )
+    service.conn.commit()
+    server = create_finance_server(
+        service,
+        llm=_StubFinanceQueryLLM(
+            (
+                '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31","merchant":"Whole Foods"},'
+                '"confidence":0.94,"needs_clarification":false}'
+            )
+        ),
+    )
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    result = await finance_query("show me everything at Whole Foods last month", "2026-03-31")
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "query"
+    assert result["data"]["filters"]["merchant"] == "Whole Foods"
+
+
 def test_finance_job_status_returns_not_found_envelope_for_missing_job(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
@@ -404,6 +703,143 @@ def test_finance_import_tool_rejects_paths_outside_allowed_import_root(tmp_path)
     }
 
 
+def test_sensitive_finance_query_rejects_reversed_date_range(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    result = sensitive(start_date="2026-03-31", end_date="2026-03-01")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "start_date must be on or before end_date",
+        "error_code": "INVALID_INPUT",
+    }
+
+
+def test_sensitive_finance_query_rejects_blank_description_contains(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    result = sensitive(description_contains="   ")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "description_contains must not be blank",
+        "error_code": "INVALID_INPUT",
+    }
+
+
+def test_sensitive_finance_query_rejects_invalid_start_date_without_end_date(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    result = sensitive(start_date="2026-99-99")
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_sensitive_finance_query_rejects_invalid_end_date_without_start_date(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    result = sensitive(end_date="2026-99-99")
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_sensitive_finance_query_rejects_blank_scalar_filters(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    for kwargs in (
+        {"category_name": "   "},
+        {"merchant": "   "},
+        {"account_name": "   "},
+    ):
+        result = sensitive(**kwargs)
+        assert result["success"] is False
+        assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_finance_query_tool_writes_audit_log_for_sum_spending(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+
+    class _SumLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"sum_spending","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31"},'
+                '"confidence":0.9,"needs_clarification":false}'
+            )
+
+    server = create_finance_server(service, llm=_SumLLM())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    _call_tool_sync(finance_query, "how much did I spend in March", "2026-03-31")
+
+    row = service.conn.execute(
+        "SELECT tool_name, summary FROM audit_log WHERE tool_name = 'finance_query'"
+    ).fetchone()
+    assert row is not None
+    assert row["tool_name"] == "finance_query"
+    assert "sum_spending" in row["summary"]
+
+
+def test_finance_query_tool_writes_audit_log_for_count_transactions(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+
+    class _CountLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"count_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31"},'
+                '"confidence":0.9,"needs_clarification":false}'
+            )
+
+    server = create_finance_server(service, llm=_CountLLM())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    _call_tool_sync(finance_query, "how many transactions in March", "2026-03-31")
+
+    row = service.conn.execute(
+        "SELECT tool_name, summary FROM audit_log WHERE tool_name = 'finance_query'"
+    ).fetchone()
+    assert row is not None
+    assert row["tool_name"] == "finance_query"
+    assert "count_transactions" in row["summary"]
+
+
+def test_finance_query_tool_writes_audit_log_for_list_transactions(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+
+    class _ListLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31"},'
+                '"confidence":0.9,"needs_clarification":false}'
+            )
+
+    server = create_finance_server(service, llm=_ListLLM())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    _call_tool_sync(finance_query, "show me march transactions", "2026-03-31", session_ref="s1")
+
+    row = service.conn.execute("SELECT tool_name, session_ref FROM audit_log").fetchone()
+    assert row is not None
+    assert row["tool_name"] == "finance_query"
+    assert row["session_ref"] == "s1"
+
+
 def test_safe_finance_summary_returns_internal_error_envelope_for_unexpected_exception(
     tmp_path, monkeypatch, caplog
 ):
@@ -426,3 +862,87 @@ def test_safe_finance_summary_returns_internal_error_envelope_for_unexpected_exc
         "error_code": "INTERNAL_ERROR",
     }
     assert "boom" in caplog.text
+
+
+def test_finance_query_tool_threads_session_ref_into_sum_spending_audit_log(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+
+    class _SumLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"sum_spending","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31"},'
+                '"confidence":0.9,"needs_clarification":false}'
+            )
+
+    server = create_finance_server(service, llm=_SumLLM())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    _call_tool_sync(
+        finance_query,
+        "how much did I spend in March",
+        "2026-03-31",
+        session_ref="test-session-123",
+    )
+
+    row = service.conn.execute(
+        "SELECT session_ref FROM audit_log WHERE tool_name = 'finance_query'"
+    ).fetchone()
+    assert row is not None
+    assert row["session_ref"] == "test-session-123"
+
+
+def test_finance_query_tool_threads_session_ref_into_count_transactions_audit_log(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+
+    class _CountLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"count_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31"},'
+                '"confidence":0.9,"needs_clarification":false}'
+            )
+
+    server = create_finance_server(service, llm=_CountLLM())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    _call_tool_sync(
+        finance_query,
+        "how many transactions in March",
+        "2026-03-31",
+        session_ref="test-session-456",
+    )
+
+    row = service.conn.execute(
+        "SELECT session_ref FROM audit_log WHERE tool_name = 'finance_query'"
+    ).fetchone()
+    assert row is not None
+    assert row["session_ref"] == "test-session-456"
+
+
+def test_finance_query_tool_rejects_llm_reversed_date_range(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+
+    class _ReversedDateLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"sum_spending","filters":{"start_date":"2026-03-31",'
+                '"end_date":"2026-03-01"},'
+                '"confidence":0.9,"needs_clarification":false}'
+            )
+
+    server = create_finance_server(service, llm=_ReversedDateLLM())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    result = _call_tool_sync(
+        finance_query,
+        "how much did I spend last month",
+        "2026-03-31",
+    )
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "start_date must be on or before end_date",
+        "error_code": "INVALID_INPUT",
+    }

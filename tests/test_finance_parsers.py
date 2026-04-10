@@ -7,7 +7,11 @@ import pytest
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.finance import importers
 from minx_mcp.finance.import_models import ParsedImportBatch
-from minx_mcp.finance.importers import detect_source_kind, parse_source_file
+from minx_mcp.finance.importers import (
+    detect_source_kind,
+    parse_source_file,
+    stream_snapshot_copy_and_hash,
+)
 from minx_mcp.finance.parsers.dcu import parse_dcu_csv
 from minx_mcp.finance.parsers.generic_csv import parse_generic_csv
 
@@ -19,6 +23,35 @@ def test_detect_robinhood_csv(tmp_path):
         "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     assert detect_source_kind(path) == "robinhood_csv"
+
+
+def test_detect_dcu_csv_from_content_when_filename_is_unhelpful(tmp_path):
+    path = tmp_path / "statement.csv"
+    path.write_text(
+        "Date,Description,Transaction Type,Amount\n"
+        "2026-03-01,Payroll,Deposit,1200.00\n"
+    )
+
+    assert detect_source_kind(path) == "dcu_csv"
+
+
+def test_detect_discover_pdf_from_sampled_text_when_filename_is_unhelpful(tmp_path, monkeypatch):
+    path = tmp_path / "statement.pdf"
+    path.write_text("stub")
+    monkeypatch.setattr(
+        "minx_mcp.document_text.extract_text",
+        lambda _: "Transactions\n03/01/26 03/01/26 H-E-B $ 42.16 Supermarkets\n",
+    )
+
+    assert detect_source_kind(path) == "discover_pdf"
+
+
+def test_detect_unknown_csv_reports_sampled_structure(tmp_path):
+    path = tmp_path / "statement.csv"
+    path.write_text("not a finance export\njust some notes\n")
+
+    with pytest.raises(InvalidInputError, match="not a finance export"):
+        detect_source_kind(path)
 
 
 def test_stream_snapshot_copy_and_hash_reads_in_chunks(tmp_path, monkeypatch):
@@ -130,6 +163,54 @@ def test_parse_generic_csv_with_saved_mapping(tmp_path):
         mapping=mapping,
     )
     assert parsed.transactions[0].description == "Household"
+
+
+def test_parse_source_file_uses_content_detection_for_unhelpful_filename(tmp_path):
+    path = tmp_path / "statement.csv"
+    path.write_text(
+        "Date,Description,Transaction Type,Amount\n"
+        "2026-03-01,Payroll,Deposit,1200.00\n"
+    )
+
+    parsed = parse_source_file(path, account_name="DCU")
+
+    assert parsed.transactions[0].description == "Payroll"
+
+
+def test_parse_source_file_detects_kind_from_snapshot_path(tmp_path):
+    path = tmp_path / "statement.csv"
+    path.write_text(
+        "Date,Description,Transaction Type,Amount\n"
+        "2026-03-01,Payroll,Deposit,1200.00\n"
+    )
+    snapshot_path = tmp_path / "statement.snapshot.csv"
+    content_hash = stream_snapshot_copy_and_hash(path, snapshot_path)
+    path.write_text("garbage without delimiters")
+
+    parsed = parse_source_file(
+        path,
+        account_name="DCU",
+        snapshot_path=snapshot_path,
+        content_hash=content_hash,
+    )
+
+    assert parsed.transactions[0].description == "Payroll"
+
+
+def test_parse_source_file_detects_kind_from_file_bytes_snapshot(tmp_path):
+    path = tmp_path / "statement.csv"
+    path.write_text("garbage without delimiters")
+
+    parsed = parse_source_file(
+        path,
+        account_name="DCU",
+        file_bytes=(
+            b"Date,Description,Transaction Type,Amount\n"
+            b"2026-03-01,Payroll,Deposit,1200.00\n"
+        ),
+    )
+
+    assert parsed.transactions[0].description == "Payroll"
 
 
 def test_parse_generic_csv_preserves_positive_amounts(tmp_path):

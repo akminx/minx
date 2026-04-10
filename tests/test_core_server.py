@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 from datetime import date
 from pathlib import Path
 
@@ -25,6 +27,15 @@ from minx_mcp.core.server import (
     create_core_server,
 )
 from minx_mcp.db import get_connection
+from minx_mcp.preferences import set_preference
+
+
+def _call_tool_sync(fn, *args, **kwargs):
+    result = fn(*args, **kwargs)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
+
 
 # -- Goal tool tests --
 
@@ -81,7 +92,7 @@ def test_goal_capture_returns_invalid_input_for_blank_message(tmp_path: Path) ->
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(message="   ", review_date="2026-03-15")
+    result = _call_tool_sync(goal_capture, message="   ", review_date="2026-03-15")
 
     assert result == {
         "success": False,
@@ -97,7 +108,7 @@ def test_goal_capture_returns_create_payload_with_explicit_starts_on(tmp_path: P
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $250 on dining out this month",
         review_date="2026-03-20",
     )
@@ -108,13 +119,91 @@ def test_goal_capture_returns_create_payload_with_explicit_starts_on(tmp_path: P
     assert result["data"]["payload"]["starts_on"] == "2026-03-01"
 
 
+def test_goal_capture_uses_configured_llm_when_available(tmp_path: Path) -> None:
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    _seed_amazon_merchant(conn)
+    set_preference(
+        conn,
+        "core",
+        "llm_config",
+        {"provider": "fake-goal-capture", "model": "goal-capture-v1"},
+    )
+    conn.commit()
+    conn.close()
+
+    import minx_mcp.core.llm as llm
+
+    builders = llm._PROVIDER_BUILDERS
+    try:
+        llm._PROVIDER_BUILDERS = {
+            "fake-goal-capture": lambda config: _StaticGoalCaptureLLM(
+                '{"intent":"create","confidence":0.98,"subject_kind":"merchant","subject":"Amazon","period":"monthly","target_value":20000}'
+            )
+        }
+        server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+        goal_capture = server._tool_manager.get_tool("goal_capture").fn
+
+        result = _call_tool_sync(goal_capture, 
+            message="I want to track my Amazon spending under $200 monthly",
+            review_date="2026-03-15",
+        )
+    finally:
+        llm._PROVIDER_BUILDERS = builders
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "create"
+    assert result["data"]["payload"]["merchant_names"] == ["Amazon"]
+    assert result["data"]["payload"]["target_value"] == 20_000
+    assert result["data"]["payload"]["period"] == "monthly"
+
+
+def test_goal_capture_falls_back_when_configured_llm_payload_is_malformed(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    _seed_amazon_merchant(conn)
+    set_preference(
+        conn,
+        "core",
+        "llm_config",
+        {"provider": "fake-goal-capture", "model": "goal-capture-v1"},
+    )
+    conn.commit()
+    conn.close()
+
+    import minx_mcp.core.llm as llm
+
+    builders = llm._PROVIDER_BUILDERS
+    try:
+        llm._PROVIDER_BUILDERS = {
+            "fake-goal-capture": lambda config: _StaticGoalCaptureLLM("not-json")
+        }
+        server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+        goal_capture = server._tool_manager.get_tool("goal_capture").fn
+
+        result = _call_tool_sync(goal_capture, 
+            message="Make a goal to spend less than $250 on dining out this month",
+            review_date="2026-03-15",
+        )
+    finally:
+        llm._PROVIDER_BUILDERS = builders
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "create"
+    assert result["data"]["payload"]["title"] == "Dining Out Spending Cap"
+    assert result["data"]["payload"]["category_names"] == ["Dining Out"]
+    assert result["data"]["payload"]["starts_on"] == "2026-03-01"
+
+
 def test_goal_capture_returns_invalid_input_for_overlong_message(tmp_path: Path) -> None:
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(message="x" * 501, review_date="2026-03-15")
+    result = _call_tool_sync(goal_capture, message="x" * 501, review_date="2026-03-15")
 
     assert result == {
         "success": False,
@@ -130,7 +219,7 @@ def test_goal_capture_returns_invalid_input_for_bad_review_date(tmp_path: Path) 
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $250 on dining out this month",
         review_date="2026-03-99",
     )
@@ -149,7 +238,7 @@ def test_goal_capture_supports_today_phrase_with_daily_period(tmp_path: Path) ->
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $25 on dining out today",
         review_date="2026-03-15",
     )
@@ -166,7 +255,7 @@ def test_goal_capture_honors_explicit_iso_start_date(tmp_path: Path) -> None:
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $25 on dining out starting 2026-04-10",
         review_date="2026-03-15",
     )
@@ -182,11 +271,11 @@ def test_goal_capture_accepts_valid_non_20xx_explicit_start_dates(tmp_path: Path
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    older = goal_capture(
+    older = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $25 on dining out starting 1999-04-10",
         review_date="2026-03-15",
     )
-    future = goal_capture(
+    future = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $25 on dining out starting 2100-04-10",
         review_date="2026-03-15",
     )
@@ -203,7 +292,7 @@ def test_goal_capture_rejects_invalid_explicit_start_date(tmp_path: Path) -> Non
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $25 on dining out starting 2026-04-99",
         review_date="2026-03-15",
     )
@@ -249,7 +338,7 @@ def test_goal_capture_returns_resolved_resume_payload_for_ambiguous_create_subje
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $60 at Cafe this week",
         review_date="2026-03-15",
     )
@@ -292,6 +381,67 @@ def test_goal_capture_returns_resolved_resume_payload_for_ambiguous_create_subje
     ]
 
 
+def test_goal_capture_preserves_ambiguous_subject_when_configured_llm_is_available(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    conn.execute("INSERT INTO finance_categories (name) VALUES ('Cafe')")
+    conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, 1, 'csv', 'seed.csv', 'seed-fingerprint')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id,
+            batch_id,
+            posted_at,
+            description,
+            merchant,
+            amount_cents,
+            category_id,
+            category_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1, 1, "2026-03-15", "Coffee", "Cafe", -1200, 3, "manual"),
+    )
+    set_preference(
+        conn,
+        "core",
+        "llm_config",
+        {"provider": "fake-goal-capture", "model": "goal-capture-v1"},
+    )
+    conn.commit()
+    conn.close()
+
+    import minx_mcp.core.llm as llm
+
+    builders = llm._PROVIDER_BUILDERS
+    try:
+        llm._PROVIDER_BUILDERS = {
+            "fake-goal-capture": lambda config: _StaticGoalCaptureLLM(
+                '{"intent":"create","confidence":0.98,"subject_kind":"merchant","subject":"Cafe","period":"weekly","target_value":6000}'
+            )
+        }
+        server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+        goal_capture = server._tool_manager.get_tool("goal_capture").fn
+
+        result = _call_tool_sync(goal_capture, 
+            message="Track spending for Cafe this week under $60",
+            review_date="2026-03-15",
+        )
+    finally:
+        llm._PROVIDER_BUILDERS = builders
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "clarify"
+    assert result["data"]["clarification_type"] == "ambiguous_subject"
+    assert result["data"]["action"] == "goal_create"
+
+
 def test_goal_capture_preserves_distinct_merchant_spelling_in_ambiguous_create_contract(
     tmp_path: Path,
 ) -> None:
@@ -325,7 +475,7 @@ def test_goal_capture_preserves_distinct_merchant_spelling_in_ambiguous_create_c
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
     goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
-    result = goal_capture(
+    result = _call_tool_sync(goal_capture, 
         message="Make a goal to spend less than $60 at M&M this week",
         review_date="2026-03-15",
     )
@@ -382,7 +532,7 @@ def test_goal_capture_returns_ambiguous_goal_contract_for_multiple_matches(
         starts_on="2026-03-09",
     )
 
-    result = goal_capture(message="Pause my dining out goal", review_date="2026-03-15")
+    result = _call_tool_sync(goal_capture, message="Pause my dining out goal", review_date="2026-03-15")
 
     assert result["success"] is True
     assert result["data"]["result_type"] == "clarify"
@@ -427,12 +577,37 @@ def test_goal_capture_returns_missing_target_for_retarget_without_amount(tmp_pat
         starts_on="2026-03-01",
     )
 
-    result = goal_capture(message="Change my dining out goal", review_date="2026-03-15")
+    result = _call_tool_sync(goal_capture, message="Change my dining out goal", review_date="2026-03-15")
 
     assert result["success"] is True
     assert result["data"]["result_type"] == "clarify"
     assert result["data"]["clarification_type"] == "missing_target"
     assert result["data"]["action"] == "goal_update"
+
+
+def test_goal_capture_does_not_match_expired_active_goals(tmp_path: Path) -> None:
+    db_path = tmp_path / "minx.db"
+    get_connection(db_path).close()
+    server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+    goal_create = server._tool_manager.get_tool("goal_create").fn
+    goal_capture = server._tool_manager.get_tool("goal_capture").fn
+
+    goal_create(
+        title="Dining Out Spending Cap",
+        goal_type="spending_cap",
+        metric_type="sum_below",
+        target_value=25_000,
+        period="monthly",
+        category_names=["Dining Out"],
+        starts_on="2026-03-01",
+        ends_on="2026-03-05",
+    )
+
+    result = _call_tool_sync(goal_capture, message="Pause my dining out goal", review_date="2026-03-15")
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "clarify"
+    assert result["data"]["clarification_type"] == "missing_goal"
 
 
 def test_goal_get_update_archive_tools(tmp_path: Path) -> None:
@@ -803,11 +978,11 @@ def test_goal_capture_repo_e2e_flow_exercises_progress_before_protected_review(
     get_connection(db_path).close()
     config = _TestConfig(db_path, tmp_path / "vault")
 
-    create_result = _goal_capture(
+    create_result = asyncio.run(_goal_capture(
         config,
         "Make a goal to spend less than $250 on dining out this month",
         "2026-03-15",
-    )
+    ))
     created_goal = _goal_create(config, GoalCreateInput(**create_result["payload"]))
 
     conn = get_connection(db_path)
@@ -834,7 +1009,7 @@ def test_goal_capture_repo_e2e_flow_exercises_progress_before_protected_review(
     progress_before_update = _goal_get(config, created_goal["goal"]["id"], "2026-03-15")
     assert progress_before_update["progress"]["actual_value"] == 1200
 
-    update_result = _goal_capture(config, "Pause my dining out goal", "2026-03-15")
+    update_result = asyncio.run(_goal_capture(config, "Pause my dining out goal", "2026-03-15"))
     _goal_update(config, update_result["goal_id"], GoalUpdateInput(**update_result["payload"]))
 
     progress_after_update = _goal_get(config, created_goal["goal"]["id"], "2026-03-15")
@@ -850,7 +1025,7 @@ async def test_goal_capture_repo_e2e_flow_keeps_protected_review_redacted(
     get_connection(db_path).close()
     config = _TestConfig(db_path, tmp_path / "vault")
 
-    create_result = _goal_capture(
+    create_result = await _goal_capture(
         config,
         "Make a goal to spend less than $250 on dining out this month",
         "2026-03-15",
@@ -927,6 +1102,38 @@ class _TestConfig:
     @property
     def vault_path(self) -> Path:
         return self._vault_path
+
+
+class _StaticGoalCaptureLLM:
+    def __init__(self, payload: str) -> None:
+        self.payload = payload
+
+    async def run_json_prompt(self, _prompt: str) -> str:
+        return self.payload
+
+
+def _seed_amazon_merchant(conn) -> None:
+    conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, 1, 'csv', 'seed.csv', 'seed-fingerprint')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id,
+            batch_id,
+            posted_at,
+            description,
+            merchant,
+            amount_cents,
+            category_id,
+            category_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1, 1, "2026-03-15", "Amazon order", "Amazon", -2000, 3, "manual"),
+    )
 
 
 @pytest.mark.asyncio

@@ -232,6 +232,7 @@ def test_detectors_registry_is_in_spec_order():
         "detect_open_loops",
         "detect_goal_drift",
         "detect_category_drift",
+        "detect_goal_finance_risks",
     ]
 
 

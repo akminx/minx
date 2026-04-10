@@ -90,7 +90,7 @@ async def test_goal_capture_to_review_flow_exercises_repo_scoped_core_contracts(
     goal_update = server._tool_manager.get_tool("goal_update").fn
     daily_review = server._tool_manager.get_tool("daily_review").fn
 
-    capture_create = goal_capture(
+    capture_create = await goal_capture(
         message="Make a goal to spend less than $250 on dining out this month",
         review_date="2026-03-15",
     )
@@ -105,7 +105,7 @@ async def test_goal_capture_to_review_flow_exercises_repo_scoped_core_contracts(
     assert progress_before["success"] is True
     assert progress_before["data"]["progress"]["actual_value"] == 1200
 
-    capture_update = goal_capture(
+    capture_update = await goal_capture(
         message="Pause my dining out goal",
         review_date="2026-03-15",
     )

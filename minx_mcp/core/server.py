@@ -11,6 +11,7 @@ from minx_mcp.contracts import ConflictError, InvalidInputError, wrap_async_tool
 from minx_mcp.core.goal_capture import capture_goal_message
 from minx_mcp.core.goal_progress import build_progress_for_goal
 from minx_mcp.core.goals import GoalService
+from minx_mcp.core.llm import create_llm
 from minx_mcp.core.models import (
     GoalCaptureOption,
     GoalCaptureResult,
@@ -123,11 +124,11 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         return wrap_tool_call(lambda: _goal_archive(config, goal_id))
 
     @mcp.tool(name="goal_capture")
-    def goal_capture(
+    async def goal_capture(
         message: str,
         review_date: str | None = None,
     ) -> dict[str, object]:
-        return wrap_tool_call(lambda: _goal_capture(config, message, review_date))
+        return await wrap_async_tool_call(lambda: _goal_capture(config, message, review_date))
 
     return mcp
 
@@ -228,7 +229,7 @@ def _goal_archive(config: CoreServiceConfig, goal_id: int) -> dict[str, object]:
         conn.close()
 
 
-def _goal_capture(
+async def _goal_capture(
     config: CoreServiceConfig,
     message: str,
     review_date: str | None,
@@ -243,12 +244,20 @@ def _goal_capture(
     conn = get_connection(config.db_path)
     try:
         goal_service = GoalService(conn)
-        goals = goal_service.list_goals(status="active") + goal_service.list_goals(status="paused")
-        result = capture_goal_message(
+        active_goals = goal_service.list_active_goals(effective_review_date)
+        paused_goals = [
+            goal
+            for goal in goal_service.list_goals(status="paused")
+            if _goal_is_available_on(goal, effective_review_date)
+        ]
+        goals = active_goals + paused_goals
+        llm = _resolve_goal_capture_llm(config)
+        result = await capture_goal_message(
             message=normalized_message,
             review_date=effective_review_date,
             finance_api=FinanceReadAPI(conn),
             goals=goals,
+            llm=llm,
         )
         return _goal_capture_result_to_dict(result)
     finally:
@@ -262,6 +271,15 @@ def _resolve_review_date(review_date: str | None) -> str:
     except ValueError as exc:
         raise InvalidInputError("review_date must be a valid ISO date") from exc
     return effective_date
+
+
+def _goal_is_available_on(goal: GoalRecord, review_date: str) -> bool:
+    review_point = date.fromisoformat(review_date)
+    if review_point < date.fromisoformat(goal.starts_on):
+        return False
+    if goal.ends_on is not None and review_point > date.fromisoformat(goal.ends_on):
+        return False
+    return True
 
 
 def _goal_record_to_dict(goal: GoalRecord) -> dict[str, object]:
@@ -312,3 +330,10 @@ def _goal_capture_option_to_dict(option: GoalCaptureOption) -> dict[str, object]
         "status": option.status,
         "filter_summary": option.filter_summary,
     }
+
+
+def _resolve_goal_capture_llm(config: CoreServiceConfig) -> object | None:
+    configured = create_llm(db_path=config.db_path)
+    if configured is None or not callable(getattr(configured, "run_json_prompt", None)):
+        return None
+    return configured

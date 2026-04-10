@@ -4,6 +4,7 @@ import pytest
 
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.finance.service import FinanceService
+from minx_mcp.preferences import set_preference
 
 
 def test_import_job_is_idempotent_for_same_file(tmp_path):
@@ -17,6 +18,16 @@ def test_import_job_is_idempotent_for_same_file(tmp_path):
     first = service.finance_import(str(source), account_name="Robinhood Gold")
     second = service.finance_import(str(source), account_name="Robinhood Gold")
     assert first["job_id"] == second["job_id"]
+
+
+def test_import_uses_content_detection_when_filename_is_unhelpful(tmp_path):
+    source = tmp_path / "statement.csv"
+    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+
+    result = service.finance_import(str(source), account_name="DCU")
+
+    assert result["result"]["inserted"] == 1
 
 
 def test_manual_and_rule_based_categorization_both_work(tmp_path):
@@ -33,6 +44,23 @@ def test_manual_and_rule_based_categorization_both_work(tmp_path):
     assert changed["category_name"] == "Dining Out"
 
 
+def test_apply_category_rules_uses_normalized_merchant_matching(tmp_path):
+    source = tmp_path / "robinhood_transactions.csv"
+    source.write_text(
+        "Date,Time,Cardholder,Card,Amount,Description\n"
+        "2026-03-01,09:00,Alex,1234,-12.50,SQ *JOES CAFE 1234\n"
+    )
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    service.finance_import(str(source), account_name="Robinhood Gold")
+    service.add_category_rule("Dining Out", "merchant_contains", "JOES CAFE")
+
+    service.apply_category_rules()
+
+    tx = service.sensitive_finance_query(limit=1)["transactions"][0]
+    assert tx["merchant"] == "Joe's Cafe"
+    assert tx["category_name"] == "Dining Out"
+
+
 def test_safe_summary_and_sensitive_query_are_separate(tmp_path):
     source = tmp_path / "free checking transactions.csv"
     source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
@@ -42,6 +70,57 @@ def test_safe_summary_and_sensitive_query_are_separate(tmp_path):
     sensitive = service.sensitive_finance_query(limit=10, session_ref="abc-123")
     assert "transactions" not in safe
     assert sensitive["transactions"][0]["description"] == "H-E-B"
+
+
+def test_sensitive_query_supports_optional_filters(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    groceries_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    dining_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Dining Out'"
+    ).fetchone()["id"]
+    dcu_id = service.conn.execute(
+        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
+    ).fetchone()["id"]
+    discover_id = service.conn.execute(
+        "SELECT id FROM finance_accounts WHERE name = 'Discover'"
+    ).fetchone()["id"]
+    service.conn.executemany(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (?, ?, 'csv', ?, ?)
+        """,
+        [
+            (1, dcu_id, "dcu.csv", "fp-1"),
+            (2, discover_id, "discover.csv", "fp-2"),
+        ],
+    )
+    service.conn.executemany(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (dcu_id, 1, "2026-03-02", "H-E-B Grocery", "H-E-B", -4520, groceries_id, "manual"),
+            (discover_id, 2, "2026-03-06", "Coffee Shop", "Cafe", -1200, dining_id, "manual"),
+            (dcu_id, 1, "2026-04-01", "April Rent", "Landlord", -50000, groceries_id, "manual"),
+        ],
+    )
+    service.conn.commit()
+
+    result = service.sensitive_finance_query(
+        limit=10,
+        start_date="2026-03-01",
+        end_date="2026-03-31",
+        category_name="Groceries",
+        merchant="H-E-B",
+        account_name="DCU",
+        description_contains="Grocery",
+    )
+
+    assert [txn["description"] for txn in result["transactions"]] == ["H-E-B Grocery"]
 
 
 def test_sensitive_query_hides_internal_amount_cents_field(tmp_path):
@@ -54,6 +133,32 @@ def test_sensitive_query_hides_internal_amount_cents_field(tmp_path):
 
     assert transaction["amount"] == -45.2
     assert "amount_cents" not in transaction
+
+
+def test_finance_import_uses_category_hint_to_match_existing_categories(tmp_path):
+    source = tmp_path / "transactions.csv"
+    source.write_text(
+        "posted,description,amount,category\n"
+        "2026-03-02,Coffee,-12.50,Dining Out\n"
+    )
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+
+    service.finance_import(
+        str(source),
+        account_name="DCU",
+        source_kind="generic_csv",
+        mapping={
+            "date_column": "posted",
+            "amount_column": "amount",
+            "description_column": "description",
+            "date_format": "%Y-%m-%d",
+            "category_hint_column": "category",
+        },
+    )
+
+    transaction = service.sensitive_finance_query(limit=1)["transactions"][0]
+
+    assert transaction["category_name"] == "Dining Out"
 
 
 def test_changed_file_at_same_path_creates_new_import(tmp_path):
@@ -308,6 +413,38 @@ def test_anomalies_flag_large_uncategorized_transactions(tmp_path):
     assert anomalies["items"][0]["kind"] == "large_uncategorized"
 
 
+def test_finance_anomalies_reads_threshold_from_preferences(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    batch_id = 1
+    account_id = service.conn.execute(
+        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
+    ).fetchone()["id"]
+    uncategorized_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Uncategorized'"
+    ).fetchone()["id"]
+    service.conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (?, ?, 'csv', 'seed.csv', 'fp')
+        """,
+        (batch_id, account_id),
+    )
+    service.conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (?, ?, '2026-03-02', 'Small Merchant', 'Small Merchant', ?, ?, 'uncategorized')
+        """,
+        (account_id, batch_id, -10_000, uncategorized_id),
+    )
+    service.conn.commit()
+    set_preference(service.conn, "finance", "anomaly_threshold_cents", -9_000)
+
+    anomalies = service.finance_anomalies()
+
+    assert [item["transaction_id"] for item in anomalies["items"]] == [1]
+
+
 def test_merchant_rule_treats_like_wildcards_as_literal_text(tmp_path):
     source = tmp_path / "free checking transactions.csv"
     source.write_text(
@@ -326,6 +463,26 @@ def test_merchant_rule_treats_like_wildcards_as_literal_text(tmp_path):
 
     assert by_description["50%_OFF MARKET"] == "Groceries"
     assert by_description["500XOFF MARKET"] == "Uncategorized"
+
+
+def test_apply_category_rules_clears_stale_rule_categories_when_rules_change(tmp_path):
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    service.finance_import(str(source), account_name="DCU")
+
+    service.add_category_rule("Groceries", "merchant_contains", "H-E-B")
+    service.apply_category_rules()
+    initial = service.sensitive_finance_query(limit=1)["transactions"][0]
+    assert initial["category_name"] == "Groceries"
+
+    service.conn.execute("DELETE FROM finance_category_rules")
+    service.conn.commit()
+
+    service.apply_category_rules()
+
+    updated = service.sensitive_finance_query(limit=1)["transactions"][0]
+    assert updated["category_name"] == "Uncategorized"
 
 
 def test_close_reopens_connection_on_next_use(tmp_path):
@@ -373,6 +530,26 @@ def test_service_sensitive_query_rejects_invalid_limits(tmp_path):
 
     with pytest.raises(InvalidInputError, match="limit must be between 1 and 500"):
         service.sensitive_finance_query(limit=-1)
+
+
+def test_sensitive_query_does_not_commit_ambient_transaction(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+
+    service.conn.execute(
+        """
+        INSERT INTO preferences (domain, key, value_json, updated_at)
+        VALUES ('x', 'y', '1', datetime('now'))
+        """
+    )
+    assert service.conn.in_transaction is True
+
+    service.sensitive_finance_query(limit=1)
+    service.conn.rollback()
+
+    row = service.conn.execute(
+        "SELECT value_json FROM preferences WHERE domain = 'x' AND key = 'y'"
+    ).fetchone()
+    assert row is None
 
 
 def test_service_import_rejects_paths_outside_allowed_import_root(tmp_path):
@@ -454,3 +631,18 @@ def test_safe_finance_summary_returns_dollars_from_cents_storage(tmp_path):
     summary = service.safe_finance_summary()
 
     assert summary["net_total"] == -12.5
+
+
+def test_import_persists_raw_and_canonical_merchant(tmp_path):
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n"
+        "2026-03-02,SQ *JOES CAFE 1234,Withdrawal,-45.20\n"
+    )
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+
+    service.finance_import(str(source), account_name="DCU")
+
+    tx = service.sensitive_finance_query(limit=1)["transactions"][0]
+    assert tx["merchant"] == "Joe's Cafe"
+    assert tx["raw_merchant"] == "SQ *JOES CAFE 1234"

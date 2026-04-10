@@ -74,13 +74,18 @@ def detect_open_loops(read_models: ReadModels) -> list[InsightCandidate]:
     return insights
 
 
-from minx_mcp.core.goal_detectors import detect_category_drift, detect_goal_drift
+from minx_mcp.core.goal_detectors import (
+    detect_category_drift,
+    detect_goal_drift,
+    detect_goal_finance_risks,
+)
 
 DETECTORS: list[DetectorFn] = [
     detect_spending_spike,
     detect_open_loops,
     detect_goal_drift,
     detect_category_drift,
+    detect_goal_finance_risks,
 ]
 
 

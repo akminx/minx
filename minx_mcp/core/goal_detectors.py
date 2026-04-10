@@ -90,6 +90,33 @@ def detect_category_drift(read_models: ReadModels) -> list[InsightCandidate]:
     return insights
 
 
+def detect_goal_finance_risks(read_models: ReadModels) -> list[InsightCandidate]:
+    insights: list[InsightCandidate] = []
+    for goal in read_models.goal_progress:
+        if (
+            not goal.metric_type.startswith("sum_below")
+            or goal.target_value <= 0
+            or goal.status == "on_track"
+        ):
+            continue
+        pct = round((goal.actual_value / goal.target_value) * 100)
+        if pct < 60:
+            continue
+        insights.append(
+            InsightCandidate(
+                insight_type="finance.goal_risk",
+                dedupe_key=f"{read_models.timeline.date}:goal-risk:{goal.goal_id}",
+                summary=f"{goal.title} is already at {pct}% of its target for this period.",
+                supporting_signals=[goal.summary],
+                confidence=0.86,
+                severity="warning" if pct < 85 else "alert",
+                actionability="suggestion" if pct < 85 else "action_needed",
+                source="detector",
+            )
+        )
+    return insights
+
+
 def _read_goal_window_value(
     read_models: ReadModels,
     goal: GoalProgress,
