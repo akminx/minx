@@ -371,6 +371,67 @@ def test_goal_capture_returns_resolved_resume_payload_for_ambiguous_create_subje
     ]
 
 
+def test_goal_capture_preserves_ambiguous_subject_when_configured_llm_is_available(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    conn.execute("INSERT INTO finance_categories (name) VALUES ('Cafe')")
+    conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, 1, 'csv', 'seed.csv', 'seed-fingerprint')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id,
+            batch_id,
+            posted_at,
+            description,
+            merchant,
+            amount_cents,
+            category_id,
+            category_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1, 1, "2026-03-15", "Coffee", "Cafe", -1200, 3, "manual"),
+    )
+    set_preference(
+        conn,
+        "core",
+        "llm_config",
+        {"provider": "fake-goal-capture", "model": "goal-capture-v1"},
+    )
+    conn.commit()
+    conn.close()
+
+    import minx_mcp.core.llm as llm
+
+    builders = llm._PROVIDER_BUILDERS
+    try:
+        llm._PROVIDER_BUILDERS = {
+            "fake-goal-capture": lambda config: _StaticGoalCaptureLLM(
+                '{"intent":"create","confidence":0.98,"subject_kind":"merchant","subject":"Cafe","period":"weekly","target_value":6000}'
+            )
+        }
+        server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+        goal_capture = server._tool_manager.get_tool("goal_capture").fn
+
+        result = goal_capture(
+            message="Make a goal to spend less than $60 at Cafe this week",
+            review_date="2026-03-15",
+        )
+    finally:
+        llm._PROVIDER_BUILDERS = builders
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "clarify"
+    assert result["data"]["clarification_type"] == "ambiguous_subject"
+    assert result["data"]["action"] == "goal_create"
+
+
 def test_goal_capture_preserves_distinct_merchant_spelling_in_ambiguous_create_contract(
     tmp_path: Path,
 ) -> None:

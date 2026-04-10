@@ -79,6 +79,12 @@ def _capture_with_llm(
     except Exception:
         return None
 
+    subject_text = _extract_subject_phrase(message)
+    if subject_text is not None:
+        deterministic_subject = _resolve_subject(subject_text, finance_api)
+        if deterministic_subject is not None and deterministic_subject["kind"] == "ambiguous":
+            return None
+
     if interpretation.intent != "create":
         return None
     if interpretation.subject_kind not in {"category", "merchant"}:
