@@ -79,12 +79,6 @@ def _capture_with_llm(
     except Exception:
         return None
 
-    subject_text = _extract_subject_phrase(message)
-    if subject_text is not None:
-        deterministic_subject = _resolve_subject(subject_text, finance_api)
-        if deterministic_subject is not None and deterministic_subject["kind"] == "ambiguous":
-            return None
-
     if interpretation.intent != "create":
         return None
     if interpretation.subject_kind not in {"category", "merchant"}:
@@ -95,6 +89,23 @@ def _capture_with_llm(
         return None
     if interpretation.target_value is None or interpretation.target_value <= 0:
         return None
+
+    subject_text = _extract_subject_phrase(message)
+    if subject_text is not None:
+        deterministic_subject = _resolve_subject(subject_text, finance_api)
+        if deterministic_subject is not None and deterministic_subject["kind"] == "ambiguous":
+            return _build_ambiguous_subject_clarify(
+                category_name=deterministic_subject["category"],
+                merchant_name=deterministic_subject["merchant"],
+                period=interpretation.period,
+                starts_on=_resolve_starts_on(
+                    review_date,
+                    message,
+                    _normalize_text(message),
+                    interpretation.period,
+                ),
+                target_value=interpretation.target_value,
+            )
 
     canonical_subject = _resolve_exact_subject(
         interpretation.subject_kind,
@@ -527,6 +538,50 @@ def _build_missing_target_clarify(
         clarification_type="missing_target",
         question="How much should the goal target be?",
         resume_payload=resume_payload,
+    )
+
+
+def _build_ambiguous_subject_clarify(
+    *,
+    category_name: str,
+    merchant_name: str,
+    period: str,
+    starts_on: str,
+    target_value: int,
+) -> GoalCaptureResult:
+    return GoalCaptureResult(
+        result_type="clarify",
+        action="goal_create",
+        clarification_type="ambiguous_subject",
+        question="Do you mean the category or the merchant?",
+        options=[
+            GoalCaptureOption(
+                kind="category",
+                label=category_name,
+                category_name=category_name,
+                filter_summary=f"category_names=[{category_name!r}]",
+                payload_fragment={
+                    "title": _build_create_title(category_name),
+                    "category_names": [category_name],
+                },
+            ),
+            GoalCaptureOption(
+                kind="merchant",
+                label=merchant_name,
+                merchant_name=merchant_name,
+                filter_summary=f"merchant_names=[{merchant_name!r}]",
+                payload_fragment={
+                    "title": _build_create_title(merchant_name),
+                    "merchant_names": [merchant_name],
+                },
+            ),
+        ],
+        resume_payload=_build_create_payload(
+            subject=category_name,
+            period=period,
+            starts_on=starts_on,
+            target_value=target_value,
+        ),
     )
 
 

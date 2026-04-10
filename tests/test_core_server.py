@@ -420,7 +420,7 @@ def test_goal_capture_preserves_ambiguous_subject_when_configured_llm_is_availab
         goal_capture = server._tool_manager.get_tool("goal_capture").fn
 
         result = goal_capture(
-            message="Make a goal to spend less than $60 at Cafe this week",
+            message="Track spending for Cafe this week under $60",
             review_date="2026-03-15",
         )
     finally:
