@@ -591,6 +591,84 @@ def test_finance_import_tool_rejects_paths_outside_allowed_import_root(tmp_path)
     }
 
 
+def test_sensitive_finance_query_rejects_reversed_date_range(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    result = sensitive(start_date="2026-03-31", end_date="2026-03-01")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "start_date must be on or before end_date",
+        "error_code": "INVALID_INPUT",
+    }
+
+
+def test_sensitive_finance_query_rejects_blank_description_contains(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    result = sensitive(description_contains="   ")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "description_contains must not be blank",
+        "error_code": "INVALID_INPUT",
+    }
+
+
+def test_finance_query_tool_writes_audit_log_for_sum_spending(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+
+    class _SumLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"sum_spending","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31"},'
+                '"confidence":0.9,"needs_clarification":false}'
+            )
+
+    server = create_finance_server(service, llm=_SumLLM())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    _call_tool_sync(finance_query, "how much did I spend in March", "2026-03-31")
+
+    row = service.conn.execute(
+        "SELECT tool_name, summary FROM audit_log WHERE tool_name = 'finance_query'"
+    ).fetchone()
+    assert row is not None
+    assert row["tool_name"] == "finance_query"
+    assert "sum_spending" in row["summary"]
+
+
+def test_finance_query_tool_writes_audit_log_for_count_transactions(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+
+    class _CountLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"count_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31"},'
+                '"confidence":0.9,"needs_clarification":false}'
+            )
+
+    server = create_finance_server(service, llm=_CountLLM())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    _call_tool_sync(finance_query, "how many transactions in March", "2026-03-31")
+
+    row = service.conn.execute(
+        "SELECT tool_name, summary FROM audit_log WHERE tool_name = 'finance_query'"
+    ).fetchone()
+    assert row is not None
+    assert row["tool_name"] == "finance_query"
+    assert "count_transactions" in row["summary"]
+
+
 def test_safe_finance_summary_returns_internal_error_envelope_for_unexpected_exception(
     tmp_path, monkeypatch, caplog
 ):

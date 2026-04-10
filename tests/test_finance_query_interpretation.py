@@ -94,3 +94,31 @@ def test_finance_query_interpretation_returns_clarify_plan_for_ambiguous_merchan
     assert plan.needs_clarification is True
     assert plan.clarification_type == "ambiguous_merchant"
     assert plan.options == ["Target", "Target Optical"]
+
+
+def test_finance_query_interpretation_model_rejects_clarify_without_type() -> None:
+    from pydantic import ValidationError
+    from minx_mcp.core.interpretation.models import FinanceQueryInterpretation
+
+    with pytest.raises(ValidationError):
+        FinanceQueryInterpretation(
+            intent="list_transactions",
+            confidence=0.5,
+            needs_clarification=True,
+            clarification_type=None,
+            question="What did you mean?",
+        )
+
+
+def test_finance_query_interpretation_model_rejects_clarify_without_question() -> None:
+    from pydantic import ValidationError
+    from minx_mcp.core.interpretation.models import FinanceQueryInterpretation
+
+    with pytest.raises(ValidationError):
+        FinanceQueryInterpretation(
+            intent="list_transactions",
+            confidence=0.5,
+            needs_clarification=True,
+            clarification_type="ambiguous_merchant",
+            question=None,
+        )

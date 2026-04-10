@@ -295,6 +295,9 @@ def _sensitive_finance_query(
 ) -> dict[str, object]:
     if limit < 1 or limit > MAX_SENSITIVE_QUERY_LIMIT:
         raise InvalidInputError(f"limit must be between 1 and {MAX_SENSITIVE_QUERY_LIMIT}")
+    _validate_date_range(start_date, end_date)
+    if description_contains is not None and not description_contains.strip():
+        raise InvalidInputError("description_contains must not be blank")
     with service:
         return service.sensitive_finance_query(
             limit=limit,
@@ -414,3 +417,14 @@ def _validate_date_window(period_start: str, period_end: str) -> None:
         raise InvalidInputError("Invalid ISO date") from exc
     if start > end:
         raise InvalidInputError("period_start must be on or before period_end")
+
+
+def _validate_date_range(start_date: str | None, end_date: str | None) -> None:
+    if start_date is not None and end_date is not None:
+        try:
+            start = date.fromisoformat(start_date)
+            end = date.fromisoformat(end_date)
+        except ValueError as exc:
+            raise InvalidInputError("Invalid ISO date") from exc
+        if start > end:
+            raise InvalidInputError("start_date must be on or before end_date")

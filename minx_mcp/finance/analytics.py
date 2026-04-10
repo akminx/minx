@@ -158,6 +158,7 @@ def sensitive_query_total_cents(
     merchant: str | None = None,
     account_name: str | None = None,
     description_contains: str | None = None,
+    session_ref: str | None = None,
 ) -> int:
     clauses, params = _build_sensitive_filter_clauses(
         start_date=start_date,
@@ -179,6 +180,7 @@ def sensitive_query_total_cents(
         """,
         params,
     ).fetchone()
+    log_sensitive_access(conn, "finance_query", session_ref, "aggregate intent=sum_spending")
     return int(row["total_cents"])
 
 
@@ -191,6 +193,7 @@ def sensitive_query_count(
     merchant: str | None = None,
     account_name: str | None = None,
     description_contains: str | None = None,
+    session_ref: str | None = None,
 ) -> int:
     clauses, params = _build_sensitive_filter_clauses(
         start_date=start_date,
@@ -211,6 +214,7 @@ def sensitive_query_count(
         """,
         params,
     ).fetchone()
+    log_sensitive_access(conn, "finance_query", session_ref, "aggregate intent=count_transactions")
     return int(row["total_count"])
 
 
