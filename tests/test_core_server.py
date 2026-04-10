@@ -25,6 +25,7 @@ from minx_mcp.core.server import (
     create_core_server,
 )
 from minx_mcp.db import get_connection
+from minx_mcp.preferences import set_preference
 
 # -- Goal tool tests --
 
@@ -105,6 +106,84 @@ def test_goal_capture_returns_create_payload_with_explicit_starts_on(tmp_path: P
     assert result["success"] is True
     assert result["data"]["result_type"] == "create"
     assert result["data"]["assistant_message"] is not None
+    assert result["data"]["payload"]["starts_on"] == "2026-03-01"
+
+
+def test_goal_capture_uses_configured_llm_when_available(tmp_path: Path) -> None:
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    _seed_amazon_merchant(conn)
+    set_preference(
+        conn,
+        "core",
+        "llm_config",
+        {"provider": "fake-goal-capture", "model": "goal-capture-v1"},
+    )
+    conn.commit()
+    conn.close()
+
+    import minx_mcp.core.llm as llm
+
+    builders = llm._PROVIDER_BUILDERS
+    try:
+        llm._PROVIDER_BUILDERS = {
+            "fake-goal-capture": lambda config: _StaticGoalCaptureLLM(
+                '{"intent":"create","confidence":0.98,"subject_kind":"merchant","subject":"Amazon","period":"monthly","target_value":20000}'
+            )
+        }
+        server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+        goal_capture = server._tool_manager.get_tool("goal_capture").fn
+
+        result = goal_capture(
+            message="I want to track my Amazon spending under $200 monthly",
+            review_date="2026-03-15",
+        )
+    finally:
+        llm._PROVIDER_BUILDERS = builders
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "create"
+    assert result["data"]["payload"]["merchant_names"] == ["Amazon"]
+    assert result["data"]["payload"]["target_value"] == 20_000
+    assert result["data"]["payload"]["period"] == "monthly"
+
+
+def test_goal_capture_falls_back_when_configured_llm_payload_is_malformed(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    _seed_amazon_merchant(conn)
+    set_preference(
+        conn,
+        "core",
+        "llm_config",
+        {"provider": "fake-goal-capture", "model": "goal-capture-v1"},
+    )
+    conn.commit()
+    conn.close()
+
+    import minx_mcp.core.llm as llm
+
+    builders = llm._PROVIDER_BUILDERS
+    try:
+        llm._PROVIDER_BUILDERS = {
+            "fake-goal-capture": lambda config: _StaticGoalCaptureLLM("not-json")
+        }
+        server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+        goal_capture = server._tool_manager.get_tool("goal_capture").fn
+
+        result = goal_capture(
+            message="Make a goal to spend less than $250 on dining out this month",
+            review_date="2026-03-15",
+        )
+    finally:
+        llm._PROVIDER_BUILDERS = builders
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "create"
+    assert result["data"]["payload"]["title"] == "Dining Out Spending Cap"
+    assert result["data"]["payload"]["category_names"] == ["Dining Out"]
     assert result["data"]["payload"]["starts_on"] == "2026-03-01"
 
 
@@ -927,6 +1006,38 @@ class _TestConfig:
     @property
     def vault_path(self) -> Path:
         return self._vault_path
+
+
+class _StaticGoalCaptureLLM:
+    def __init__(self, payload: str) -> None:
+        self.payload = payload
+
+    async def run_json_prompt(self, _prompt: str) -> str:
+        return self.payload
+
+
+def _seed_amazon_merchant(conn) -> None:
+    conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, 1, 'csv', 'seed.csv', 'seed-fingerprint')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id,
+            batch_id,
+            posted_at,
+            description,
+            merchant,
+            amount_cents,
+            category_id,
+            category_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1, 1, "2026-03-15", "Amazon order", "Amazon", -2000, 3, "manual"),
+    )
 
 
 @pytest.mark.asyncio

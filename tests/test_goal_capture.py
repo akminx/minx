@@ -406,6 +406,22 @@ def test_capture_goal_message_falls_back_when_llm_output_is_invalid() -> None:
     assert result.result_type == "no_match"
 
 
+def test_capture_goal_message_falls_back_to_deterministic_create_when_llm_payload_is_malformed() -> None:
+    result = capture_goal_message(
+        message="Make a goal to spend less than $250 on dining out this month",
+        review_date="2026-03-15",
+        finance_api=_StubFinanceRead(),
+        goals=[],
+        llm=_StubGoalCaptureLLM("not-json"),
+    )
+
+    assert result.result_type == "create"
+    assert result.payload is not None
+    assert result.payload["title"] == "Dining Out Spending Cap"
+    assert result.payload["category_names"] == ["Dining Out"]
+    assert result.payload["starts_on"] == "2026-03-01"
+
+
 def test_goal_capture_result_rejects_clarify_without_clarification_type() -> None:
     with pytest.raises(ValueError, match="clarification_type"):
         GoalCaptureResult(result_type="clarify", action="goal_update")

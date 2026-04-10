@@ -11,6 +11,7 @@ from minx_mcp.contracts import ConflictError, InvalidInputError, wrap_async_tool
 from minx_mcp.core.goal_capture import capture_goal_message
 from minx_mcp.core.goal_progress import build_progress_for_goal
 from minx_mcp.core.goals import GoalService
+from minx_mcp.core.llm import create_llm
 from minx_mcp.core.models import (
     GoalCaptureOption,
     GoalCaptureResult,
@@ -244,11 +245,13 @@ def _goal_capture(
     try:
         goal_service = GoalService(conn)
         goals = goal_service.list_goals(status="active") + goal_service.list_goals(status="paused")
+        llm = _resolve_goal_capture_llm(config)
         result = capture_goal_message(
             message=normalized_message,
             review_date=effective_review_date,
             finance_api=FinanceReadAPI(conn),
             goals=goals,
+            llm=llm,
         )
         return _goal_capture_result_to_dict(result)
     finally:
@@ -312,3 +315,10 @@ def _goal_capture_option_to_dict(option: GoalCaptureOption) -> dict[str, object]
         "status": option.status,
         "filter_summary": option.filter_summary,
     }
+
+
+def _resolve_goal_capture_llm(config: CoreServiceConfig) -> object | None:
+    configured = create_llm(db_path=config.db_path)
+    if configured is None or not callable(getattr(configured, "run_json_prompt", None)):
+        return None
+    return configured
