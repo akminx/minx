@@ -495,6 +495,26 @@ def test_service_sensitive_query_rejects_invalid_limits(tmp_path):
         service.sensitive_finance_query(limit=-1)
 
 
+def test_sensitive_query_does_not_commit_ambient_transaction(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+
+    service.conn.execute(
+        """
+        INSERT INTO preferences (domain, key, value_json, updated_at)
+        VALUES ('x', 'y', '1', datetime('now'))
+        """
+    )
+    assert service.conn.in_transaction is True
+
+    service.sensitive_finance_query(limit=1)
+    service.conn.rollback()
+
+    row = service.conn.execute(
+        "SELECT value_json FROM preferences WHERE domain = 'x' AND key = 'y'"
+    ).fetchone()
+    assert row is None
+
+
 def test_service_import_rejects_paths_outside_allowed_import_root(tmp_path):
     import_root = tmp_path / "staging"
     import_root.mkdir()

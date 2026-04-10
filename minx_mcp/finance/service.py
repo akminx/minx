@@ -33,6 +33,10 @@ class FinanceService:
         self.vault_writer = VaultWriter(vault_root, ("Finance",))
 
     @property
+    def db_path(self) -> Path:
+        return self._db_path
+
+    @property
     def conn(self) -> Connection:
         conn = getattr(self._local, "conn", None)
         if conn is None:
@@ -207,6 +211,7 @@ class FinanceService:
         self,
         limit: int = 50,
         session_ref: str | None = None,
+        audit_tool_name: str = "sensitive_finance_query",
         *,
         start_date: str | None = None,
         end_date: str | None = None,
@@ -221,6 +226,7 @@ class FinanceService:
             self.conn,
             limit=limit,
             session_ref=session_ref,
+            audit_tool_name=audit_tool_name,
             start_date=start_date,
             end_date=end_date,
             category_name=category_name,

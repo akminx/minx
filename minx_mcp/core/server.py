@@ -244,7 +244,13 @@ async def _goal_capture(
     conn = get_connection(config.db_path)
     try:
         goal_service = GoalService(conn)
-        goals = goal_service.list_goals(status="active") + goal_service.list_goals(status="paused")
+        active_goals = goal_service.list_active_goals(effective_review_date)
+        paused_goals = [
+            goal
+            for goal in goal_service.list_goals(status="paused")
+            if _goal_is_available_on(goal, effective_review_date)
+        ]
+        goals = active_goals + paused_goals
         llm = _resolve_goal_capture_llm(config)
         result = await capture_goal_message(
             message=normalized_message,
@@ -265,6 +271,15 @@ def _resolve_review_date(review_date: str | None) -> str:
     except ValueError as exc:
         raise InvalidInputError("review_date must be a valid ISO date") from exc
     return effective_date
+
+
+def _goal_is_available_on(goal: GoalRecord, review_date: str) -> bool:
+    review_point = date.fromisoformat(review_date)
+    if review_point < date.fromisoformat(goal.starts_on):
+        return False
+    if goal.ends_on is not None and review_point > date.fromisoformat(goal.ends_on):
+        return False
+    return True
 
 
 def _goal_record_to_dict(goal: GoalRecord) -> dict[str, object]:

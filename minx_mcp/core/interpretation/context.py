@@ -1,13 +1,39 @@
 from __future__ import annotations
 
+from typing import Sequence, TypedDict
+
+
+class GoalPromptGoal(TypedDict):
+    id: object
+    title: object
+    status: object
+    period: object
+    target_value: object
+
+
+class GoalCaptureContext(TypedDict):
+    message: str
+    review_date: str
+    active_goals: list[GoalPromptGoal]
+    category_names: list[str]
+    merchant_names: list[str]
+
+
+class FinanceQueryContext(TypedDict):
+    message: str
+    review_date: str
+    category_names: list[str]
+    merchant_names: list[str]
+    account_names: list[str]
+
 
 def build_goal_capture_context(
     message: str,
     review_date: str,
-    active_goals: list[object],
+    active_goals: Sequence[object],
     category_names: list[str],
     merchant_names: list[str],
-) -> dict[str, object]:
+) -> GoalCaptureContext:
     return {
         "message": message,
         "review_date": review_date,
@@ -32,7 +58,7 @@ def build_finance_query_context(
     category_names: list[str],
     merchant_names: list[str],
     account_names: list[str],
-) -> dict[str, object]:
+) -> FinanceQueryContext:
     return {
         "message": message,
         "review_date": review_date,

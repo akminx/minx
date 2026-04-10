@@ -21,9 +21,9 @@ async def run_interpretation(*, llm: object, prompt: str, result_model: type[T])
         return result_model.model_validate(data)
     except (TypeError, json.JSONDecodeError, ValidationError) as exc:
         prompt_summary = f"model={result_model.__name__} prompt_len={len(prompt)}"
-        # json.JSONDecodeError.__str__ embeds the raw LLM response (the `doc`
-        # field), which may contain user input.  Log only the type name.
-        error_repr: object = type(exc).__name__ if isinstance(exc, json.JSONDecodeError) else exc
+        # Validation and decode errors can embed raw model output, which may
+        # include user text. Log only the exception type.
+        error_repr: object = type(exc).__name__
         log_interpretation_failure(
             task=result_model.__name__,
             prompt_summary=prompt_summary,

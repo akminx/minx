@@ -585,6 +585,31 @@ def test_goal_capture_returns_missing_target_for_retarget_without_amount(tmp_pat
     assert result["data"]["action"] == "goal_update"
 
 
+def test_goal_capture_does_not_match_expired_active_goals(tmp_path: Path) -> None:
+    db_path = tmp_path / "minx.db"
+    get_connection(db_path).close()
+    server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+    goal_create = server._tool_manager.get_tool("goal_create").fn
+    goal_capture = server._tool_manager.get_tool("goal_capture").fn
+
+    goal_create(
+        title="Dining Out Spending Cap",
+        goal_type="spending_cap",
+        metric_type="sum_below",
+        target_value=25_000,
+        period="monthly",
+        category_names=["Dining Out"],
+        starts_on="2026-03-01",
+        ends_on="2026-03-05",
+    )
+
+    result = _call_tool_sync(goal_capture, message="Pause my dining out goal", review_date="2026-03-15")
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "clarify"
+    assert result["data"]["clarification_type"] == "missing_goal"
+
+
 def test_goal_get_update_archive_tools(tmp_path: Path) -> None:
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()

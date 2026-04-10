@@ -407,6 +407,104 @@ def test_finance_query_tool_executes_validated_query_plan(tmp_path):
     }
 
 
+def test_finance_query_uses_service_db_path_for_default_llm_resolution(tmp_path, monkeypatch):
+    calls: dict[str, object] = {}
+
+    class _ConfiguredLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"list_transactions","filters":{},'
+                '"confidence":0.9,"needs_clarification":true,'
+                '"clarification_type":"missing_date_range",'
+                '"question":"Which date range should I use?"}'
+            )
+
+    class _ProtocolOnlyService:
+        def __init__(self, db_path):
+            self.db_path = db_path
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def safe_finance_summary(self):
+            return {}
+
+        def list_accounts(self):
+            return {"accounts": []}
+
+        def list_account_names(self):
+            return ["DCU"]
+
+        def list_transaction_category_names(self):
+            return ["Groceries"]
+
+        def list_spending_merchant_names(self):
+            return ["Whole Foods"]
+
+        def finance_import(self, source_ref, account_name, source_kind=None):
+            raise NotImplementedError
+
+        def missing_transaction_ids(self, transaction_ids):
+            return []
+
+        def finance_categorize(self, transaction_ids, category_name):
+            raise NotImplementedError
+
+        def add_category_rule(self, category_name, match_kind, pattern):
+            raise NotImplementedError
+
+        def finance_anomalies(self):
+            return {"items": []}
+
+        def get_job(self, job_id):
+            raise NotImplementedError
+
+        def generate_weekly_report(self, period_start, period_end):
+            raise NotImplementedError
+
+        def generate_monthly_report(self, period_start, period_end):
+            raise NotImplementedError
+
+        def sensitive_finance_query(self, limit=50, session_ref=None, **filters):
+            return {"transactions": []}
+
+        def get_filtered_spending_total(self, **filters):
+            return 0
+
+        def get_filtered_transaction_count(self, **filters):
+            return 0
+
+    def fake_create_llm(config=None, *, db_path=None):
+        calls["db_path"] = db_path
+        return _ConfiguredLLM()
+
+    monkeypatch.setattr("minx_mcp.finance.server.create_llm", fake_create_llm)
+    service = _ProtocolOnlyService(tmp_path / "custom.db")
+    server = create_finance_server(service)
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    result = _call_tool_sync(finance_query, "show me Whole Foods transactions", "2026-03-31")
+
+    assert calls["db_path"] == tmp_path / "custom.db"
+    assert result == {
+        "success": True,
+        "data": {
+            "result_type": "clarify",
+            "intent": "list_transactions",
+            "filters": {},
+            "confidence": 0.9,
+            "clarification_type": "missing_date_range",
+            "question": "Which date range should I use?",
+            "options": None,
+        },
+        "error": None,
+        "error_code": None,
+    }
+
+
 @pytest.mark.asyncio
 async def test_finance_query_tool_is_async_safe_inside_running_loop(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
@@ -621,6 +719,43 @@ def test_sensitive_finance_query_rejects_blank_description_contains(tmp_path):
     }
 
 
+def test_sensitive_finance_query_rejects_invalid_start_date_without_end_date(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    result = sensitive(start_date="2026-99-99")
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_sensitive_finance_query_rejects_invalid_end_date_without_start_date(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    result = sensitive(end_date="2026-99-99")
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_sensitive_finance_query_rejects_blank_scalar_filters(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+
+    for kwargs in (
+        {"category_name": "   "},
+        {"merchant": "   "},
+        {"account_name": "   "},
+    ):
+        result = sensitive(**kwargs)
+        assert result["success"] is False
+        assert result["error_code"] == "INVALID_INPUT"
+
+
 def test_finance_query_tool_writes_audit_log_for_sum_spending(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
 
@@ -667,6 +802,28 @@ def test_finance_query_tool_writes_audit_log_for_count_transactions(tmp_path):
     assert row is not None
     assert row["tool_name"] == "finance_query"
     assert "count_transactions" in row["summary"]
+
+
+def test_finance_query_tool_writes_audit_log_for_list_transactions(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+
+    class _ListLLM:
+        async def run_json_prompt(self, prompt: str) -> str:
+            return (
+                '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
+                '"end_date":"2026-03-31"},'
+                '"confidence":0.9,"needs_clarification":false}'
+            )
+
+    server = create_finance_server(service, llm=_ListLLM())
+    finance_query = server._tool_manager.get_tool("finance_query").fn
+
+    _call_tool_sync(finance_query, "show me march transactions", "2026-03-31", session_ref="s1")
+
+    row = service.conn.execute("SELECT tool_name, session_ref FROM audit_log").fetchone()
+    assert row is not None
+    assert row["tool_name"] == "finance_query"
+    assert row["session_ref"] == "s1"
 
 
 def test_safe_finance_summary_returns_internal_error_envelope_for_unexpected_exception(

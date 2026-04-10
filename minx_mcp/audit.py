@@ -9,8 +9,10 @@ def log_sensitive_access(
     session_ref: str | None,
     summary: str,
 ) -> None:
+    should_commit = not conn.in_transaction
     conn.execute(
         "INSERT INTO audit_log (tool_name, session_ref, summary) VALUES (?, ?, ?)",
         (tool_name, session_ref, summary),
     )
-    conn.commit()
+    if should_commit:
+        conn.commit()

@@ -100,6 +100,7 @@ def sensitive_query(
     conn: Connection,
     limit: int = 50,
     session_ref: str | None = None,
+    audit_tool_name: str = "sensitive_finance_query",
     *,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -145,7 +146,7 @@ def sensitive_query(
             [*params, limit],
         ).fetchall()
     ]
-    log_sensitive_access(conn, "sensitive_finance_query", session_ref, f"Returned {len(rows)} rows")
+    log_sensitive_access(conn, audit_tool_name, session_ref, f"Returned {len(rows)} rows")
     return {"transactions": rows}
 
 

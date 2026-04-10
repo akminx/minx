@@ -6,7 +6,10 @@ import inspect
 import pytest
 
 from minx_mcp.contracts import InvalidInputError
-from minx_mcp.core.goal_capture import capture_goal_message as _capture_goal_message
+from minx_mcp.core.goal_capture import (
+    _render_goal_capture_prompt,
+    capture_goal_message as _capture_goal_message,
+)
 from minx_mcp.core.server import create_core_server
 from minx_mcp.db import get_connection
 from minx_mcp.core.models import GoalCaptureOption, GoalCaptureResult, GoalRecord
@@ -396,6 +399,35 @@ def test_capture_goal_message_returns_no_match_for_unsupported_goal_family() -> 
     assert result.result_type == "no_match"
 
 
+def test_capture_goal_message_includes_active_goals_in_llm_prompt() -> None:
+    result = capture_goal_message(
+        message="Pause my dining out goal",
+        review_date="2026-03-15",
+        finance_api=_StubFinanceRead(),
+        goals=[_goal_record()],
+        llm=_StubGoalCaptureLLM(
+            '{"intent":"invalid"}',
+            expected_substring="Dining Out Spending Cap",
+        ),
+    )
+
+    assert result.result_type == "update"
+    assert result.goal_id == 7
+    assert result.payload == {"status": "paused"}
+
+
+def test_render_goal_capture_prompt_labels_candidate_goals_not_active_goals() -> None:
+    prompt = _render_goal_capture_prompt(
+        "Pause my dining out goal",
+        "2026-03-15",
+        _StubFinanceRead(),
+        [_goal_record(), _goal_record(id=8, status="paused")],
+    )
+
+    assert "Candidate goals:" in prompt
+    assert "Active goals:" not in prompt
+
+
 def test_capture_goal_message_uses_llm_for_natural_language_create_resolution() -> None:
     result = capture_goal_message(
         message="I want to track my Amazon spending under $200 monthly",
@@ -412,6 +444,23 @@ def test_capture_goal_message_uses_llm_for_natural_language_create_resolution() 
     assert result.payload["merchant_names"] == ["Amazon"]
     assert result.payload["target_value"] == 20_000
     assert result.payload["period"] == "monthly"
+
+
+def test_capture_goal_message_uses_llm_update_intent_when_deterministic_parser_misses() -> None:
+    result = capture_goal_message(
+        message="put my dining goal on hold",
+        review_date="2026-03-15",
+        finance_api=_StubFinanceRead(),
+        goals=[_goal_record()],
+        llm=_StubGoalCaptureLLM(
+            '{"intent":"update","confidence":0.99,"update_kind":"pause","goal_id":7}',
+            expected_substring="Dining Out Spending Cap",
+        ),
+    )
+
+    assert result.result_type == "update"
+    assert result.goal_id == 7
+    assert result.payload == {"status": "paused"}
 
 
 @pytest.mark.asyncio

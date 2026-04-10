@@ -14,6 +14,8 @@ class GoalCaptureInterpretation(BaseModel):
     subject: str | None = None
     period: Literal["daily", "weekly", "monthly"] | None = None
     target_value: int | None = None
+    update_kind: Literal["pause", "resume", "archive", "retarget"] | None = None
+    goal_id: int | None = None
 
 
 class FinanceQueryFiltersInterpretation(BaseModel):

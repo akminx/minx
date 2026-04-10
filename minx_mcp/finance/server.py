@@ -31,6 +31,9 @@ SUPPORTED_RULE_MATCH_KINDS = {"merchant_contains"}
 
 
 class FinanceServiceLike(Protocol):
+    @property
+    def db_path(self) -> Path: ...
+
     def __enter__(self) -> Self: ...
     def __exit__(self, *exc: object) -> None: ...
     def safe_finance_summary(self) -> dict[str, object]: ...
@@ -55,6 +58,7 @@ class FinanceServiceLike(Protocol):
         self,
         limit: int = 50,
         session_ref: str | None = None,
+        audit_tool_name: str = "sensitive_finance_query",
         *,
         start_date: str | None = None,
         end_date: str | None = None,
@@ -298,12 +302,17 @@ def _sensitive_finance_query(
     if limit < 1 or limit > MAX_SENSITIVE_QUERY_LIMIT:
         raise InvalidInputError(f"limit must be between 1 and {MAX_SENSITIVE_QUERY_LIMIT}")
     _validate_date_range(start_date, end_date)
-    if description_contains is not None and not description_contains.strip():
-        raise InvalidInputError("description_contains must not be blank")
+    _validate_optional_text_filters(
+        category_name=category_name,
+        merchant=merchant,
+        account_name=account_name,
+        description_contains=description_contains,
+    )
     with service:
         return service.sensitive_finance_query(
             limit=limit,
             session_ref=session_ref,
+            audit_tool_name="sensitive_finance_query",
             start_date=start_date,
             end_date=end_date,
             category_name=category_name,
@@ -350,13 +359,17 @@ async def _finance_query(
 
         filters = plan.filters.to_public_dict()
         _validate_date_range(filters.get("start_date"), filters.get("end_date"))
-        description_contains = filters.get("description_contains")
-        if description_contains is not None and not description_contains.strip():
-            raise InvalidInputError("description_contains must not be blank")
+        _validate_optional_text_filters(
+            category_name=filters.get("category_name"),
+            merchant=filters.get("merchant"),
+            account_name=filters.get("account_name"),
+            description_contains=filters.get("description_contains"),
+        )
         if plan.intent == "list_transactions":
             result = service.sensitive_finance_query(
                 limit=limit,
                 session_ref=session_ref,
+                audit_tool_name="finance_query",
                 **filters,
             )
             return {
@@ -397,7 +410,7 @@ def _resolve_finance_query_llm(service: FinanceServiceLike, llm: object | None) 
     if llm is not None:
         return llm
 
-    configured = create_llm(db_path=getattr(service, "_db_path", None))
+    configured = create_llm(db_path=service.db_path)
     if configured is None or not callable(getattr(configured, "run_json_prompt", None)):
         raise InvalidInputError("finance_query requires a configured JSON-capable LLM")
     return configured
@@ -432,11 +445,35 @@ def _validate_date_window(period_start: str, period_end: str) -> None:
 
 
 def _validate_date_range(start_date: str | None, end_date: str | None) -> None:
-    if start_date is not None and end_date is not None:
+    start = None
+    end = None
+    if start_date is not None:
         try:
             start = date.fromisoformat(start_date)
+        except ValueError as exc:
+            raise InvalidInputError("Invalid ISO date") from exc
+    if end_date is not None:
+        try:
             end = date.fromisoformat(end_date)
         except ValueError as exc:
             raise InvalidInputError("Invalid ISO date") from exc
+    if start is not None and end is not None:
         if start > end:
             raise InvalidInputError("start_date must be on or before end_date")
+
+
+def _validate_optional_text_filters(
+    *,
+    category_name: str | None,
+    merchant: str | None,
+    account_name: str | None,
+    description_contains: str | None,
+) -> None:
+    for field_name, value in (
+        ("category_name", category_name),
+        ("merchant", merchant),
+        ("account_name", account_name),
+        ("description_contains", description_contains),
+    ):
+        if value is not None and not value.strip():
+            raise InvalidInputError(f"{field_name} must not be blank")

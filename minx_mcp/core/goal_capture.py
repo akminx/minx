@@ -35,6 +35,7 @@ async def capture_goal_message(
             message=message,
             review_date=review_date,
             finance_api=finance_api,
+            goals=goals,
             llm=llm,
         )
         if interpreted is not None:
@@ -71,14 +72,17 @@ async def _capture_with_llm(
     message: str,
     review_date: str,
     finance_api: FinanceReadInterface,
+    goals: list[GoalRecord],
     llm: object,
 ) -> GoalCaptureResult | None:
-    prompt = _render_goal_capture_prompt(message, review_date, finance_api)
+    prompt = _render_goal_capture_prompt(message, review_date, finance_api, goals)
     try:
         interpretation = await _run_goal_capture_interpretation(llm, prompt)
     except Exception:
         return None
 
+    if interpretation.intent == "update":
+        return _build_llm_update_result(interpretation, goals)
     if interpretation.intent != "create":
         return None
     if interpretation.subject_kind not in {"category", "merchant"}:
@@ -150,21 +154,25 @@ def _render_goal_capture_prompt(
     message: str,
     review_date: str,
     finance_api: FinanceReadInterface,
+    goals: list[GoalRecord],
 ) -> str:
     ctx = build_goal_capture_context(
         message=message,
         review_date=review_date,
-        active_goals=[],
+        active_goals=goals,
         category_names=finance_api.list_goal_category_names(),
         merchant_names=finance_api.list_spending_merchant_names(),
     )
     return "\n".join(
         [
             "Interpret the goal capture request as JSON.",
-            "Return keys: intent, confidence, subject_kind, subject, period, target_value.",
+            (
+                "Return keys: intent, confidence, subject_kind, subject, period, "
+                "target_value, update_kind, goal_id."
+            ),
             f"Message: {ctx['message']}",
             f"Review date: {ctx['review_date']}",
-            f"Active goals: {ctx['active_goals']}",
+            f"Candidate goals: {ctx['active_goals']}",
             "Known categories: " + ", ".join(ctx["category_names"]),
             "Known merchants: " + ", ".join(ctx["merchant_names"]),
         ]
@@ -396,6 +404,39 @@ def _build_create_payload(
         "ends_on": None,
         "notes": None,
     }
+
+
+def _build_llm_update_result(
+    interpretation: GoalCaptureInterpretation,
+    goals: list[GoalRecord],
+) -> GoalCaptureResult | None:
+    if interpretation.goal_id is None or interpretation.update_kind is None:
+        return None
+
+    goal = next((candidate for candidate in goals if candidate.id == interpretation.goal_id), None)
+    if goal is None or not _supported_conversational_goal(goal):
+        return None
+
+    if interpretation.update_kind == "pause":
+        payload: dict[str, object] = {"status": "paused"}
+    elif interpretation.update_kind == "resume":
+        payload = {"status": "active"}
+    elif interpretation.update_kind == "archive":
+        payload = {"status": "archived"}
+    elif interpretation.update_kind == "retarget":
+        if interpretation.target_value is None or interpretation.target_value <= 0:
+            return None
+        payload = {"target_value": interpretation.target_value}
+    else:
+        return None
+
+    return GoalCaptureResult(
+        result_type="update",
+        action="goal_update",
+        goal_id=goal.id,
+        payload=payload,
+        assistant_message=_build_update_assistant_message(goal, payload),
+    )
 
 
 def _summarize_goal_filters(goal: GoalRecord) -> str:

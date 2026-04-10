@@ -85,7 +85,7 @@ def parse_source_file(
     if snapshot_path is not None:
         if content_hash is None:
             raise InvalidInputError("content_hash is required when snapshot_path is set")
-        kind = source_kind or detect_source_kind(path)
+        kind = source_kind or detect_source_kind(snapshot_path)
         result = _parse_kind_from_snapshot(snapshot_path, account_name, kind, mapping)
         _validate_parsed_transactions(result)
         return replace(
@@ -100,7 +100,7 @@ def parse_source_file(
         with TemporaryDirectory() as temp_dir:
             sp = Path(temp_dir) / path.name
             sp.write_bytes(file_bytes)
-            kind = source_kind or detect_source_kind(path)
+            kind = source_kind or detect_source_kind(sp)
             result = _parse_kind_from_snapshot(sp, account_name, kind, mapping)
         _validate_parsed_transactions(result)
         return replace(
