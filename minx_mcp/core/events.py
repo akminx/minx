@@ -67,6 +67,10 @@ class Event:
     sensitivity: str
 
 
+class UnknownEventTypeError(ValueError):
+    """Raised when an unregistered event type is emitted."""
+
+
 def emit_event(
     db: sqlite3.Connection,
     event_type: str,
@@ -81,8 +85,10 @@ def emit_event(
     try:
         model = PAYLOAD_MODELS.get(event_type)
         if model is None:
-            logger.warning("Unknown event type %s; event not emitted", event_type)
-            return None
+            raise UnknownEventTypeError(
+                f"Unknown event type {event_type!r}; "
+                f"registered types: {sorted(PAYLOAD_MODELS)}"
+            )
 
         validated = model.model_validate(payload)
         normalized_occurred_at = normalize_utc_timestamp(occurred_at)
@@ -115,6 +121,8 @@ def emit_event(
             ),
         )
         return cursor.lastrowid
+    except UnknownEventTypeError:
+        raise
     except ValidationError as exc:
         logger.warning(
             "Event payload validation failed for %s: %s",
@@ -218,5 +226,4 @@ def _local_date_to_utc_boundary(
     local_day = date.fromisoformat(value) + timedelta(days=add_days)
     local_midnight = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
     return format_utc_timestamp(local_midnight)
-
 

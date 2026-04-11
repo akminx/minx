@@ -2,7 +2,9 @@ import json
 import sqlite3
 
 from minx_mcp.db import get_connection
-from minx_mcp.core.events import Event, emit_event, query_events
+import pytest
+
+from minx_mcp.core.events import Event, UnknownEventTypeError, emit_event, query_events
 
 
 def _imported_payload(**overrides):
@@ -176,20 +178,20 @@ def test_emit_event_returns_none_and_logs_on_unexpected_insert_failure(tmp_path,
     assert "insert failed" in caplog.text
 
 
-def test_emit_event_never_raises_and_returns_none_for_unknown_event_type(tmp_path):
+def test_emit_event_raises_on_unknown_event_type(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
 
-    event_id = emit_event(
-        conn,
-        event_type="finance.unknown_event",
-        domain="finance",
-        occurred_at="2026-01-15T18:30:00Z",
-        entity_ref="entity-1",
-        source="finance.service",
-        payload={"anything": "goes"},
-    )
+    with pytest.raises(UnknownEventTypeError, match="finance.unknown_event"):
+        emit_event(
+            conn,
+            event_type="finance.unknown_event",
+            domain="finance",
+            occurred_at="2026-01-15T18:30:00Z",
+            entity_ref="entity-1",
+            source="finance.service",
+            payload={"anything": "goes"},
+        )
 
-    assert event_id is None
     assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
 
 
