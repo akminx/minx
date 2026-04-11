@@ -35,6 +35,7 @@ Meals should make meal logs, pantry state, recipes, and nutrition data usable by
 - Keep deterministic signals in Core and presentation in the harness.
 - Make migrations and platform helpers domain-neutral.
 - Extract shared cross-domain abstractions only after Finance and Meals both exist and prove the shape.
+- Use tiny registries only where they enforce existing contracts, such as event payload registration. Defer broader domain contribution registries until Meals exists.
 
 ## Scope Summary
 
@@ -53,6 +54,19 @@ Add a tiny local launcher or supervisor that can start `minx-core`, `minx-financ
 The launcher is outside domain logic. It is not the source of truth for tool contracts, persistence, migrations, service construction, or domain orchestration. All server processes must remain independently runnable through their own entry points.
 
 The launcher may own only process startup convenience: resolving configured command lines, starting child processes, relaying logs, and stopping children cleanly on interrupt.
+
+## Platform Primitives
+
+Migrations, event registration, and local server launch should feel like platform primitives, not Finance infrastructure.
+
+For this slice, that means:
+
+- Add Meals schema through the same numbered migration flow Finance uses, with domain-prefixed table names and no Finance-specific helper assumptions.
+- Keep all migration helpers domain-neutral so later domains can use them without inheriting Finance vocabulary.
+- Keep the launcher as process supervision only. It can read a small manifest of local MCP server commands, but it cannot own domain routing or business logic.
+- Convert event payload registration from a single central string-to-model switch into a small registry that composes per-domain declarations.
+
+This is not a request to build a general domain plugin system. It is a request to make the platform contracts that already exist less Finance-shaped before Meals depends on them.
 
 ## Phase 1: Meals Foundation
 
@@ -99,7 +113,16 @@ Shopping lists are generated artifacts, not source-of-truth inventory.
 
 ### Events
 
-Register every Meals event payload explicitly in `minx_mcp/core/events.py`. Unknown event types must keep failing loudly through the existing `UnknownEventTypeError` posture.
+Register every Meals event payload explicitly through the shared event registry. Unknown event types must keep failing loudly through the existing `UnknownEventTypeError` posture.
+
+Avoid making Meals events "just another string in a central switch statement." The preferred shape is that each domain declares its own event payload models in one place, and the shared event module composes those declarations into the enforced registry.
+
+For the first slice, a small explicit structure is enough:
+
+- Finance declares Finance event payload models in a Finance-owned mapping.
+- Meals declares Meals event payload models in a Meals-owned mapping.
+- The shared event emitter reads the composed registry and raises on unknown event types.
+- Tests prove unknown events fail and registered Meals payloads validate.
 
 Initial event names:
 
@@ -114,6 +137,8 @@ Event payloads stay typed and domain-local. Core timeline summaries should under
 
 Add a Meals read API interface analogous to Finance's read API. Core should assemble a daily snapshot from multiple domain contributions without taking ownership of Meals facts.
 
+This slice should begin moving Core away from a finance-shaped snapshot that grows a new permanent field for every domain. `NutritionSnapshot` is the concrete Meals contribution for this slice, but it should be treated as the first visible domain contribution, not as proof that `DailySnapshot` should keep expanding forever.
+
 Add `NutritionSnapshot` as a discrete field in the Core snapshot model. Do not hide nutrition under an undifferentiated `extra` field. The initial shape should be intentionally narrow:
 
 ```python
@@ -127,7 +152,7 @@ class NutritionSnapshot:
     skipped_meal_signals: list[str]
 ```
 
-Core may add deterministic detectors for:
+Core may add a narrow set of deterministic Meals-facing detectors for:
 
 - low protein
 - meal frequency patterns
@@ -197,6 +222,8 @@ Meals event registration is explicit and enforced:
 - Payloads use domain-local typed fields.
 - Timeline summaries handle `meal.logged` and `nutrition.day_updated`.
 - Event payloads avoid embedding full recipe or pantry records when a stable entity reference is enough.
+- Meals declares its event payloads in a Meals-owned module or mapping; the shared event emitter composes the registry.
+- Finance event declarations should move toward the same shape so `minx_mcp/core/events.py` is not the long-term owner of every domain event string.
 
 Recommended payload sketches:
 
@@ -231,6 +258,23 @@ Keep `NutritionSnapshot` discrete and explicit. This may later evolve into a bro
 Keep nutrition detectors and meal signals deterministic in Core. Leave narrative, coaching, and follow-up prioritization to the harness.
 
 Keep using the current shared LLM adapter in `minx_mcp/core/` for now, with narrow call boundaries so Finance and Meals can both use it. The domain-neutral move remains deferred.
+
+The implementation should avoid two traps:
+
+- Do not keep stretching a Finance-first `DailySnapshot` shape by adding unrelated domain fields forever.
+- Do not jump straight to a generic `DomainAdapter`.
+
+The intended middle step is small and concrete: Core composes known domain contributions from Finance, Goals, and Meals for this slice. After Meals exists, extract only the common composition mechanics that both domains actually use.
+
+## Future Registry Direction
+
+After Meals exists, the likely platform shape is a set of small registries that Core composes:
+
+- Domain event registry: each domain declares event payload models and summaries; the shared emitter enforces known event types.
+- Domain read-model contribution registry: each domain exposes read-only snapshot builders for Core to assemble.
+- Domain detector contribution registry: Core owns deterministic signal execution, but detector groups can be registered by domain instead of added to one growing list.
+
+This future shape should not become a giant router or a mega-server. It is a way to keep explicit domain boundaries while reducing central switch statements after the second domain proves the pattern.
 
 ## Recipe Recommendation Behavior
 
@@ -383,9 +427,9 @@ Required behavior:
 
 This phase is part of the first implementation slice.
 
-## Phase 3: Shopping List Generation
+## Phase 3: Shopping List Generation (Deferred)
 
-Shopping list generation is the next phase after foundation and recommendation.
+Shopping list generation is the next phase after foundation and recommendation. It is documented here to keep the recipe and pantry model honest, but it is not part of the first implementation slice.
 
 Required behavior:
 
@@ -397,9 +441,9 @@ Required behavior:
 
 This phase should not be pulled into the first implementation plan unless the user explicitly expands scope.
 
-## Phase 4: Rich Presentation
+## Phase 4: Rich Presentation (Deferred)
 
-Richer presentation is metadata support, not business logic.
+Richer presentation is metadata support, not business logic. It is not part of the first implementation slice except for preserving recipe metadata fields that would be expensive to retrofit later.
 
 Required behavior:
 
