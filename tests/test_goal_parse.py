@@ -275,6 +275,142 @@ def test_goal_parse_tool_returns_no_match_for_unsupported_structured_create_fami
     assert result["data"]["result_type"] == "no_match"
 
 
+def test_goal_parse_tool_accepts_merchant_alias_that_normalizes_to_canonical(tmp_path) -> None:
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    conn.execute(
+        "INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint) "
+        "VALUES (1, 1, 'csv', 'seed.csv', 'seed')"
+    )
+    conn.execute(
+        """
+        INSERT INTO finance_transactions
+            (account_id, batch_id, posted_at, description, merchant, amount_cents, category_source)
+        VALUES (1, 1, '2026-03-15', 'Coffee', 'Joe''s Cafe', -1000, 'manual')
+        """
+    )
+    conn.commit()
+    conn.close()
+    server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+
+    result = _call_tool_sync(
+        goal_parse,
+        structured_input={
+            "action": "goal_create",
+            "payload": {
+                "goal_type": "spending_cap",
+                "title": "Joe's Cafe Spending Cap",
+                "metric_type": "sum_below",
+                "target_value": 10000,
+                "period": "monthly",
+                "domain": "finance",
+                "category_names": [],
+                "merchant_names": ["SQ *JOES CAFE 1234"],
+                "account_names": [],
+                "starts_on": "2026-03-01",
+                "ends_on": None,
+                "notes": None,
+            },
+        },
+        review_date="2026-03-15",
+    )
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "create"
+
+
+def test_goal_parse_tool_rejects_completely_unknown_merchant(tmp_path) -> None:
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    conn.execute(
+        "INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint) "
+        "VALUES (1, 1, 'csv', 'seed.csv', 'seed')"
+    )
+    conn.execute(
+        """
+        INSERT INTO finance_transactions
+            (account_id, batch_id, posted_at, description, merchant, amount_cents, category_source)
+        VALUES (1, 1, '2026-03-15', 'Coffee', 'Joe''s Cafe', -1000, 'manual')
+        """
+    )
+    conn.commit()
+    conn.close()
+    server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+
+    result = _call_tool_sync(
+        goal_parse,
+        structured_input={
+            "action": "goal_create",
+            "payload": {
+                "goal_type": "spending_cap",
+                "title": "Unknown Spending Cap",
+                "metric_type": "sum_below",
+                "target_value": 10000,
+                "period": "monthly",
+                "domain": "finance",
+                "category_names": [],
+                "merchant_names": ["TOTALLY UNKNOWN MERCHANT XYZ"],
+                "account_names": [],
+                "starts_on": "2026-03-01",
+                "ends_on": None,
+                "notes": None,
+            },
+        },
+        review_date="2026-03-15",
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "canonical names only" in result["error"]
+
+
+def test_goal_parse_tool_accepts_exact_canonical_merchant_name(tmp_path) -> None:
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    conn.execute(
+        "INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint) "
+        "VALUES (1, 1, 'csv', 'seed.csv', 'seed')"
+    )
+    conn.execute(
+        """
+        INSERT INTO finance_transactions
+            (account_id, batch_id, posted_at, description, merchant, amount_cents, category_source)
+        VALUES (1, 1, '2026-03-15', 'Coffee', 'Joe''s Cafe', -1000, 'manual')
+        """
+    )
+    conn.commit()
+    conn.close()
+    server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+
+    result = _call_tool_sync(
+        goal_parse,
+        structured_input={
+            "action": "goal_create",
+            "payload": {
+                "goal_type": "spending_cap",
+                "title": "Joe's Cafe Spending Cap",
+                "metric_type": "sum_below",
+                "target_value": 10000,
+                "period": "monthly",
+                "domain": "finance",
+                "category_names": [],
+                "merchant_names": ["Joe's Cafe"],
+                "account_names": [],
+                "starts_on": "2026-03-01",
+                "ends_on": None,
+                "notes": None,
+            },
+        },
+        review_date="2026-03-15",
+    )
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "create"
+
+
 class _TestConfig:
     def __init__(self, db_path, vault_path) -> None:
         self.db_path = db_path

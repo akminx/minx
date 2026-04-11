@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from minx_mcp.core.goals import GoalService
 from minx_mcp.core.models import GoalCreateInput
-from minx_mcp.core.trajectory import get_goal_trajectory
+from minx_mcp.core.trajectory import _compute_trend, get_goal_trajectory
 from minx_mcp.db import get_connection
 
 
@@ -39,7 +39,7 @@ def test_get_goal_trajectory_returns_completed_weekly_periods_and_sparse_status_
     )
 
     assert [item["actual_value"] for item in result["trajectory"]] == [19800, 19500, 19000]
-    assert result["trend"] == "improving"
+    assert result["trend"] == "stable"
     assert result["status_counts"] == {"watch": 3}
 
 
@@ -140,6 +140,38 @@ def test_get_goal_trajectory_includes_month_completed_on_as_of_date(tmp_path):
     )
 
     assert result["trajectory"][0]["period_end"] == "2026-03-31"
+
+
+def test_compute_trend_single_score_returns_none() -> None:
+    assert _compute_trend([80.0]) is None
+
+
+def test_compute_trend_two_scores_decreasing_returns_improving() -> None:
+    assert _compute_trend([100.0, 50.0]) == "improving"
+
+
+def test_compute_trend_two_scores_increasing_returns_worsening() -> None:
+    assert _compute_trend([50.0, 100.0]) == "worsening"
+
+
+def test_compute_trend_flat_scores_returns_stable() -> None:
+    assert _compute_trend([80.0, 80.0, 80.0]) == "stable"
+
+
+def test_compute_trend_v_shaped_returns_stable() -> None:
+    assert _compute_trend([80.0, 120.0, 80.0]) == "stable"
+
+
+def test_compute_trend_monotonically_decreasing_large_delta_returns_improving() -> None:
+    assert _compute_trend([130.0, 100.0, 70.0]) == "improving"
+
+
+def test_compute_trend_monotonically_increasing_large_delta_returns_worsening() -> None:
+    assert _compute_trend([70.0, 100.0, 130.0]) == "worsening"
+
+
+def test_compute_trend_noisy_ascending_returns_worsening() -> None:
+    assert _compute_trend([80.0, 75.0, 90.0, 100.0]) == "worsening"
 
 
 def _seed_weekly_spend(conn, week_start: str, total_cents: int) -> None:

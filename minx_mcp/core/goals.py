@@ -18,12 +18,12 @@ class GoalService:
         self._conn = conn
 
     def create_goal(self, payload: GoalCreateInput) -> GoalRecord:
-        normalized_goal_type = _normalize_goal_type(payload.goal_type)
-        normalized_title = _normalize_title(payload.title)
-        normalized_category_names = _normalize_filter_names(payload.category_names, "category_names")
-        normalized_merchant_names = _normalize_filter_names(payload.merchant_names, "merchant_names")
-        normalized_account_names = _normalize_filter_names(payload.account_names, "account_names")
-        _validate_goal_state(
+        normalized_goal_type = normalize_goal_type(payload.goal_type)
+        normalized_title = normalize_title(payload.title)
+        normalized_category_names = normalize_filter_names(payload.category_names, "category_names")
+        normalized_merchant_names = normalize_filter_names(payload.merchant_names, "merchant_names")
+        normalized_account_names = normalize_filter_names(payload.account_names, "account_names")
+        validate_goal_state(
             goal_type=normalized_goal_type,
             title=normalized_title,
             target_value=payload.target_value,
@@ -88,7 +88,7 @@ class GoalService:
 
     def update_goal(self, goal_id: int, payload: GoalUpdateInput) -> GoalRecord:
         current = self.get_goal(goal_id)
-        next_title = current.title if payload.title is None else _normalize_title(payload.title)
+        next_title = current.title if payload.title is None else normalize_title(payload.title)
         next_target_value = (
             current.target_value if payload.target_value is None else payload.target_value
         )
@@ -99,7 +99,7 @@ class GoalService:
             else payload.ends_on if payload.ends_on is not None
             else current.ends_on
         )
-        _validate_goal_state(
+        validate_goal_state(
             goal_type=current.goal_type,
             title=next_title,
             target_value=next_target_value,
@@ -163,7 +163,7 @@ class GoalService:
         return [_row_to_record(row) for row in rows]
 
 
-def _validate_goal_state(
+def validate_goal_state(
     *,
     goal_type: str,
     title: str,
@@ -229,21 +229,21 @@ def _normalize_optional_status_filter(value: str | None) -> str | None:
     return value
 
 
-def _normalize_title(value: str) -> str:
+def normalize_title(value: str) -> str:
     normalized = value.strip()
     if not normalized:
         raise InvalidInputError("title must be non-empty")
     return normalized
 
 
-def _normalize_goal_type(value: str) -> str:
+def normalize_goal_type(value: str) -> str:
     normalized = value.strip()
     if not normalized:
         raise InvalidInputError("goal_type must be non-empty")
     return normalized
 
 
-def _normalize_filter_names(names: list[str], field_name: str) -> list[str]:
+def normalize_filter_names(names: list[str], field_name: str) -> list[str]:
     normalized = [name.strip() for name in names]
     for member in normalized:
         if not member:

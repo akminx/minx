@@ -137,7 +137,7 @@ This ordering preserves the architecture doc's north star:
 
 ## Slice 2.5: MCP Surface Refactor
 
-**Status:** Not started
+**Status:** Implemented
 **Spec:** [2026-04-10-slice2.5-mcp-surface-refactor-design.md](2026-04-10-slice2.5-mcp-surface-refactor-design.md)
 
 **Scope:**
@@ -169,7 +169,7 @@ This ordering preserves the architecture doc's north star:
 - NutritionSnapshot read model in Minx Core
 - Meals-specific detectors: nutrition gaps, protein tracking, meal frequency
 - Cross-domain detectors: restaurant spend vs meal prep days
-- DailyReview updated to include nutrition context
+- DailySnapshot and Core read models updated to include NutritionSnapshot
 
 **Delivers:** The first meaningful second domain. Cross-domain insight becomes real instead of aspirational.
 
@@ -188,7 +188,7 @@ This ordering preserves the architecture doc's north star:
 - TrainingSnapshot read model in Minx Core
 - Training-specific detectors: adherence trends, volume progression, recovery signals
 - Cross-domain detectors: training + nutrition correlation, training + spending patterns
-- DailyReview updated to include training context
+- DailySnapshot and Core read models updated to include TrainingSnapshot
 
 **Delivers:** A third domain that makes Minx feel like a real Life OS rather than a finance review with extras.
 
@@ -237,7 +237,7 @@ Ambient input ingestion (vault polling, journal scanning) remains harness-level 
 - Service layer, SQLite schema, MCP tools following the established domain pattern
 - Event emission: `idea.captured`, `journal.entry_added`, `journal.reflection_added`
 - JournalSnapshot read model in Minx Core
-- Journal recap in DailyReview
+- Journal recap in DailySnapshot
 - Open loop detection for unfinished thoughts and intentions
 - Cross-domain detectors: journal mood + spending/training correlation
 - gradual replacement of ad hoc ambient vault ingestion where a structured source becomes better

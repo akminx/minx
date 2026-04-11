@@ -169,8 +169,17 @@ def _trend_score(metric_type: str, actual: int) -> float:
 def _compute_trend(scores: list[float]) -> str | None:
     if len(scores) < 2:
         return None
-    if scores[-1] < scores[0]:
+    n = len(scores)
+    x_mean = (n - 1) / 2.0
+    y_mean = sum(scores) / n
+    numerator = sum((i - x_mean) * (s - y_mean) for i, s in enumerate(scores))
+    denominator = sum((i - x_mean) ** 2 for i in range(n))
+    if denominator == 0:
+        return "stable"
+    slope = numerator / denominator
+    threshold = max(abs(y_mean) * 0.05, 0.01)
+    if slope < -threshold:
         return "improving"
-    if scores[-1] > scores[0]:
+    if slope > threshold:
         return "worsening"
     return "stable"
