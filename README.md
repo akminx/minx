@@ -1,6 +1,10 @@
 # minx-mcp
 
-Shared Minx MCP platform with a finance domain and a structured Core snapshot/history pipeline.
+A personal Life OS built as a set of MCP servers. Domain MCPs own facts (Finance today, Meals and Training planned). Minx Core owns interpretation — it consumes domain events, runs deterministic detectors, and exposes structured snapshots, historical signals, and goal trajectories for any MCP-capable harness to consume.
+
+**Architecture:** Domains emit events → Core builds read models → Detectors generate signals → Harness consumes structured data and owns narrative, coaching, and scheduling. See [architecture design](docs/superpowers/specs/2026-04-06-minx-life-os-architecture-design.md) for the full picture.
+
+**Current state:** Slices 1–2.5 implemented. Finance domain is mature. Core exposes `get_daily_snapshot`, `get_insight_history`, `get_goal_trajectory`, `persist_note`, `goal_parse`, goal CRUD, and `finance_query` (all with dual-path structured + natural language input). 392 tests, mypy clean.
 
 ## Setup
 

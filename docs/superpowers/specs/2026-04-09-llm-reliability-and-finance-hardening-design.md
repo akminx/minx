@@ -1,3 +1,5 @@
+**Status: Implemented (historical).** This spec was implemented in an earlier slice. The codebase has since evolved — see [HANDOFF.md](/Users/akmini/Documents/minx-mcp/HANDOFF.md) for current state.
+
 # Minx LLM Reliability + Finance Hardening Design
 
 **Date:** 2026-04-09

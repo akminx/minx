@@ -1,3 +1,5 @@
+**Status: Completed (historical).** This plan was executed in an earlier slice. The codebase has since evolved — see [HANDOFF.md](/Users/akmini/Documents/minx-mcp/HANDOFF.md) for current state.
+
 # Phase 1 Hardening Follow-Up Notes
 
 **Date:** 2026-04-10

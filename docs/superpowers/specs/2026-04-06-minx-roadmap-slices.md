@@ -94,11 +94,11 @@ This ordering preserves the architecture doc's north star:
 - `detect_category_drift` compares the current elapsed span against the immediately preceding equal-length baseline span and works for category-, merchant-, and account-scoped goals.
 - `daily_review` now returns a protected projection at the MCP boundary rather than the raw internal review artifact.
 
-**Still deferred after Slice 2:**
-- transport-agnostic conversational capture and protected review boundary hardening
-- generalized redaction policy beyond the default protected review contract
-- insight expiration filtering
-- read-model snapshot persistence for reproducibility
+**Still deferred after Slice 2** (status updated after Slice 2.5):
+- ~~transport-agnostic conversational capture~~ → Delivered in Slice 2.1 (`goal_capture`) and refined in Slice 2.5 (`goal_parse`)
+- ~~protected review boundary hardening~~ → Replaced by the MCP/harness split in Slice 2.5. Core returns structured snapshots; the harness owns narrative.
+- insight expiration filtering → Deferred to Slice 6 (Durable Memory)
+- read-model snapshot persistence for reproducibility → Deferred to Slice 6
 
 ---
 
@@ -155,6 +155,12 @@ This ordering preserves the architecture doc's north star:
 **Dependencies:** Slices 1, 2, 2.1
 
 **What stays unchanged:** All Finance MCP tools, all detectors, all read model builders, all domain logic, all shared platform code, all schema migrations.
+
+**Implementation notes:**
+- `goal_capture.py` fully absorbed into `goal_parse.py` (single module, no cross-file private imports).
+- `LLMInterface` and `LLMReviewResult` remain in `models.py` — they are live dependencies of the interpretation pipeline (`llm.py`, `llm_openai.py`), not dead code. The spec's removal directive was incorrect; these types serve the finance query and goal capture LLM paths, not the old review pipeline.
+- `_compute_trend` uses least-squares slope instead of first-vs-last comparison.
+- 392 tests passing, mypy clean on 60 source files.
 
 ---
 
