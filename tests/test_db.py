@@ -78,13 +78,24 @@ def test_database_bootstrap_creates_finance_report_lifecycle_columns(tmp_path):
     assert "idx_finance_report_runs_identity" in indexes
 
 
+def test_database_bootstrap_creates_meals_shopping_list_tables(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    names = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert "meals_shopping_lists" in names
+    assert "meals_shopping_list_items" in names
+
+
 def test_migrations_are_idempotent(tmp_path):
     db_path = tmp_path / "minx.db"
     first = get_connection(db_path)
     first.close()
     second = get_connection(db_path)
     count = second.execute("SELECT COUNT(*) AS c FROM _migrations").fetchone()["c"]
-    assert count == 10
+    expected = len(list(migration_dir().glob("*.sql")))
+    assert count == expected
 
 
 def test_finance_seed_rows_exist(tmp_path):
@@ -120,7 +131,8 @@ def test_apply_migrations_handles_plain_sqlite_connections(tmp_path):
     db_module.apply_migrations(conn)
 
     count = conn.execute("SELECT COUNT(*) FROM _migrations").fetchone()[0]
-    assert count == 10
+    expected = len(list(migration_dir().glob("*.sql")))
+    assert count == expected
     assert conn.row_factory is original_row_factory
 
 
@@ -321,6 +333,7 @@ def test_built_wheel_includes_packaged_migrations(tmp_path):
     assert "minx_mcp/schema/migrations/008_finance_phase2.sql" in names
     assert "minx_mcp/schema/migrations/009_cleanup.sql" in names
     assert "minx_mcp/schema/migrations/010_meals.sql" in names
+    assert "minx_mcp/schema/migrations/011_meals_shopping_lists.sql" in names
 
 
 def test_missing_migrations_preserve_row_factory(tmp_path, monkeypatch):

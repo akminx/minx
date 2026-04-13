@@ -48,6 +48,21 @@ async def test_full_meals_pipeline(tmp_path) -> None:
         "Grilled Salmon",
     ]
     assert result.shopping_lists_generated == []
+
+    with MealsService(db_path, vault_root=vault) as svc:
+        shopping_list = svc.generate_shopping_list(result.recommendations[1].recipe_id)
+        (recipes_dir / "Grilled Salmon.md").write_text(
+            "---\ntitle: Grilled Salmon\ntags: [dinner]\n---\n"
+            "## Ingredients\n- 1 salmon fillet\n- pinch salt\n"
+        )
+        svc.index_recipe("Recipes/Grilled Salmon.md")
+        reloaded = svc.get_shopping_list(shopping_list.id)
+
+    assert shopping_list.recipe_title == "Grilled Salmon"
+    assert [item.normalized_name for item in shopping_list.items] == ["salmon fillet"]
+    assert [item.normalized_name for item in reloaded.items] == ["salmon fillet"]
+    assert all(item.recipe_ingredient_id is None for item in reloaded.items)
+
     assert snapshot.nutrition is not None
     assert snapshot.nutrition.meal_count == 1
     assert "nutrition.low_protein" in {signal.insight_type for signal in snapshot.signals}

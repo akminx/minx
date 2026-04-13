@@ -104,12 +104,22 @@ def create_meals_server(service: MealsService) -> FastMCP:
             }
         )
 
+    @mcp.tool(name="recipe_detail")
+    def recipe_detail(recipe_id: int) -> dict[str, object]:
+        return wrap_tool_call(lambda: {"recipe": asdict(service.get_recipe(recipe_id))})
+
     @mcp.tool(name="recommend_recipes")
     def recommend_recipes(include_needs_shopping: bool = False) -> dict[str, object]:
         return wrap_tool_call(
             lambda: asdict(
                 recommend(service.conn, include_needs_shopping=include_needs_shopping)
             )
+        )
+
+    @mcp.tool(name="shopping_list_generate")
+    def shopping_list_generate(recipe_id: int) -> dict[str, object]:
+        return wrap_tool_call(
+            lambda: {"shopping_list": asdict(service.generate_shopping_list(recipe_id))}
         )
 
     return mcp

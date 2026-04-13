@@ -32,4 +32,41 @@ def test_recommend_recipes_default_filters_needs_shopping(db_conn, meals_seeder)
         "Grilled Salmon",
     ]
     assert expanded.shopping_lists_generated == []
+    count = db_conn.execute("SELECT COUNT(*) FROM meals_shopping_lists").fetchone()[0]
+    assert count == 0
 
+
+def test_recommend_recipes_includes_richer_recipe_metadata(db_conn, meals_seeder) -> None:
+    recipe_id = meals_seeder.recipe(
+        vault_path="Recipes/Salmon.md",
+        title="Salmon Dinner",
+        image_ref="Assets/salmon.jpg",
+        source_url="https://example.com/salmon",
+    )
+    db_conn.execute(
+        """
+        UPDATE meals_recipes
+        SET prep_time_minutes = 10,
+            cook_time_minutes = 20,
+            servings = 2,
+            notes = 'Serve with lemon',
+            nutrition_summary_json = '{"calories": 500}'
+        WHERE id = ?
+        """,
+        (recipe_id,),
+    )
+    db_conn.commit()
+    meals_seeder.recipe_ingredient(
+        recipe_id=recipe_id,
+        display_text="1 salmon fillet",
+        normalized_name="salmon fillet",
+    )
+
+    result = recommend_recipes(db_conn, include_needs_shopping=True)
+
+    recipe = result.recommendations[0].recipe
+    assert recipe.prep_time_minutes == 10
+    assert recipe.cook_time_minutes == 20
+    assert recipe.servings == 2
+    assert recipe.notes == "Serve with lemon"
+    assert recipe.nutrition_summary == {"calories": 500}

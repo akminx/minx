@@ -9,9 +9,19 @@ from typing import Self
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import emit_event
 from minx_mcp.db import get_connection
-from minx_mcp.meals.models import MealEntry, PantryItem, Recipe, RecipeIngredient, RecipeSubstitution
+from minx_mcp.meals.models import (
+    MealEntry,
+    PantryItem,
+    Recipe,
+    RecipeIngredient,
+    RecipeSubstitution,
+    ShoppingList,
+    ShoppingListItem,
+)
 from minx_mcp.meals.pantry import normalize_ingredient, pantry_item_from_row
 from minx_mcp.meals.recipes import parse_recipe_note
+from minx_mcp.meals.shopping import missing_shopping_items
+from minx_mcp.vault_writer import VaultWriter
 
 EVENT_SOURCE = "meals.service"
 VALID_MEAL_KINDS = {"breakfast", "lunch", "dinner", "snack", "other"}
@@ -348,6 +358,116 @@ class MealsService:
         ).fetchall()
         return [_recipe_from_row(row, self._ingredients(int(row["id"])), self._substitutions(int(row["id"]))) for row in rows]
 
+    def generate_shopping_list(self, recipe_id: int) -> ShoppingList:
+        recipe = self.get_recipe(recipe_id)
+        drafts = missing_shopping_items(recipe, self.list_pantry_items())
+        if not drafts:
+            raise InvalidInputError(f"recipe {recipe_id} does not need a shopping list")
+
+        shopping_list_id = 0
+        artifact_path: str | None = None
+        try:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO meals_shopping_lists (recipe_id, title)
+                VALUES (?, ?)
+                """,
+                (recipe_id, f"Shopping List: {recipe.title}"),
+            )
+            shopping_list_id = int(cursor.lastrowid or 0)
+            for draft in drafts:
+                self.conn.execute(
+                    """
+                    INSERT INTO meals_shopping_list_items (
+                        shopping_list_id, recipe_ingredient_id, display_text, normalized_name,
+                        quantity, unit, pantry_quantity, missing_quantity, pantry_unit, notes, sort_order
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        shopping_list_id,
+                        draft.ingredient.id,
+                        draft.ingredient.display_text,
+                        draft.ingredient.normalized_name,
+                        draft.ingredient.quantity,
+                        draft.ingredient.unit,
+                        draft.pantry_quantity,
+                        draft.missing_quantity,
+                        draft.pantry_unit,
+                        draft.notes,
+                        draft.ingredient.sort_order,
+                    ),
+                )
+
+            if self._vault_root is not None:
+                shopping_list = self.get_shopping_list(shopping_list_id)
+                artifact_path = self._write_shopping_list_artifact(shopping_list, recipe.vault_path)
+                if artifact_path is not None:
+                    self.conn.execute(
+                        """
+                        UPDATE meals_shopping_lists
+                        SET vault_path = ?, updated_at = datetime('now')
+                        WHERE id = ?
+                        """,
+                        (artifact_path, shopping_list_id),
+                    )
+            self.conn.commit()
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            if artifact_path is not None and self._vault_root is not None:
+                artifact_file = (self._vault_root / artifact_path).resolve()
+                if artifact_file.exists():
+                    artifact_file.unlink()
+            raise
+        return self.get_shopping_list(shopping_list_id)
+
+    def get_shopping_list(self, shopping_list_id: int) -> ShoppingList:
+        row = self.conn.execute(
+            """
+            SELECT l.id, l.recipe_id, r.title AS recipe_title, l.title, l.vault_path, l.status, l.created_at
+            FROM meals_shopping_lists l
+            JOIN meals_recipes r ON r.id = l.recipe_id
+            WHERE l.id = ?
+            """,
+            (shopping_list_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"shopping list {shopping_list_id} not found")
+        return _shopping_list_from_row(row, self._shopping_list_items(shopping_list_id))
+
+    def _shopping_list_items(self, shopping_list_id: int) -> list[ShoppingListItem]:
+        rows = self.conn.execute(
+            """
+            SELECT id, shopping_list_id, recipe_ingredient_id, display_text, normalized_name,
+                   quantity, unit, pantry_quantity, missing_quantity, pantry_unit, notes, sort_order
+            FROM meals_shopping_list_items
+            WHERE shopping_list_id = ?
+            ORDER BY sort_order ASC, id ASC
+            """,
+            (shopping_list_id,),
+        ).fetchall()
+        return [_shopping_list_item_from_row(row) for row in rows]
+
+    def _write_shopping_list_artifact(
+        self,
+        shopping_list: ShoppingList,
+        recipe_vault_path: str,
+    ) -> str | None:
+        if self._vault_root is None:
+            return None
+
+        writer = VaultWriter(self._vault_root, ("Generated",))
+        vault_path = f"Generated/Shopping Lists/shopping-list-{shopping_list.id}.md"
+        body = "\n".join(f"- [ ] {_shopping_item_text(item)}" for item in shopping_list.items)
+        content = (
+            f"# {shopping_list.title}\n\n"
+            f"Source recipe: {recipe_vault_path}\n\n"
+            f"{body}\n"
+        )
+        writer.write_markdown(vault_path, content)
+        return vault_path
+
     def _get_meal_entry(self, meal_id: int) -> MealEntry:
         row = self.conn.execute(
             """
@@ -473,3 +593,58 @@ def _recipe_from_row(
         ingredients=ingredients,
         substitutions=substitutions,
     )
+
+
+def _shopping_list_from_row(row: Row, items: list[ShoppingListItem]) -> ShoppingList:
+    return ShoppingList(
+        id=int(row["id"]),
+        recipe_id=int(row["recipe_id"]),
+        recipe_title=str(row["recipe_title"]),
+        title=str(row["title"]),
+        vault_path=row["vault_path"],
+        status=str(row["status"]),
+        created_at=str(row["created_at"]),
+        items=items,
+    )
+
+
+def _shopping_list_item_from_row(row: Row) -> ShoppingListItem:
+    return ShoppingListItem(
+        id=int(row["id"]),
+        shopping_list_id=int(row["shopping_list_id"]),
+        recipe_ingredient_id=(
+            int(row["recipe_ingredient_id"])
+            if row["recipe_ingredient_id"] is not None
+            else None
+        ),
+        display_text=str(row["display_text"]),
+        normalized_name=str(row["normalized_name"]),
+        quantity=float(row["quantity"]) if row["quantity"] is not None else None,
+        unit=row["unit"],
+        pantry_quantity=(
+            float(row["pantry_quantity"]) if row["pantry_quantity"] is not None else None
+        ),
+        missing_quantity=(
+            float(row["missing_quantity"]) if row["missing_quantity"] is not None else None
+        ),
+        pantry_unit=row["pantry_unit"],
+        notes=row["notes"],
+        sort_order=int(row["sort_order"]),
+    )
+
+
+def _shopping_item_text(item: ShoppingListItem) -> str:
+    if item.missing_quantity is None:
+        return item.display_text
+    amount = _format_amount(item.missing_quantity)
+    if item.unit is not None and item.unit.strip():
+        amount_text = f"{amount}{item.unit.strip()}"
+    else:
+        amount_text = amount
+    return f"{amount_text} {item.normalized_name}"
+
+
+def _format_amount(value: float) -> str:
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:g}"

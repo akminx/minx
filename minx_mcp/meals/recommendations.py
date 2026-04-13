@@ -167,6 +167,11 @@ def _recommendation_for_recipe(
             image_ref=recipe.image_ref,
             tags=recipe.tags,
             source_url=recipe.source_url,
+            prep_time_minutes=recipe.prep_time_minutes,
+            cook_time_minutes=recipe.cook_time_minutes,
+            servings=recipe.servings,
+            notes=recipe.notes,
+            nutrition_summary=recipe.nutrition_summary,
         ),
     )
 

@@ -93,6 +93,11 @@ class RecipeMetadata:
     image_ref: str | None
     tags: list[str]
     source_url: str | None
+    prep_time_minutes: int | None
+    cook_time_minutes: int | None
+    servings: int | None
+    notes: str | None
+    nutrition_summary: dict[str, object] | None
 
 
 @dataclass(frozen=True)
@@ -118,3 +123,30 @@ class RecommendationResult:
     included_classes: list[str]
     shopping_lists_generated: list[object] = field(default_factory=list)
 
+
+@dataclass(frozen=True)
+class ShoppingListItem:
+    id: int
+    shopping_list_id: int
+    recipe_ingredient_id: int | None
+    display_text: str
+    normalized_name: str
+    quantity: float | None
+    unit: str | None
+    pantry_quantity: float | None
+    missing_quantity: float | None
+    pantry_unit: str | None
+    notes: str | None
+    sort_order: int
+
+
+@dataclass(frozen=True)
+class ShoppingList:
+    id: int
+    recipe_id: int
+    recipe_title: str
+    title: str
+    vault_path: str | None
+    status: str
+    created_at: str
+    items: list[ShoppingListItem] = field(default_factory=list)
