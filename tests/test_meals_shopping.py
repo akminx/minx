@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from minx_mcp.contracts import InvalidInputError
@@ -120,6 +122,26 @@ def test_missing_shopping_items_aggregates_duplicate_pantry_quantities() -> None
         pantry_items=[
             _pantry("salmon", quantity=100, unit="g"),
             _pantry("salmon", quantity=250, unit="g"),
+        ],
+    )
+
+    assert items == []
+
+
+def test_missing_shopping_items_treats_mixed_units_as_not_comparable() -> None:
+    pasta = _ingredient(
+        ingredient_id=1,
+        display_text="400g pasta",
+        normalized_name="pasta",
+        quantity=400,
+        unit="g",
+    )
+
+    items = missing_shopping_items(
+        _recipe([pasta]),
+        pantry_items=[
+            _pantry("pasta", quantity=200, unit="g"),
+            _pantry("pasta", quantity=1, unit="cup"),
         ],
     )
 
@@ -266,6 +288,80 @@ def test_generate_shopping_list_writes_vault_artifact_when_vault_configured(
     text = artifact.read_text()
     assert "Salmon Dinner" in text
     assert "200g salmon" in text
+
+
+def test_generate_shopping_list_artifact_uses_display_friendly_name_for_missing_delta(
+    db_path, tmp_path, meals_seeder
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    recipe_id = meals_seeder.recipe(vault_path="Recipes/Hummus.md", title="Hummus Bowl")
+    meals_seeder.recipe_ingredient(
+        recipe_id=recipe_id,
+        display_text="1 cup chickpeas",
+        normalized_name="chickpea",
+        quantity=1,
+        unit="cup",
+    )
+    meals_seeder.pantry_item(
+        display_name="Chickpeas",
+        normalized_name="chickpea",
+        quantity=0.5,
+        unit="cup",
+    )
+
+    with MealsService(db_path, vault_root=vault) as service:
+        shopping_list = service.generate_shopping_list(recipe_id)
+
+    artifact = vault / (shopping_list.vault_path or "")
+    text = artifact.read_text()
+    assert "- [ ] 0.5cup chickpeas" in text
+
+
+def test_generate_shopping_list_removes_artifact_on_db_failure(
+    db_path, tmp_path, meals_seeder
+) -> None:
+    class _FailingConnection:
+        def __init__(self, wrapped: sqlite3.Connection) -> None:
+            self._wrapped = wrapped
+
+        @property
+        def in_transaction(self) -> bool:
+            return self._wrapped.in_transaction
+
+        def execute(self, sql: str, params=()):
+            if "UPDATE meals_shopping_lists" in sql:
+                raise sqlite3.DatabaseError("forced update failure")
+            return self._wrapped.execute(sql, params)
+
+        def commit(self) -> None:
+            self._wrapped.commit()
+
+        def rollback(self) -> None:
+            self._wrapped.rollback()
+
+        def __getattr__(self, name: str):
+            return getattr(self._wrapped, name)
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    recipe_id = meals_seeder.recipe(vault_path="Recipes/Salmon.md", title="Salmon Dinner")
+    meals_seeder.recipe_ingredient(
+        recipe_id=recipe_id,
+        display_text="200g salmon",
+        normalized_name="salmon",
+        quantity=200,
+        unit="g",
+    )
+
+    with MealsService(db_path, vault_root=vault) as service:
+        wrapped = service.conn
+        service._local.conn = _FailingConnection(wrapped)
+        with pytest.raises(sqlite3.DatabaseError, match="forced update failure"):
+            service.generate_shopping_list(recipe_id)
+
+    artifact_dir = vault / "Generated" / "Shopping Lists"
+    assert not artifact_dir.exists() or not any(artifact_dir.iterdir())
 
 
 def test_generated_shopping_list_survives_recipe_reindex(db_path, tmp_path, meals_seeder) -> None:

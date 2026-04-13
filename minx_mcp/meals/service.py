@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from pathlib import Path
 from sqlite3 import Connection, Row
@@ -25,6 +26,7 @@ from minx_mcp.vault_writer import VaultWriter
 
 EVENT_SOURCE = "meals.service"
 VALID_MEAL_KINDS = {"breakfast", "lunch", "dinner", "snack", "other"}
+logger = logging.getLogger(__name__)
 
 
 class MealsService:
@@ -417,8 +419,11 @@ class MealsService:
                 self.conn.rollback()
             if artifact_path is not None and self._vault_root is not None:
                 artifact_file = (self._vault_root / artifact_path).resolve()
-                if artifact_file.exists():
-                    artifact_file.unlink()
+                try:
+                    if artifact_file.exists():
+                        artifact_file.unlink()
+                except OSError:
+                    logger.exception("Failed to clean up shopping list artifact after rollback")
             raise
         return self.get_shopping_list(shopping_list_id)
 
@@ -641,10 +646,31 @@ def _shopping_item_text(item: ShoppingListItem) -> str:
         amount_text = f"{amount}{item.unit.strip()}"
     else:
         amount_text = amount
-    return f"{amount_text} {item.normalized_name}"
+    return f"{amount_text} {_shopping_item_name(item)}"
 
 
 def _format_amount(value: float) -> str:
     if value.is_integer():
         return str(int(value))
     return f"{value:g}"
+
+
+def _shopping_item_name(item: ShoppingListItem) -> str:
+    display = item.display_text.strip()
+    if not display:
+        return item.normalized_name
+    if item.quantity is None:
+        return display
+
+    quantity_text = _format_amount(item.quantity)
+    unit_text = item.unit.strip() if item.unit is not None else ""
+    prefixes = [quantity_text]
+    if unit_text:
+        prefixes = [f"{quantity_text}{unit_text}", f"{quantity_text} {unit_text}", quantity_text]
+    for prefix in prefixes:
+        token = f"{prefix} "
+        if display.lower().startswith(token.lower()):
+            trimmed = display[len(token):].strip()
+            if trimmed:
+                return trimmed
+    return display
