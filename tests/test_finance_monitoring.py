@@ -76,3 +76,35 @@ def test_finance_monitoring_includes_categories_that_only_exist_in_prior_period(
     assert changes["Dining Out"]["current_total_spent"] == 0.0
     assert changes["Dining Out"]["prior_total_spent"] == 30.0
     assert changes["Dining Out"]["delta_spent"] == -30.0
+
+
+def test_finance_monitoring_includes_transaction_on_period_end_date(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    dcu_id = service.conn.execute(
+        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
+    ).fetchone()["id"]
+    groceries_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    service.conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, ?, 'csv', 'seed.csv', 'fp')
+        """,
+        (dcu_id,),
+    )
+    service.conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (?, 1, ?, ?, ?, ?, ?, 'manual')
+        """,
+        (dcu_id, "2026-03-31", "Last day groceries", "H-E-B", -5000, groceries_id),
+    )
+    service.conn.commit()
+
+    result = service.finance_monitoring(period_start="2026-03-01", period_end="2026-03-31")
+
+    top = {row["category_name"]: row for row in result["top_categories"]}
+    assert "Groceries" in top
+    assert top["Groceries"]["total_spent"] == 50.0

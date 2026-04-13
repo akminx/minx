@@ -36,6 +36,12 @@ class UncategorizedSummary:
 
 
 @dataclass(frozen=True)
+class IncomeSummary:
+    total_income_cents: int
+    by_source: list[MerchantSpending]
+
+
+@dataclass(frozen=True)
 class ImportJobIssue:
     job_id: str
     issue_kind: str
@@ -286,6 +292,55 @@ class FinanceReadAPI:
         )
         row = self._db.execute(sql, params).fetchone()
         return int(row["value"])
+
+    def get_income_summary(self, start_date: str, end_date: str) -> IncomeSummary:
+        end_exclusive = _next_day(end_date)
+        total_row = self._db.execute(
+            """
+            SELECT COALESCE(SUM(amount_cents), 0) AS total_income_cents
+            FROM finance_transactions
+            WHERE posted_at >= ? AND posted_at < ?
+              AND amount_cents > 0
+            """,
+            (start_date, end_exclusive),
+        ).fetchone()
+        by_source = [
+            MerchantSpending(
+                merchant=str(row["merchant"]),
+                total_spent_cents=int(row["total_income_cents"]),
+                transaction_count=int(row["transaction_count"]),
+            )
+            for row in self._db.execute(
+                """
+                SELECT
+                    COALESCE(merchant, description, 'Unknown') AS merchant,
+                    COALESCE(SUM(amount_cents), 0) AS total_income_cents,
+                    COUNT(*) AS transaction_count
+                FROM finance_transactions
+                WHERE posted_at >= ? AND posted_at < ?
+                  AND amount_cents > 0
+                GROUP BY COALESCE(merchant, description, 'Unknown')
+                ORDER BY total_income_cents DESC, merchant ASC
+                """,
+                (start_date, end_exclusive),
+            ).fetchall()
+        ]
+        return IncomeSummary(
+            total_income_cents=int(total_row["total_income_cents"]),
+            by_source=by_source,
+        )
+
+    def get_net_flow(self, start_date: str, end_date: str) -> int:
+        end_exclusive = _next_day(end_date)
+        row = self._db.execute(
+            """
+            SELECT COALESCE(SUM(amount_cents), 0) AS net_flow
+            FROM finance_transactions
+            WHERE posted_at >= ? AND posted_at < ?
+            """,
+            (start_date, end_exclusive),
+        ).fetchone()
+        return int(row["net_flow"])
 
 
 def _build_filtered_expense_query(

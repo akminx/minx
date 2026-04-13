@@ -8,6 +8,7 @@ also keeps ``schema/migrations`` as a mirror—tests enforce matching filenames 
 normalized SQL contents.
 """
 
+import hashlib
 import re
 import sqlite3
 import time
@@ -58,24 +59,39 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
             """
             CREATE TABLE IF NOT EXISTS _migrations (
                 name TEXT PRIMARY KEY,
-                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+                checksum TEXT
             )
             """
         )
+        existing_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(_migrations)").fetchall()
+        }
+        if "checksum" not in existing_cols:
+            conn.execute("ALTER TABLE _migrations ADD COLUMN checksum TEXT")
         applied = {
-            row[0]
-            for row in conn.execute("SELECT name FROM _migrations").fetchall()
+            row["name"]: row["checksum"]
+            for row in conn.execute("SELECT name, checksum FROM _migrations").fetchall()
         }
         for path in paths:
+            content = path.read_text()
+            checksum = hashlib.sha256(content.encode()).hexdigest()
             if path.name in applied:
+                stored = applied[path.name]
+                if stored is not None and stored != checksum:
+                    raise RuntimeError(
+                        f"Migration {path.name} has been modified after application "
+                        f"(expected {stored[:12]}…, got {checksum[:12]}…)"
+                    )
                 continue
-            for statement in _split_sql_script(path.read_text()):
+            for statement in _split_sql_script(content):
                 conn.execute(statement)
             conn.execute(
-                "INSERT INTO _migrations (name) VALUES (?)",
-                (path.name,),
+                "INSERT INTO _migrations (name, checksum) VALUES (?, ?)",
+                (path.name, checksum),
             )
-            applied.add(path.name)
+            applied[path.name] = checksum
         conn.commit()
     except Exception:
         if conn.in_transaction:

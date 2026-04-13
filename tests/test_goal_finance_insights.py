@@ -52,7 +52,7 @@ async def test_goal_finance_insight_flags_monthly_spending_cap_risk(tmp_path):
         occurred_at="2026-03-15T12:00:00Z",
         entity_ref="1",
         source="test",
-        payload={"transaction_count": 1, "account_name": "DCU", "source_kind": "csv", "total_cents": -6800},
+        payload={"transaction_count": 1, "account_name": "DCU", "account_id": dcu_id, "job_id": "job-1", "source_kind": "csv", "total_cents": -6800},
     )
     conn.commit()
 
@@ -111,7 +111,7 @@ async def test_goal_finance_insight_skips_late_period_goals_that_are_still_on_pa
         occurred_at="2026-03-30T12:00:00Z",
         entity_ref="1",
         source="test",
-        payload={"transaction_count": 1, "account_name": "DCU", "source_kind": "csv", "total_cents": -6800},
+        payload={"transaction_count": 1, "account_name": "DCU", "account_id": dcu_id, "job_id": "job-1", "source_kind": "csv", "total_cents": -6800},
     )
     conn.commit()
 

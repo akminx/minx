@@ -2,11 +2,26 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
+from minx_mcp.core._utils import slugify
+from minx_mcp.core.goal_detectors import (
+    detect_category_drift,
+    detect_goal_drift,
+    detect_goal_finance_risks,
+)
 from minx_mcp.core.models import InsightCandidate, OpenLoop, ReadModels
 from minx_mcp.money import format_cents
 
 DetectorFn = Callable[[ReadModels], list[InsightCandidate]]
+
+
+@dataclass(frozen=True)
+class Detector:
+    key: str
+    fn: DetectorFn
+    enabled_by_default: bool = True
+    tags: frozenset[str] = field(default_factory=frozenset)
 
 
 def detect_spending_spike(read_models: ReadModels) -> list[InsightCandidate]:
@@ -37,7 +52,7 @@ def detect_spending_spike(read_models: ReadModels) -> list[InsightCandidate]:
         if primary_category is None
         else f"Spending is up {change_pct:.1f}% versus last week, led by {primary_category}."
     )
-    dedupe_bucket = _slugify(primary_category or "overall")
+    dedupe_bucket = slugify(primary_category or "overall")
     return [
         InsightCandidate(
             insight_type="finance.spending_spike",
@@ -74,18 +89,12 @@ def detect_open_loops(read_models: ReadModels) -> list[InsightCandidate]:
     return insights
 
 
-from minx_mcp.core.goal_detectors import (
-    detect_category_drift,
-    detect_goal_drift,
-    detect_goal_finance_risks,
-)
-
-DETECTORS: list[DetectorFn] = [
-    detect_spending_spike,
-    detect_open_loops,
-    detect_goal_drift,
-    detect_category_drift,
-    detect_goal_finance_risks,
+DETECTORS: list[Detector] = [
+    Detector(key="finance.spending_spike", fn=detect_spending_spike, tags=frozenset({"finance"})),
+    Detector(key="finance.open_loops", fn=detect_open_loops, tags=frozenset({"finance"})),
+    Detector(key="core.goal_drift", fn=detect_goal_drift, tags=frozenset({"goals"})),
+    Detector(key="finance.category_drift", fn=detect_category_drift, tags=frozenset({"finance", "goals"})),
+    Detector(key="finance.goal_risk", fn=detect_goal_finance_risks, tags=frozenset({"finance", "goals"})),
 ]
 
 
@@ -107,10 +116,6 @@ def _percentage(part: int, total: int) -> float:
     return (part / total) * 100
 
 
-def _slugify(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-
-
 def _open_loop_dedupe_key(review_date: str, loop: OpenLoop) -> str:
     if loop.loop_type == "uncategorized_transactions":
         identity = "uncategorized"
@@ -122,5 +127,5 @@ def _open_loop_dedupe_key(review_date: str, loop: OpenLoop) -> str:
 def _extract_job_identity(description: str) -> str:
     match = re.search(r"\bjob\s+([A-Za-z0-9._:-]+)\b", description)
     if match:
-        return f"import-job-{_slugify(match.group(1))}"
-    return f"loop-{_slugify(description)}"
+        return f"import-job-{slugify(match.group(1))}"
+    return f"loop-{slugify(description)}"

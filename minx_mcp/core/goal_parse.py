@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date, timedelta
+
+logger = logging.getLogger(__name__)
 from typing import cast
 
 from minx_mcp.contracts import InvalidInputError
@@ -117,7 +120,8 @@ async def _capture_with_llm(
     prompt = _render_goal_capture_prompt(message, review_date, finance_api, goals)
     try:
         interpretation = await _run_goal_capture_interpretation(llm, prompt)
-    except Exception:
+    except Exception as exc:
+        logger.warning("LLM goal capture failed, falling back to regex: %s", type(exc).__name__)
         return None
 
     if interpretation.intent == "update":

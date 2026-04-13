@@ -227,12 +227,12 @@ def test_detector_dedupe_keys_remain_stable_when_summary_wording_changes():
 def test_detectors_registry_is_in_spec_order():
     from minx_mcp.core.detectors import DETECTORS
 
-    assert [detector.__name__ for detector in DETECTORS] == [
-        "detect_spending_spike",
-        "detect_open_loops",
-        "detect_goal_drift",
-        "detect_category_drift",
-        "detect_goal_finance_risks",
+    assert [detector.key for detector in DETECTORS] == [
+        "finance.spending_spike",
+        "finance.open_loops",
+        "core.goal_drift",
+        "finance.category_drift",
+        "finance.goal_risk",
     ]
 
 
@@ -345,8 +345,8 @@ def test_detect_category_drift_returns_warning_for_real_baseline_increase():
                 title="Groceries under $400",
                 metric_type="sum_below",
                 target_value=40_000,
-                actual_value=20_000,
-                remaining_value=20_000,
+                actual_value=12_500,
+                remaining_value=27_500,
                 current_start="2026-03-01",
                 current_end="2026-03-31",
                 status="on_track",

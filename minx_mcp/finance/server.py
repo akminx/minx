@@ -400,8 +400,8 @@ async def _finance_query(
     if intent is None and effective_message is None:
         raise InvalidInputError("finance_query requires either structured or natural input")
 
-    with service:
-        if intent is not None:
+    if intent is not None:
+        with service:
             validated_filters = _validate_structured_finance_filters(service, filters)
             return _execute_finance_query_plan(
                 service,
@@ -412,36 +412,40 @@ async def _finance_query(
                 limit=limit,
             )
 
-        assert effective_message is not None
-        _require_non_empty("message" if message is not None else "natural_query", effective_message)
-        effective_review_date = review_date or date.today().isoformat()
-        _validate_iso_date(effective_review_date, field_name="review_date")
-        resolved_llm = _resolve_finance_query_llm(service, llm)
-        plan = await interpret_finance_query(
-            message=effective_message,
-            review_date=effective_review_date,
-            finance_api=service,
-            llm=resolved_llm,
-        )
-        if plan.needs_clarification:
-            return {
-                "result_type": "clarify",
-                "intent": plan.intent,
-                "filters": plan.filters.to_public_dict(),
-                "confidence": plan.confidence,
-                "clarification_type": plan.clarification_type,
-                "question": plan.question,
-                "options": plan.options,
-            }
+    assert effective_message is not None
+    _require_non_empty("message" if message is not None else "natural_query", effective_message)
+    effective_review_date = review_date or date.today().isoformat()
+    _validate_iso_date(effective_review_date, field_name="review_date")
+    resolved_llm = _resolve_finance_query_llm(service, llm)
 
-        validated_filters = plan.filters.to_public_dict()
-        _validate_date_range(validated_filters.get("start_date"), validated_filters.get("end_date"))
-        _validate_optional_text_filters(
-            category_name=validated_filters.get("category_name"),
-            merchant=validated_filters.get("merchant"),
-            account_name=validated_filters.get("account_name"),
-            description_contains=validated_filters.get("description_contains"),
-        )
+    # Interpret with LLM outside the connection context — the LLM call
+    # may block for up to 30s and does not need the DB connection held open.
+    plan = await interpret_finance_query(
+        message=effective_message,
+        review_date=effective_review_date,
+        finance_api=service,
+        llm=resolved_llm,
+    )
+    if plan.needs_clarification:
+        return {
+            "result_type": "clarify",
+            "intent": plan.intent,
+            "filters": plan.filters.to_public_dict(),
+            "confidence": plan.confidence,
+            "clarification_type": plan.clarification_type,
+            "question": plan.question,
+            "options": plan.options,
+        }
+
+    validated_filters = plan.filters.to_public_dict()
+    _validate_date_range(validated_filters.get("start_date"), validated_filters.get("end_date"))
+    _validate_optional_text_filters(
+        category_name=validated_filters.get("category_name"),
+        merchant=validated_filters.get("merchant"),
+        account_name=validated_filters.get("account_name"),
+        description_contains=validated_filters.get("description_contains"),
+    )
+    with service:
         return _execute_finance_query_plan(
             service,
             intent=plan.intent,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from sqlite3 import Connection
+from typing import Any
 
 from minx_mcp.core.events import Event, query_events
 from minx_mcp.core.goal_progress import build_goal_progress
@@ -27,8 +28,8 @@ def build_daily_timeline(conn: Connection, review_date: str) -> DailyTimeline:
         start=review_date,
         end=review_date,
         timezone=timezone_name,
+        sensitivity="normal",
     )
-    review_events = [event for event in events if event.sensitivity == "normal"]
     entries = [
         TimelineEntry(
             occurred_at=event.occurred_at,
@@ -37,7 +38,7 @@ def build_daily_timeline(conn: Connection, review_date: str) -> DailyTimeline:
             summary=_summarize_event(event),
             entity_ref=event.entity_ref,
         )
-        for event in review_events
+        for event in events
     ]
     return DailyTimeline(date=review_date, entries=entries)
 
@@ -46,10 +47,12 @@ def build_spending_snapshot(
     conn: Connection,
     review_date: str,
     finance_api: FinanceReadInterface | None = None,
+    uncategorized: Any | None = None,
 ) -> SpendingSnapshot:
     finance_api = finance_api or FinanceReadAPI(conn)
     summary = finance_api.get_spending_summary(review_date, review_date)
-    uncategorized = finance_api.get_uncategorized(review_date, review_date)
+    if uncategorized is None:
+        uncategorized = finance_api.get_uncategorized(review_date, review_date)
 
     current_end = date.fromisoformat(review_date)
     current_start = (current_end - timedelta(days=6)).isoformat()
@@ -90,9 +93,11 @@ def build_open_loops_snapshot(
     conn: Connection,
     review_date: str,
     finance_api: FinanceReadInterface | None = None,
+    uncategorized: Any | None = None,
 ) -> OpenLoopsSnapshot:
     finance_api = finance_api or FinanceReadAPI(conn)
-    uncategorized = finance_api.get_uncategorized(review_date, review_date)
+    if uncategorized is None:
+        uncategorized = finance_api.get_uncategorized(review_date, review_date)
     import_job_issues = finance_api.get_import_job_issues()
 
     loops: list[OpenLoop] = []
@@ -138,10 +143,15 @@ def build_read_models(
 ) -> ReadModels:
     finance_api = finance_api or FinanceReadAPI(conn)
     goals = GoalService(conn).list_active_goals(review_date)
+    uncategorized = finance_api.get_uncategorized(review_date, review_date)
     return ReadModels(
         timeline=build_daily_timeline(conn, review_date),
-        spending=build_spending_snapshot(conn, review_date, finance_api=finance_api),
-        open_loops=build_open_loops_snapshot(conn, review_date, finance_api=finance_api),
+        spending=build_spending_snapshot(
+            conn, review_date, finance_api=finance_api, uncategorized=uncategorized,
+        ),
+        open_loops=build_open_loops_snapshot(
+            conn, review_date, finance_api=finance_api, uncategorized=uncategorized,
+        ),
         goal_progress=build_goal_progress(review_date, goals, finance_api),
         finance_api=finance_api,
     )

@@ -69,7 +69,9 @@ def _build_snapshot_models(
 def _run_detectors(read_models: ReadModels) -> list[InsightCandidate]:
     insights: list[InsightCandidate] = []
     for detector in DETECTORS:
-        insights.extend(detector(read_models))
+        if not detector.enabled_by_default:
+            continue
+        insights.extend(detector.fn(read_models))
     return insights
 
 

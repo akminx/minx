@@ -68,6 +68,8 @@ For this slice, that means:
 
 This is not a request to build a general domain plugin system. It is a request to make the platform contracts that already exist less Finance-shaped before Meals depends on them.
 
+The composable event registry should follow the pyeventsourcing pattern: each domain declares its event payload models in a domain-owned mapping (e.g., `FINANCE_EVENT_PAYLOADS`, `MEALS_EVENT_PAYLOADS`), and the shared event module composes them into `PAYLOAD_MODELS` at import time. This replaces the current single hardcoded dict in `events.py` without requiring a plugin framework. The existing `PAYLOAD_UPCASTERS` dict already supports per-event-type upcasting chains and needs no structural change.
+
 ## Phase 1: Meals Foundation
 
 Create `minx_mcp/meals/` as a first-class package with a thin MCP server, service layer, SQLite persistence, Obsidian recipe indexing helpers, and a Core-facing read API.
@@ -110,6 +112,16 @@ Add a Meals migration after the current numbered migrations. The migration shoul
 - `meals_shopping_lists` and `meals_shopping_list_items`: Phase 3 generated-artifact metadata tables. Do not add them in the first implementation slice unless a migration compatibility decision makes that simpler than adding them later.
 
 Shopping lists are generated artifacts, not source-of-truth inventory.
+
+### Data Model Guidance (informed by PANTS recipe composition pattern)
+
+The Meals data model should maintain a clear separation between three entity levels:
+
+1. **Ingredient** — nutritional truth per normalized unit (e.g., per 100g). This is the atomic building block. Ingredients are identified by a normalized name and carry base nutrition data. This maps to the `meals_pantry_items` and `meals_recipe_ingredients` tables.
+2. **Recipe** — aggregates ingredients by weight/quantity into a composite. Nutrition rolls up through composition. A recipe can reference other recipes as sub-components (e.g., a sauce used in a main dish), though recursive composition is deferred to Phase 4.
+3. **LoggedMeal** — a temporal event recording what was actually consumed. References recipes or ad-hoc food items, with portion adjustment. This maps to `meals_meal_entries`.
+
+This separation ensures that updating an ingredient's nutritional data propagates correctly through recipes and that meal logs remain stable historical records even when recipe definitions evolve.
 
 ### Events
 
@@ -210,6 +222,17 @@ Allow dual-path tools where useful: structured input from a smart harness, or na
 Explanations, coaching, and conversational follow-up belong in the harness.
 
 Do not let LLMs mutate source-of-truth pantry or recipe state without an explicit validation or confirmation boundary.
+
+### Rule-First + LLM-Fallback Pattern (informed by NumbyAI)
+
+Ingredient normalization, pantry matching, and recipe categorization should follow a rule-first + LLM-fallback pattern:
+
+1. **Deterministic rules fire first.** A lookup table or deterministic normalizer resolves known ingredient names, units, and categories. Rules are stored as data (in SQLite), not hardcoded, so they grow as the user adds recipes and pantry items.
+2. **LLM handles the remainder.** When deterministic rules produce no match (e.g., a novel ingredient spelling, an ambiguous unit), the LLM path attempts structured extraction.
+3. **Successful LLM resolutions can be promoted to rules.** When the LLM successfully normalizes an ingredient and the user confirms it (implicitly by not correcting), the mapping can be persisted as a deterministic rule for future use. This makes the system self-improving over time.
+4. **Conflict detection.** If a new rule would contradict an existing one, surface it as a clarification rather than silently overwriting.
+
+This pattern is already proven in the Finance dual-path tools (`finance_query`, `goal_parse`). Meals should follow the same shape: structured input from a smart harness, or NL input with server-side parsing fallback, with deterministic rules as the fast path.
 
 Keep the shared LLM adapter in `minx_mcp/core/` for now, but treat that as temporary. Defer moving the shared adapter out of `core/` into a domain-neutral module until Meals proves the shared pattern.
 
@@ -477,6 +500,20 @@ Phase 3 should add tests for:
 
 Reuse the isolated temp-vault and temp-db test style where it fits.
 
+### In-Memory MCP Testing Pattern (informed by FastMCP)
+
+Meals server tool tests should use `FastMCP.call_tool()` for in-memory testing instead of the subprocess stdio pattern used in the Core e2e test. The MCP SDK (v1.27.0+) supports direct tool invocation:
+
+```python
+server = create_meals_server(config)
+result = await server.call_tool("meal_log", {"meal_kind": "lunch", ...})
+assert result["success"] is True
+```
+
+This eliminates subprocess overhead, makes tests faster and more deterministic, and removes the need for environment variable plumbing. Reserve the subprocess stdio test for one smoke test per server; use in-memory `call_tool` for all other tool-level tests.
+
+The existing Core stdio e2e test (`test_core_mcp_stdio.py`) should remain as-is — it validates the real transport path. New Meals tool tests should default to in-memory.
+
 ## Acceptance Criteria
 
 For the first implementation slice:
@@ -533,3 +570,17 @@ The next plan should be foundation plus recommendation:
 5. Add tests that pin default recommendation behavior and prevent shopping list side effects.
 
 Shopping list generation should be the clear next phase after this first slice.
+
+## External Pattern References
+
+Patterns from the following repos informed specific sections of this design:
+
+- **PANTS** (recipe composition) — the Ingredient → Recipe → LoggedMeal entity separation in the Data Model Guidance section. Source of the "nutritional truth per normalized unit" concept and recursive composition model.
+- **RoXsaita/NumbyAI-Public** (rule-first categorization) — the rule-first + LLM-fallback pattern in the Parsing and LLM Policy section. Source of the "deterministic rules as stored data" and "promote successful LLM resolutions to rules" concepts.
+- **jlowin/fastmcp** (in-memory testing) — the `FastMCP.call_tool()` testing pattern in the Tests section. Source of the "stop vibe-testing your MCP server" principle.
+- **pyeventsourcing/eventsourcing** (composable event registry) — the per-domain event payload declaration pattern in the Platform Primitives section. Source of the composable registry approach.
+
+Patterns deferred to later slices:
+- **ErikBjare/quantifiedme** (timeline normalization) → Slice 4, when a third domain makes timeline merging non-trivial.
+- **traceloop/openllmetry** (OTel tracing) → Slice 6, when multi-server observability becomes essential.
+- **mattbishop/sql-event-store** (CTE replay views) → Slice 6, for review reproducibility.

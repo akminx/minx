@@ -5,6 +5,7 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from collections.abc import Callable
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -51,6 +52,19 @@ PAYLOAD_MODELS: dict[str, type[EventPayload]] = {
     "finance.report_generated": ReportGeneratedPayload,
     "finance.anomalies_detected": AnomaliesDetectedPayload,
 }
+
+PAYLOAD_UPCASTERS: dict[str, dict[int, Callable[[dict[str, Any]], dict[str, Any]]]] = {}
+
+
+def _upcast_payload(event_type: str, payload: dict[str, Any], schema_version: int) -> dict[str, Any]:
+    upcasters = PAYLOAD_UPCASTERS.get(event_type)
+    if upcasters is None:
+        return payload
+    current = dict(payload)
+    for version in sorted(upcasters):
+        if schema_version <= version:
+            current = upcasters[version](current)
+    return current
 
 
 @dataclass(frozen=True)
@@ -142,6 +156,7 @@ def query_events(
     start: str | None = None,
     end: str | None = None,
     timezone: str | None = None,
+    sensitivity: str | None = None,
 ) -> list[Event]:
     start_utc, end_utc = _normalize_range(start=start, end=end, timezone_name=timezone)
 
@@ -160,6 +175,9 @@ def query_events(
     if end_utc is not None:
         clauses.append("occurred_at < ?")
         params.append(end_utc)
+    if sensitivity is not None:
+        clauses.append("sensitivity = ?")
+        params.append(sensitivity)
 
     sql = """
         SELECT
@@ -189,7 +207,11 @@ def query_events(
             recorded_at=row["recorded_at"],
             entity_ref=row["entity_ref"],
             source=row["source"],
-            payload=json.loads(row["payload"]),
+            payload=_upcast_payload(
+                row["event_type"],
+                json.loads(row["payload"]),
+                row["schema_version"],
+            ),
             schema_version=row["schema_version"],
             sensitivity=row["sensitivity"],
         )

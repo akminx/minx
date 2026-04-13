@@ -200,6 +200,11 @@ This ordering preserves the architecture doc's north star:
 
 **Dependencies:** Slice 1, ideally after Slice 3
 
+**Architecture patterns to adopt in this slice:**
+
+- **Timeline normalization (informed by ErikBjare/quantifiedme):** With three domains emitting events, the Core timeline should normalize entries into `(start, end, data)` tuples for cross-domain merging. Each domain emits events in its own shape; Core normalizes them into a unified timeline view. This is the natural point to formalize timeline composition since two domains (Finance, Meals) won't yet pressure the merging logic enough to prove the abstraction.
+- **FastMCP middleware (informed by jlowin/fastmcp):** Add `TimingMiddleware` and `StructuredLoggingMiddleware` to all three MCP servers. With Finance + Meals + Core all running, structured tool-call logging becomes essential for debugging cross-domain flows. This requires adding the `fastmcp` package as a dependency (the middleware system is in the standalone package, not the `mcp` SDK). Evaluate whether the middleware API is stable enough to adopt at that point.
+
 ---
 
 ## Slice 5: Harness Adaptation + Ambient Inputs
@@ -231,6 +236,11 @@ Ambient input ingestion (vault polling, journal scanning) remains harness-level 
 **Why this comes before autonomy:**
 - bounded autonomy without durable memory and reproducibility is hard to trust
 - dashboards and audits also need stable historical grounding
+
+**Architecture patterns to adopt in this slice:**
+
+- **OTel tracing for MCP servers (informed by traceloop/openllmetry):** The `opentelemetry-instrumentation-mcp` package provides drop-in OTel tracing for FastMCP tool calls. With Finance + Meals + Core all running with real traffic by this point, structured observability becomes essential for debugging cross-domain signal chains and reproducing review state. Point at local Jaeger or stdout exporter for development; keep the instrumentation boundary thin so it does not couple domain logic to the tracing library.
+- **CTE-based event replay views (informed by mattbishop/sql-event-store):** For review reproducibility, add SQL views that replay events into read-model-equivalent state using CTEs. This keeps replay logic in SQL rather than scattered Python, makes it inspectable via `sqlite3` CLI, and provides the "explain why Minx said something on a given day" capability without requiring full read-model snapshot persistence. The CTE approach is particularly suited to SQLite since it avoids materialized views while remaining performant for the expected event volumes.
 
 ---
 

@@ -168,12 +168,12 @@ def build_finance_monitoring(
             COALESCE(ABS(SUM(t.amount_cents)), 0) AS total_spent_cents
         FROM finance_transactions t
         LEFT JOIN finance_categories c ON c.id = t.category_id
-        WHERE t.posted_at >= ? AND t.posted_at <= ?
+        WHERE t.posted_at >= ? AND t.posted_at < ?
           AND t.amount_cents < 0
         GROUP BY COALESCE(c.name, 'Uncategorized')
         ORDER BY total_spent_cents DESC, category_name ASC
         """,
-        (period_start, period_end),
+        (period_start, _next_day(period_end)),
     ).fetchall()
     current_totals = {
         str(row["category_name"]): int(row["total_spent_cents"])
@@ -186,12 +186,12 @@ def build_finance_monitoring(
             COALESCE(ABS(SUM(t.amount_cents)), 0) AS total_spent_cents,
             COUNT(*) AS transaction_count
         FROM finance_transactions t
-        WHERE t.posted_at >= ? AND t.posted_at <= ?
+        WHERE t.posted_at >= ? AND t.posted_at < ?
           AND t.amount_cents < 0
         GROUP BY COALESCE(t.merchant, 'Unknown')
         ORDER BY total_spent_cents DESC, merchant ASC
         """,
-        (period_start, period_end),
+        (period_start, _next_day(period_end)),
     ).fetchall()
     income_rows = conn.execute(
         """
@@ -201,13 +201,13 @@ def build_finance_monitoring(
             COALESCE(SUM(t.amount_cents), 0) AS total_income_cents
         FROM finance_transactions t
         LEFT JOIN finance_categories c ON c.id = t.category_id
-        WHERE t.posted_at >= ? AND t.posted_at <= ?
+        WHERE t.posted_at >= ? AND t.posted_at < ?
           AND t.amount_cents > 0
           AND COALESCE(c.name, '') = 'Income'
         GROUP BY COALESCE(t.merchant, t.description, 'Unknown')
         ORDER BY total_income_cents DESC, merchant ASC
         """,
-        (period_start, period_end),
+        (period_start, _next_day(period_end)),
     ).fetchall()
     uncategorized_row = conn.execute(
         """
@@ -216,11 +216,11 @@ def build_finance_monitoring(
             COALESCE(ABS(SUM(t.amount_cents)), 0) AS total_spent_cents
         FROM finance_transactions t
         LEFT JOIN finance_categories c ON c.id = t.category_id
-        WHERE t.posted_at >= ? AND t.posted_at <= ?
+        WHERE t.posted_at >= ? AND t.posted_at < ?
           AND t.amount_cents < 0
           AND COALESCE(c.name, 'Uncategorized') = 'Uncategorized'
         """,
-        (period_start, period_end),
+        (period_start, _next_day(period_end)),
     ).fetchone()
     prior_totals = {
         str(row["category_name"]): int(row["total_spent_cents"])
@@ -231,11 +231,11 @@ def build_finance_monitoring(
                 COALESCE(ABS(SUM(t.amount_cents)), 0) AS total_spent_cents
             FROM finance_transactions t
             LEFT JOIN finance_categories c ON c.id = t.category_id
-            WHERE t.posted_at >= ? AND t.posted_at <= ?
+            WHERE t.posted_at >= ? AND t.posted_at < ?
               AND t.amount_cents < 0
             GROUP BY COALESCE(c.name, 'Uncategorized')
             """,
-            (prior_start, prior_end),
+            (prior_start, _next_day(prior_end)),
         ).fetchall()
     }
     comparison_rows = [

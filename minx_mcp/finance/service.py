@@ -31,7 +31,6 @@ class FinanceService:
     def __init__(self, db_path: Path, vault_root: Path, import_root: Path | None = None) -> None:
         self._db_path = db_path
         self._local = threading.local()
-        self._uncategorized_category_id: int | None = None
         self.import_root = (import_root or db_path.parent).resolve()
         self.vault_writer = VaultWriter(vault_root, ("Finance",))
 
@@ -441,9 +440,11 @@ class FinanceService:
         return None
 
     def _uncategorized_id(self) -> int:
-        if self._uncategorized_category_id is None:
-            self._uncategorized_category_id = self._category_id("Uncategorized")
-        return self._uncategorized_category_id
+        cached = getattr(self._local, "uncategorized_category_id", None)
+        if cached is None:
+            cached = self._category_id("Uncategorized")
+            self._local.uncategorized_category_id = cached
+        return cached
 
     def _emit_finance_event(
         self,

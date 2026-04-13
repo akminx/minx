@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from minx_mcp.core._utils import slugify
 from minx_mcp.core.models import GoalProgress, InsightCandidate, ReadModels
 from minx_mcp.money import format_cents
 
@@ -41,12 +42,7 @@ def detect_category_drift(read_models: ReadModels) -> list[InsightCandidate]:
         prior_end = effective_start - timedelta(days=1)
         prior_start = prior_end - timedelta(days=span_days - 1)
 
-        current_value = _read_goal_window_value(
-            read_models,
-            goal,
-            goal.current_start,
-            review_date.isoformat(),
-        )
+        current_value = goal.actual_value
         prior_value = _read_goal_window_value(
             read_models,
             goal,
@@ -69,7 +65,7 @@ def detect_category_drift(read_models: ReadModels) -> list[InsightCandidate]:
                 insight_type="finance.category_drift",
                 dedupe_key=(
                     f"{read_models.timeline.date}:category_drift:"
-                    f"goal-{goal.goal_id}:{_slugify(filter_label)}"
+                    f"goal-{goal.goal_id}:{slugify(filter_label)}"
                 ),
                 summary=(
                     f"{filter_label} {noun} is up versus the prior comparable span "
@@ -94,7 +90,7 @@ def detect_goal_finance_risks(read_models: ReadModels) -> list[InsightCandidate]
     insights: list[InsightCandidate] = []
     for goal in read_models.goal_progress:
         if (
-            not goal.metric_type.startswith("sum_below")
+            goal.metric_type not in ("sum_below", "count_below")
             or goal.target_value <= 0
             or goal.status == "on_track"
         ):
@@ -185,7 +181,3 @@ def _goal_filter_label(goal: GoalProgress) -> str:
     return " / ".join(parts)
 
 
-def _slugify(value: str) -> str:
-    import re
-
-    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")

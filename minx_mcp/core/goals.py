@@ -64,7 +64,9 @@ class GoalService:
             ),
         )
         self._conn.commit()
-        return self.get_goal(cursor.lastrowid or 0)
+        if cursor.lastrowid is None:
+            raise RuntimeError("goals insert did not return a row id")
+        return self.get_goal(cursor.lastrowid)
 
     def get_goal(self, goal_id: int) -> GoalRecord:
         row = self._conn.execute(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 
 class LLMInterface(Protocol):
@@ -17,9 +17,14 @@ class LLMInterface(Protocol):
 
 
 class FinanceReadInterface(Protocol):
-    def get_spending_summary(self, start_date: str, end_date: str): ...
-    def get_uncategorized(self, start_date: str, end_date: str): ...
-    def get_import_job_issues(self): ...
+    # Return types for get_spending_summary, get_uncategorized, get_import_job_issues,
+    # get_period_comparison, get_income_summary use Any to avoid a circular import:
+    # those concrete types (SpendingSummary, UncategorizedSummary, ImportJobIssue,
+    # PeriodComparison, IncomeSummary) are defined in finance/read_api.py, which
+    # imports from this module, so we cannot import them here.
+    def get_spending_summary(self, start_date: str, end_date: str) -> Any: ...
+    def get_uncategorized(self, start_date: str, end_date: str) -> Any: ...
+    def get_import_job_issues(self) -> list[Any]: ...
     def list_account_names(self) -> list[str]: ...
     def get_period_comparison(
         self,
@@ -27,7 +32,7 @@ class FinanceReadInterface(Protocol):
         current_end: str,
         prior_start: str,
         prior_end: str,
-    ): ...
+    ) -> Any: ...
     def list_goal_category_names(self) -> list[str]: ...
     def list_spending_merchant_names(self) -> list[str]: ...
     def get_filtered_spending_total(
@@ -48,6 +53,8 @@ class FinanceReadInterface(Protocol):
         merchant_names: list[str] | None = None,
         account_names: list[str] | None = None,
     ) -> int: ...
+    def get_income_summary(self, start_date: str, end_date: str) -> Any: ...
+    def get_net_flow(self, start_date: str, end_date: str) -> int: ...
 
 
 
@@ -297,9 +304,8 @@ class GoalCaptureOption:
             raise ValueError(
                 f"payload_fragment must contain {expected_key}=[{expected_label!r}]"
             )
-        expected_title = f"{expected_label} Spending Cap"
-        if "title" in payload_fragment and payload_fragment.get("title") != expected_title:
-            raise ValueError(f"payload_fragment title must be {expected_title!r}")
+        if "title" in payload_fragment and not isinstance(payload_fragment.get("title"), str):
+            raise ValueError("payload_fragment title must be a string")
 
 
 @dataclass(frozen=True)
