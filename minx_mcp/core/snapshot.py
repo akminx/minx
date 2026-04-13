@@ -51,6 +51,7 @@ async def build_daily_snapshot(
             goal_progress=read_models.goal_progress,
             signals=detector_signals,
             attention_items=_build_attention_items(read_models, detector_signals),
+            nutrition=read_models.nutrition,
             persistence_warning=warning,
         )
     finally:
@@ -63,7 +64,12 @@ def _build_snapshot_models(
     ctx: SnapshotContext,
 ) -> ReadModels:
     finance_api = ctx.finance_api or FinanceReadAPI(conn)
-    return build_read_models(conn, review_date, finance_api=finance_api)
+    return build_read_models(
+        conn,
+        review_date,
+        finance_api=finance_api,
+        meals_api=ctx.meals_api,
+    )
 
 
 def _run_detectors(read_models: ReadModels) -> list[InsightCandidate]:

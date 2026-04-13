@@ -327,8 +327,8 @@ def test_009_migration_has_stored_checksum(tmp_path):
     assert row[0] == expected
 
 
-def test_009_migration_recorded_in_order(tmp_path):
-    """009_cleanup.sql must be the last row when sorted by name."""
+def test_010_migration_recorded_in_order(tmp_path):
+    """010_meals.sql must be the last row when sorted by name."""
     from minx_mcp.db import get_connection
 
     conn = get_connection(tmp_path / "minx.db")
@@ -336,4 +336,4 @@ def test_009_migration_recorded_in_order(tmp_path):
         row[0]
         for row in conn.execute("SELECT name FROM _migrations ORDER BY name").fetchall()
     ]
-    assert names[-1] == "009_cleanup.sql"
+    assert names[-1] == "010_meals.sql"

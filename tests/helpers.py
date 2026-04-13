@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 from sqlite3 import Connection
 from minx_mcp.core.goals import GoalService
 from minx_mcp.core.models import GoalCreateInput
@@ -95,3 +96,138 @@ class FinanceSeeder:
         return self._conn.execute(
             "SELECT id FROM finance_accounts WHERE name = ?", (name,)
         ).fetchone()["id"]
+
+
+class MealsSeeder:
+    def __init__(self, conn: Connection) -> None:
+        self._conn = conn
+
+    def meal_entry(
+        self,
+        *,
+        occurred_at: str = "2026-04-12T12:00:00Z",
+        meal_kind: str = "lunch",
+        summary: str | None = "Test meal",
+        food_items: list[dict[str, object]] | None = None,
+        protein_grams: float | None = None,
+        calories: int | None = None,
+    ) -> int:
+        cursor = self._conn.execute(
+            """
+            INSERT INTO meals_meal_entries (
+                occurred_at, meal_kind, summary, food_items_json,
+                protein_grams, calories, source
+            ) VALUES (?, ?, ?, ?, ?, ?, 'test')
+            """,
+            (
+                occurred_at,
+                meal_kind,
+                summary,
+                json.dumps(food_items or []),
+                protein_grams,
+                calories,
+            ),
+        )
+        self._conn.commit()
+        return cursor.lastrowid or 0
+
+    def pantry_item(
+        self,
+        *,
+        display_name: str,
+        normalized_name: str | None = None,
+        quantity: float | None = None,
+        unit: str | None = None,
+        expiration_date: str | None = None,
+        low_stock_threshold: float | None = None,
+    ) -> int:
+        cursor = self._conn.execute(
+            """
+            INSERT INTO meals_pantry_items (
+                display_name, normalized_name, quantity, unit,
+                expiration_date, low_stock_threshold, source
+            ) VALUES (?, ?, ?, ?, ?, ?, 'test')
+            """,
+            (
+                display_name,
+                normalized_name or display_name.lower().strip(),
+                quantity,
+                unit,
+                expiration_date,
+                low_stock_threshold,
+            ),
+        )
+        self._conn.commit()
+        return cursor.lastrowid or 0
+
+    def recipe(
+        self,
+        *,
+        vault_path: str,
+        title: str,
+        content_hash: str = "abc123",
+        tags: list[str] | None = None,
+        image_ref: str | None = None,
+        source_url: str | None = None,
+    ) -> int:
+        cursor = self._conn.execute(
+            """
+            INSERT INTO meals_recipes (
+                vault_path, title, normalized_title, source_url,
+                image_ref, tags_json, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                vault_path,
+                title,
+                title.lower().strip(),
+                source_url,
+                image_ref,
+                json.dumps(tags or []),
+                content_hash,
+            ),
+        )
+        self._conn.commit()
+        return cursor.lastrowid or 0
+
+    def recipe_ingredient(
+        self,
+        *,
+        recipe_id: int,
+        display_text: str,
+        normalized_name: str,
+        quantity: float | None = None,
+        unit: str | None = None,
+        is_required: bool = True,
+        sort_order: int = 0,
+    ) -> int:
+        cursor = self._conn.execute(
+            """
+            INSERT INTO meals_recipe_ingredients (
+                recipe_id, display_text, normalized_name,
+                quantity, unit, is_required, sort_order
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (recipe_id, display_text, normalized_name, quantity, unit, int(is_required), sort_order),
+        )
+        self._conn.commit()
+        return cursor.lastrowid or 0
+
+    def substitution(
+        self,
+        *,
+        recipe_ingredient_id: int,
+        substitute_normalized_name: str,
+        display_text: str,
+        priority: int = 0,
+    ) -> int:
+        cursor = self._conn.execute(
+            """
+            INSERT INTO meals_recipe_substitutions (
+                recipe_ingredient_id, substitute_normalized_name, display_text, priority
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (recipe_ingredient_id, substitute_normalized_name, display_text, priority),
+        )
+        self._conn.commit()
+        return cursor.lastrowid or 0

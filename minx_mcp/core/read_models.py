@@ -10,6 +10,7 @@ from minx_mcp.core.goals import GoalService
 from minx_mcp.core.models import (
     DailyTimeline,
     FinanceReadInterface,
+    MealsReadInterface,
     OpenLoop,
     OpenLoopsSnapshot,
     ReadModels,
@@ -140,8 +141,13 @@ def build_read_models(
     conn: Connection,
     review_date: str,
     finance_api: FinanceReadInterface | None = None,
+    meals_api: MealsReadInterface | None = None,
 ) -> ReadModels:
     finance_api = finance_api or FinanceReadAPI(conn)
+    if meals_api is None:
+        from minx_mcp.meals.read_api import MealsReadAPI
+
+        meals_api = MealsReadAPI(conn)
     goals = GoalService(conn).list_active_goals(review_date)
     uncategorized = finance_api.get_uncategorized(review_date, review_date)
     return ReadModels(
@@ -153,7 +159,9 @@ def build_read_models(
             conn, review_date, finance_api=finance_api, uncategorized=uncategorized,
         ),
         goal_progress=build_goal_progress(review_date, goals, finance_api),
+        nutrition=meals_api.get_nutrition_summary(review_date),
         finance_api=finance_api,
+        meals_api=meals_api,
     )
 
 
@@ -193,4 +201,11 @@ def _summarize_event(event: Event) -> str:
             f"Detected {payload['count']} anomalies totaling "
             f"{format_cents(payload['total_cents'])}"
         )
+    if event.event_type == "meal.logged":
+        calories = payload.get("calories")
+        suffix = f" ({calories} cal)" if calories is not None else ""
+        return f"Logged {payload.get('meal_kind', 'meal')}{suffix}"
+    if event.event_type == "nutrition.day_updated":
+        protein = payload.get("protein_grams", "?")
+        return f"Nutrition update: {payload['meal_count']} meals, {protein}g protein"
     return event.event_type

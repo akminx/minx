@@ -6,51 +6,24 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import ValidationError
 
+from minx_mcp.event_payloads import EventPayload
 from minx_mcp.time_utils import format_utc_timestamp, normalize_utc_timestamp, utc_now_isoformat
 
 logger = logging.getLogger(__name__)
 
 
-class EventPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class TransactionsImportedPayload(EventPayload):
-    account_name: str
-    account_id: int
-    job_id: str
-    transaction_count: int
-    total_cents: int
-    source_kind: str
-
-
-class TransactionsCategorizedPayload(EventPayload):
-    count: int
-    categories: list[str]
-
-
-class ReportGeneratedPayload(EventPayload):
-    report_type: Literal["weekly", "monthly"]
-    period_start: str
-    period_end: str
-    vault_path: str
-
-
-class AnomaliesDetectedPayload(EventPayload):
-    count: int
-    total_cents: int
+from minx_mcp.finance.events import FINANCE_EVENT_PAYLOADS
+from minx_mcp.meals.events import MEALS_EVENT_PAYLOADS
 
 
 PAYLOAD_MODELS: dict[str, type[EventPayload]] = {
-    "finance.transactions_imported": TransactionsImportedPayload,
-    "finance.transactions_categorized": TransactionsCategorizedPayload,
-    "finance.report_generated": ReportGeneratedPayload,
-    "finance.anomalies_detected": AnomaliesDetectedPayload,
+    **FINANCE_EVENT_PAYLOADS,
+    **MEALS_EVENT_PAYLOADS,
 }
 
 PAYLOAD_UPCASTERS: dict[str, dict[int, Callable[[dict[str, Any]], dict[str, Any]]]] = {}
@@ -248,4 +221,3 @@ def _local_date_to_utc_boundary(
     local_day = date.fromisoformat(value) + timedelta(days=add_days)
     local_midnight = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
     return format_utc_timestamp(local_midnight)
-

@@ -57,6 +57,10 @@ class FinanceReadInterface(Protocol):
     def get_net_flow(self, start_date: str, end_date: str) -> int: ...
 
 
+class MealsReadInterface(Protocol):
+    def get_nutrition_summary(self, date: str) -> Any: ...
+    def get_pantry_items(self) -> list[Any]: ...
+
 
 @dataclass(frozen=True)
 class TimelineEntry:
@@ -100,12 +104,24 @@ class OpenLoopsSnapshot:
 
 
 @dataclass(frozen=True)
+class NutritionSnapshot:
+    date: str
+    meal_count: int
+    protein_grams: float | None
+    calories: int | None
+    last_meal_at: str | None
+    skipped_meal_signals: list[str]
+
+
+@dataclass(frozen=True)
 class ReadModels:
     timeline: DailyTimeline
     spending: SpendingSnapshot
     open_loops: OpenLoopsSnapshot
     goal_progress: list[GoalProgress]
+    nutrition: NutritionSnapshot | None = None
     finance_api: FinanceReadInterface | None = None
+    meals_api: MealsReadInterface | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +159,7 @@ class DailySnapshot:
     goal_progress: list[GoalProgress]
     signals: list[InsightCandidate]
     attention_items: list[str]
+    nutrition: NutritionSnapshot | None = None
     persistence_warning: PersistenceWarning | None = None
 
 
@@ -474,3 +491,4 @@ class GoalProgress:
 class SnapshotContext:
     db_path: str | Path
     finance_api: FinanceReadInterface | None = None
+    meals_api: MealsReadInterface | None = None

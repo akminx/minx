@@ -26,6 +26,7 @@ dev = [
 [project.scripts]
 minx-finance = "minx_mcp.finance.__main__:main"
 minx-core = "minx_mcp.core.__main__:main"
+minx-meals = "minx_mcp.meals.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["minx_mcp*"]
