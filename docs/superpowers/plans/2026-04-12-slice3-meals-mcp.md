@@ -33,6 +33,7 @@
 | `minx_mcp/meals/recipes.py` | Obsidian recipe markdown parsing and normalization |
 | `minx_mcp/meals/pantry.py` | Ingredient normalization, pantry matching, substitution resolution |
 | `minx_mcp/meals/recommendations.py` | Availability classification, ranking, recommendation output |
+| `minx_mcp/event_payloads.py` | Shared event payload base class used by per-domain event modules |
 | `minx_mcp/schema/migrations/010_meals.sql` | Meals domain schema |
 | `schema/migrations/010_meals.sql` | Mirror copy (tests enforce matching content) |
 | `tests/test_meals_service.py` | Service layer tests |
@@ -42,6 +43,7 @@
 | `tests/test_meals_recommendations.py` | Classification, ranking, recommendation tests |
 | `tests/test_meals_read_api.py` | Read API and Core integration tests |
 | `tests/test_meals_server.py` | MCP tool tests (in-memory `call_tool`) |
+| `tests/test_launcher.py` | Launcher command construction and process supervision tests |
 | `tests/test_nutrition_detectors.py` | Nutrition detector tests |
 
 ### Existing files to modify
@@ -53,7 +55,7 @@
 | `minx_mcp/core/read_models.py` | Add `NutritionSnapshot` to `ReadModels`; add `_summarize_event` cases for `meal.logged`, `nutrition.day_updated` |
 | `minx_mcp/core/detectors.py` | Add nutrition detectors: `nutrition.low_protein`, `nutrition.skipped_meals` |
 | `minx_mcp/core/snapshot.py` | Pass `meals_api` through to read model assembly |
-| `minx_mcp/core/__init__.py` | Export Meals event payload classes |
+| `minx_mcp/core/__init__.py` | Preserve existing Finance payload re-exports only; do not re-export Meals payload classes |
 | `tests/helpers.py` | Add `MealsSeeder` class |
 | `tests/conftest.py` | Add `meals_seeder` fixture |
 | `pyproject.toml` | Add `minx-meals` entry point |
@@ -103,7 +105,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from minx_mcp.core.events import EventPayload
+from minx_mcp.event_payloads import EventPayload
 
 
 class TransactionsImportedPayload(EventPayload):
@@ -152,7 +154,9 @@ PAYLOAD_MODELS: dict[str, type[EventPayload]] = {
 }
 ```
 
-Keep `EventPayload` base class, `Event` dataclass, `emit_event()`, `query_events()`, `PAYLOAD_UPCASTERS`, and all helper functions in `core/events.py`. Only the concrete payload classes and `PAYLOAD_MODELS` entries move.
+Import-order guardrail: `EventPayload` must live outside `minx_mcp.core.events`, in `minx_mcp.event_payloads`, before any domain event module imports it. Direct imports such as `import minx_mcp.finance.events` and `import minx_mcp.meals.events` should work in a fresh interpreter; importing the base from `core.events` recreates a circular-import failure through `minx_mcp.core.__init__`.
+
+Keep `Event` dataclass, `emit_event()`, `query_events()`, `PAYLOAD_UPCASTERS`, and all helper functions in `core/events.py`. Only the shared `EventPayload`, concrete payload classes, and `PAYLOAD_MODELS` entries move.
 
 Update `core/__init__.py` to re-export from the new location:
 
@@ -574,7 +578,7 @@ Expected: FAIL on `test_payload_models_includes_meals_events`
 ```python
 from __future__ import annotations
 
-from minx_mcp.core.events import EventPayload
+from minx_mcp.event_payloads import EventPayload
 
 
 class MealLoggedPayload(EventPayload):
@@ -610,6 +614,8 @@ PAYLOAD_MODELS: dict[str, type[EventPayload]] = {
     **MEALS_EVENT_PAYLOADS,
 }
 ```
+
+Keep the same import-order guardrail from Task 1: `EventPayload` is defined first, then domain mappings are imported, then `PAYLOAD_MODELS` is composed.
 
 - [ ] **Step 5: Run tests**
 
@@ -1026,8 +1032,11 @@ Expected: FAIL
 
 ```python
 class MealsReadInterface(Protocol):
-    def get_nutrition_summary(self, date: str) -> Any: ...
-    def get_pantry_items(self) -> list[Any]: ...
+    def get_nutrition_summary(self, date: str) -> Any:
+        raise NotImplementedError
+
+    def get_pantry_items(self) -> list[Any]:
+        raise NotImplementedError
 ```
 
 ```python
@@ -1051,6 +1060,7 @@ from __future__ import annotations
 from sqlite3 import Connection
 
 from minx_mcp.core.models import NutritionSnapshot
+from minx_mcp.meals.models import PantryItem
 
 
 class MealsReadAPI:
@@ -1058,18 +1068,44 @@ class MealsReadAPI:
         self._db = db
 
     def get_nutrition_summary(self, date: str) -> NutritionSnapshot:
-        # Query meals_meal_entries for the given date
-        # Sum protein_grams, calories
-        # Detect skipped meals (check which of breakfast/lunch/dinner are missing)
-        # Return NutritionSnapshot
-        ...
+        rows = self._db.execute(
+            """
+            SELECT occurred_at, meal_kind, protein_grams, calories
+            FROM meals_meal_entries
+            WHERE occurred_at >= ? AND occurred_at < date(?, '+1 day')
+            ORDER BY occurred_at ASC, id ASC
+            """,
+            (date, date),
+        ).fetchall()
+        meal_kinds = {str(row["meal_kind"]) for row in rows}
+        protein_values = [float(row["protein_grams"]) for row in rows if row["protein_grams"] is not None]
+        calorie_values = [int(row["calories"]) for row in rows if row["calories"] is not None]
+        return NutritionSnapshot(
+            date=date,
+            meal_count=len(rows),
+            protein_grams=sum(protein_values) if protein_values else None,
+            calories=sum(calorie_values) if calorie_values else None,
+            last_meal_at=str(rows[-1]["occurred_at"]) if rows else None,
+            skipped_meal_signals=[
+                f"no {kind} logged"
+                for kind in ("breakfast", "lunch", "dinner")
+                if kind not in meal_kinds
+            ] if rows else [],
+        )
 
-    def get_pantry_items(self):
-        # Query meals_pantry_items, return list of PantryItem
-        ...
+    def get_pantry_items(self) -> list[PantryItem]:
+        rows = self._db.execute(
+            """
+            SELECT id, display_name, normalized_name, quantity, unit, expiration_date,
+                   low_stock_threshold, source
+            FROM meals_pantry_items
+            ORDER BY normalized_name ASC, id ASC
+            """
+        ).fetchall()
+        return [_pantry_item_from_row(row) for row in rows]
 ```
 
-For `get_nutrition_summary`: query `meals_meal_entries` where `occurred_at` falls on the given date. Use the same `_next_day` exclusive-end pattern as Finance. Sum nutrition fields (ignoring None values). Generate `skipped_meal_signals` by checking which of `breakfast`, `lunch`, `dinner` are absent from logged `meal_kind` values.
+For `get_nutrition_summary`: bucket `meals_meal_entries` by the configured `core.timezone` preference, falling back to the machine local timezone the same way Core timelines do. Normalize stored `occurred_at` timestamps before comparing them to the local-day UTC bounds so offset timestamps and `Z` timestamps agree with the event timeline. Sum nutrition fields (ignoring None values). Generate `skipped_meal_signals` by checking which of `breakfast`, `lunch`, `dinner` are absent from logged `meal_kind` values.
 
 - [ ] **Step 5: Update `core/read_models.py`**
 
@@ -1383,6 +1419,35 @@ def test_parse_recipe_frontmatter(tmp_path):
     assert result.image_ref == "Assets/chickpea-pasta.jpg"
 
 
+def test_parse_recipe_frontmatter_minute_strings_and_obsidian_image(tmp_path):
+    note = tmp_path / "Breakfast Mac n Cheese.md"
+    note.write_text(
+        "---\n"
+        "date: 2026-03-25\n"
+        "tags: [high-protein, air-fryer, meal-prep]\n"
+        "prep_time: 10 min\n"
+        "cook_time: 25 min\n"
+        "servings: 2\n"
+        "status: #active\n"
+        "---\n\n"
+        "# Breakfast Mac n Cheese\n\n"
+        "![[assets/Breakfast Mac n Cheese.png]]\n\n"
+        "## Ingredients\n"
+        "- 112g protein pasta\n"
+        "- **Toppings:**\n"
+        "  - 20g 2% cheddar\n"
+    )
+    result = parse_recipe_note(note)
+    assert result.title == "Breakfast Mac n Cheese"
+    assert result.prep_time_minutes == 10
+    assert result.cook_time_minutes == 25
+    assert result.image_ref == "assets/Breakfast Mac n Cheese.png"
+    assert [i.display_text for i in result.ingredients] == [
+        "112g protein pasta",
+        "20g 2% cheddar",
+    ]
+
+
 def test_parse_recipe_ingredients(tmp_path):
     note = tmp_path / "Chickpea Pasta.md"
     note.write_text(SAMPLE_RECIPE)
@@ -1435,8 +1500,9 @@ Expected: FAIL
 - [ ] **Step 3: Implement `meals/recipes.py`**
 
 Key responsibilities:
-- Parse YAML frontmatter for metadata (title, tags, prep_time, cook_time, servings, source, image)
-- Parse `## Ingredients` section: each `- ` line is an ingredient. Lines ending with `(optional)` set `is_required=False`
+- Parse frontmatter metadata for title, tags, prep_time, cook_time, servings, source, and image. Do not add a YAML dependency for this slice; implement a narrow standard-library parser for the currently supported Obsidian frontmatter shapes: simple `key: value` scalars, inline lists such as `tags: [dinner, vegetarian]`, numeric values, and minute strings such as `prep_time: 10 min`. Ignore unrecognized keys.
+- Parse the first Obsidian image embed in the note body, such as `![[assets/Breakfast Mac n Cheese.png]]`, as `image_ref` when no frontmatter image is present.
+- Parse `## Ingredients` section: each ingredient bullet is an ingredient. Skip group/header bullets such as `- **Toppings:**`, but include nested ingredient bullets under them. Lines ending with `(optional)` set `is_required=False`.
 - Normalize ingredient names: strip quantities/units from display text to extract the ingredient name, then lowercase/strip
 - Parse `## Substitutions` section: each `- original: sub1, sub2` line
 - Compute content hash (SHA-256 of file content)
@@ -1720,7 +1786,21 @@ def match_pantry(
     ingredient_names: list[str],
 ) -> dict[str, PantryItem]:
     """Match ingredient names against pantry. Returns {normalized_name: PantryItem}."""
-    ...
+    normalized = [normalize_ingredient(name) for name in ingredient_names]
+    if not normalized:
+        return {}
+    placeholders = ",".join("?" for _ in normalized)
+    rows = conn.execute(
+        f"""
+        SELECT id, display_name, normalized_name, quantity, unit, expiration_date,
+               low_stock_threshold, source
+        FROM meals_pantry_items
+        WHERE normalized_name IN ({placeholders})
+        ORDER BY normalized_name ASC, id ASC
+        """,
+        normalized,
+    ).fetchall()
+    return {str(row["normalized_name"]): _pantry_item_from_row(row) for row in rows}
 
 
 def get_expiring_items(
@@ -1729,12 +1809,34 @@ def get_expiring_items(
     days_ahead: int = 3,
 ) -> list[PantryItem]:
     """Return pantry items expiring within days_ahead of as_of date."""
-    ...
+    rows = conn.execute(
+        """
+        SELECT id, display_name, normalized_name, quantity, unit, expiration_date,
+               low_stock_threshold, source
+        FROM meals_pantry_items
+        WHERE expiration_date IS NOT NULL
+          AND expiration_date <= date(?, '+' || ? || ' days')
+        ORDER BY expiration_date ASC, normalized_name ASC, id ASC
+        """,
+        (as_of, days_ahead),
+    ).fetchall()
+    return [_pantry_item_from_row(row) for row in rows]
 
 
 def get_low_stock_items(conn: Connection) -> list[PantryItem]:
     """Return pantry items where quantity < low_stock_threshold."""
-    ...
+    rows = conn.execute(
+        """
+        SELECT id, display_name, normalized_name, quantity, unit, expiration_date,
+               low_stock_threshold, source
+        FROM meals_pantry_items
+        WHERE low_stock_threshold IS NOT NULL
+          AND quantity IS NOT NULL
+          AND quantity < low_stock_threshold
+        ORDER BY normalized_name ASC, id ASC
+        """
+    ).fetchall()
+    return [_pantry_item_from_row(row) for row in rows]
 ```
 
 `match_pantry`: query `meals_pantry_items` with `WHERE normalized_name IN (?)` for the list of names. Return a dict keyed by normalized_name.
@@ -1993,11 +2095,16 @@ def test_recommend_recipes_e2e(db_conn, meals_seeder):
     meals_seeder.pantry_item(display_name="Olive Oil", quantity=1, unit="bottle")
 
     result = recommend_recipes(db_conn)
-    assert len(result.recommendations) >= 2
+    assert len(result.recommendations) == 1
     assert result.recommendations[0].recipe_title == "Simple Pasta"
     assert result.recommendations[0].availability_class == "make_now"
-    assert result.recommendations[1].availability_class == "needs_shopping"
+    assert "needs_shopping" not in {r.availability_class for r in result.recommendations}
     assert result.shopping_lists_generated == []
+
+    expanded = recommend_recipes(db_conn, include_needs_shopping=True)
+    assert len(expanded.recommendations) == 2
+    assert expanded.recommendations[1].availability_class == "needs_shopping"
+    assert expanded.shopping_lists_generated == []
 
 
 def test_recommend_recipes_expiring_item_ranks_higher(db_conn, meals_seeder):
@@ -2073,7 +2180,12 @@ def recommend_recipes(
     as_of: str | None = None,
     include_needs_shopping: bool = False,
 ) -> RecommendationResult:
-    ...
+    # 1. Load all recipes with their ingredients and substitutions.
+    # 2. Load pantry names plus expiring/low-stock name sets.
+    # 3. Classify each recipe and build RecipeRecommendation rows.
+    # 4. Rank, then filter per the rules below.
+    # 5. Return RecommendationResult with shopping_lists_generated=[].
+    # Use helper functions for row-to-model mapping; do not generate shopping lists here.
 ```
 
 Steps:
@@ -2084,7 +2196,7 @@ Steps:
 5. Compute `expiring_ingredient_hits` and `low_stock_ingredient_hits` per recipe
 6. Build `RecipeRecommendation` objects
 7. Rank with `rank_recommendations()`
-8. Filter: default returns `make_now` + `make_with_substitutions`; if `include_needs_shopping=True`, also include `needs_shopping`
+8. Filter: default returns `make_now` + `make_with_substitutions` when either class has matches. If neither class has matches, default may return ranked `needs_shopping` fallback recipes. If `include_needs_shopping=True`, also include `needs_shopping` even when better matches exist. Always exclude `excluded`.
 9. Return `RecommendationResult` with `shopping_lists_generated=[]`
 
 - [ ] **Step 4: Run tests**
@@ -2119,6 +2231,7 @@ Build the FastMCP tool definitions wrapping the service and recommendation engin
 
 ```python
 import asyncio
+import json
 import pytest
 from pathlib import Path
 
@@ -2128,10 +2241,12 @@ from minx_mcp.meals.service import MealsService
 
 def _call(server, tool_name, args):
     result = asyncio.run(server.call_tool(tool_name, args))
-    # call_tool returns list of content blocks; extract structured content
-    for block in result:
-        if hasattr(block, "data"):
-            return block.data
+    # FastMCP may return (content_blocks, structured_dict) for structured tool output.
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
+        return result[1]
+    # FastMCP 1.27 returns a list of TextContent blocks for dict-returning tools.
+    if isinstance(result, list) and result and hasattr(result[0], "text"):
+        return json.loads(result[0].text)
     return result
 
 
@@ -2215,17 +2330,13 @@ Follow Finance `server.py` pattern exactly:
 ```python
 from __future__ import annotations
 
-from typing import Protocol
+from dataclasses import asdict
 from mcp.server.fastmcp import FastMCP
 from minx_mcp.contracts import wrap_tool_call
+from minx_mcp.meals.service import MealsService
 
 
-class MealsServiceLike(Protocol):
-    # Define protocol methods matching MealsService public API
-    ...
-
-
-def create_meals_server(service: MealsServiceLike) -> FastMCP:
+def create_meals_server(service: MealsService) -> FastMCP:
     mcp = FastMCP("minx-meals", stateless_http=True, json_response=True)
 
     @mcp.tool(name="meal_log")
@@ -2237,35 +2348,70 @@ def create_meals_server(service: MealsServiceLike) -> FastMCP:
         protein_grams: float | None = None,
         calories: int | None = None,
     ) -> dict[str, object]:
-        return wrap_tool_call(lambda: _meal_log(service, ...))
+        return wrap_tool_call(lambda: {"meal": asdict(service.log_meal(
+            meal_kind=meal_kind,
+            occurred_at=occurred_at,
+            summary=summary,
+            food_items=food_items,
+            protein_grams=protein_grams,
+            calories=calories,
+        ))})
 
     @mcp.tool(name="pantry_add")
-    def pantry_add(...) -> dict[str, object]:
-        ...
+    def pantry_add(
+        display_name: str,
+        quantity: float | None = None,
+        unit: str | None = None,
+        expiration_date: str | None = None,
+        low_stock_threshold: float | None = None,
+    ) -> dict[str, object]:
+        return wrap_tool_call(lambda: {"item": asdict(service.add_pantry_item(
+            display_name=display_name,
+            quantity=quantity,
+            unit=unit,
+            expiration_date=expiration_date,
+            low_stock_threshold=low_stock_threshold,
+        ))})
 
     @mcp.tool(name="pantry_update")
-    def pantry_update(...) -> dict[str, object]:
-        ...
+    def pantry_update(
+        item_id: int,
+        quantity: float | None = None,
+        unit: str | None = None,
+        expiration_date: str | None = None,
+        low_stock_threshold: float | None = None,
+    ) -> dict[str, object]:
+        return wrap_tool_call(lambda: {"item": asdict(service.update_pantry_item(
+            item_id,
+            quantity=quantity,
+            unit=unit,
+            expiration_date=expiration_date,
+            low_stock_threshold=low_stock_threshold,
+        ))})
 
     @mcp.tool(name="pantry_remove")
-    def pantry_remove(...) -> dict[str, object]:
-        ...
+    def pantry_remove(item_id: int) -> dict[str, object]:
+        return wrap_tool_call(lambda: {"removed": service.remove_pantry_item(item_id) is None})
 
     @mcp.tool(name="pantry_list")
     def pantry_list() -> dict[str, object]:
-        ...
+        return wrap_tool_call(lambda: {"items": [asdict(item) for item in service.list_pantry_items()]})
 
     @mcp.tool(name="recipe_index")
     def recipe_index(vault_path: str) -> dict[str, object]:
-        ...
+        return wrap_tool_call(lambda: {"recipe": asdict(service.index_recipe(vault_path))})
 
     @mcp.tool(name="recipe_scan")
     def recipe_scan(directory: str = "Recipes") -> dict[str, object]:
-        ...
+        return wrap_tool_call(lambda: {"recipes": [asdict(recipe) for recipe in service.scan_vault_recipes(directory)]})
 
     @mcp.tool(name="recommend_recipes")
     def recommend_recipes(include_needs_shopping: bool = False) -> dict[str, object]:
-        ...
+        from minx_mcp.meals.recommendations import recommend_recipes as recommend
+        return wrap_tool_call(lambda: asdict(recommend(
+            service.conn,
+            include_needs_shopping=include_needs_shopping,
+        )))
 
     return mcp
 ```
@@ -2354,23 +2500,41 @@ minx-meals = "minx_mcp.meals.__main__:main"
 
 - [ ] **Step 3: Create minimal `minx_mcp/launcher.py`**
 
-The launcher is process supervision only — it starts child processes and relays signals:
+The launcher is process supervision only — it starts child processes and relays signals. Default multi-server launch uses HTTP with distinct per-server ports. Stdio remains supported only when exactly one server is selected, because multiple MCP stdio streams cannot share one stdin/stdout pair. Launcher status logs go to stderr, and a nonzero child exit terminates peer processes and makes the launcher exit nonzero.
 
 ```python
 from __future__ import annotations
 
 import argparse
-import subprocess
 import signal
+import subprocess
 import sys
-from pathlib import Path
 
 
 SERVERS = [
-    {"name": "minx-core", "module": "minx_mcp.core"},
-    {"name": "minx-finance", "module": "minx_mcp.finance"},
-    {"name": "minx-meals", "module": "minx_mcp.meals"},
+    {"name": "minx-core", "module": "minx_mcp.core", "port": 8001},
+    {"name": "minx-finance", "module": "minx_mcp.finance", "port": 8000},
+    {"name": "minx-meals", "module": "minx_mcp.meals", "port": 8002},
 ]
+
+
+def build_launch_commands(server_names, *, transport, python_executable):
+    selected = [s for s in SERVERS if s["name"] in server_names]
+    if transport == "stdio" and len(selected) != 1:
+        raise ValueError("stdio transport supports exactly one server")
+    commands = []
+    for server in selected:
+        command = [python_executable, "-m", server["module"], "--transport", transport]
+        if transport == "http":
+            command.extend(["--port", str(server["port"])])
+        commands.append(command)
+    return commands
+
+
+def launch_commands(commands, *, poll_interval=0.1, log_stream=None):
+    # Start children, log status to stderr, poll for exits, and terminate peers
+    # when any child exits nonzero.
+    ...
 
 
 def main() -> None:
@@ -2381,31 +2545,18 @@ def main() -> None:
         default=[s["name"] for s in SERVERS],
         help="Servers to launch (default: all)",
     )
-    parser.add_argument("--transport", default="stdio")
+    parser.add_argument("--transport", choices=["stdio", "http"], default="http")
     args = parser.parse_args()
 
-    selected = [s for s in SERVERS if s["name"] in args.servers]
-    procs: list[subprocess.Popen] = []
-
-    def _shutdown(signum, frame):
-        for p in procs:
-            p.terminate()
-        for p in procs:
-            p.wait(timeout=5)
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
-
-    for server in selected:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", server["module"], "--transport", args.transport],
+    try:
+        commands = build_launch_commands(
+            args.servers,
+            transport=args.transport,
+            python_executable=sys.executable,
         )
-        procs.append(proc)
-        print(f"Started {server['name']} (pid {proc.pid})")
-
-    for p in procs:
-        p.wait()
+    except ValueError as exc:
+        parser.error(str(exc))
+    raise SystemExit(launch_commands(commands))
 
 
 if __name__ == "__main__":
@@ -2529,7 +2680,7 @@ async def test_full_meals_pipeline(tmp_path):
 
     # Verify recommendations
     conn = get_connection(db_path)
-    result = recommend_recipes(conn, as_of="2026-04-12")
+    result = recommend_recipes(conn, as_of="2026-04-12", include_needs_shopping=True)
     assert len(result.recommendations) == 2
     # Quick Pasta should rank first (make_now, uses expiring spinach)
     assert result.recommendations[0].recipe_title == "Quick Pasta"

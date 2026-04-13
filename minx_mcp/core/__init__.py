@@ -1,11 +1,13 @@
 from minx_mcp.core.events import (
-    AnomaliesDetectedPayload,
     Event,
+    emit_event,
+    query_events,
+)
+from minx_mcp.finance.events import (
+    AnomaliesDetectedPayload,
     ReportGeneratedPayload,
     TransactionsCategorizedPayload,
     TransactionsImportedPayload,
-    emit_event,
-    query_events,
 )
 
 __all__ = [

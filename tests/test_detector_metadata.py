@@ -82,6 +82,8 @@ class TestDetectorDataclass:
         expected = {
             "finance.spending_spike",
             "finance.open_loops",
+            "nutrition.low_protein",
+            "nutrition.skipped_meals",
             "core.goal_drift",
             "finance.category_drift",
             "finance.goal_risk",

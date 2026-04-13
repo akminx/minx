@@ -230,6 +230,8 @@ def test_detectors_registry_is_in_spec_order():
     assert [detector.key for detector in DETECTORS] == [
         "finance.spending_spike",
         "finance.open_loops",
+        "nutrition.low_protein",
+        "nutrition.skipped_meals",
         "core.goal_drift",
         "finance.category_drift",
         "finance.goal_risk",

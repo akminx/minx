@@ -14,6 +14,7 @@ from minx_mcp.core.models import InsightCandidate, OpenLoop, ReadModels
 from minx_mcp.money import format_cents
 
 DetectorFn = Callable[[ReadModels], list[InsightCandidate]]
+LOW_PROTEIN_THRESHOLD_GRAMS = 50.0
 
 
 @dataclass(frozen=True)
@@ -89,9 +90,56 @@ def detect_open_loops(read_models: ReadModels) -> list[InsightCandidate]:
     return insights
 
 
+def detect_low_protein(read_models: ReadModels) -> list[InsightCandidate]:
+    nutrition = read_models.nutrition
+    if nutrition is None or nutrition.protein_grams is None:
+        return []
+    if nutrition.protein_grams >= LOW_PROTEIN_THRESHOLD_GRAMS:
+        return []
+    return [
+        InsightCandidate(
+            insight_type="nutrition.low_protein",
+            dedupe_key=f"{nutrition.date}:low_protein",
+            summary=(
+                f"Protein intake is {nutrition.protein_grams:.0f}g today, "
+                f"below {LOW_PROTEIN_THRESHOLD_GRAMS:.0f}g target."
+            ),
+            supporting_signals=[f"{nutrition.meal_count} meals logged"],
+            confidence=0.9,
+            severity="info",
+            actionability="suggestion",
+            source="detector",
+        )
+    ]
+
+
+def detect_skipped_meals(read_models: ReadModels) -> list[InsightCandidate]:
+    nutrition = read_models.nutrition
+    if nutrition is None or not nutrition.skipped_meal_signals:
+        return []
+    skipped = ", ".join(
+        signal.replace("no ", "").replace(" logged", "")
+        for signal in nutrition.skipped_meal_signals
+    )
+    return [
+        InsightCandidate(
+            insight_type="nutrition.skipped_meals",
+            dedupe_key=f"{nutrition.date}:skipped_meals",
+            summary=f"Missing meals today: {skipped}.",
+            supporting_signals=nutrition.skipped_meal_signals,
+            confidence=0.85,
+            severity="info",
+            actionability="suggestion",
+            source="detector",
+        )
+    ]
+
+
 DETECTORS: list[Detector] = [
     Detector(key="finance.spending_spike", fn=detect_spending_spike, tags=frozenset({"finance"})),
     Detector(key="finance.open_loops", fn=detect_open_loops, tags=frozenset({"finance"})),
+    Detector(key="nutrition.low_protein", fn=detect_low_protein, tags=frozenset({"nutrition"})),
+    Detector(key="nutrition.skipped_meals", fn=detect_skipped_meals, tags=frozenset({"nutrition"})),
     Detector(key="core.goal_drift", fn=detect_goal_drift, tags=frozenset({"goals"})),
     Detector(key="finance.category_drift", fn=detect_category_drift, tags=frozenset({"finance", "goals"})),
     Detector(key="finance.goal_risk", fn=detect_goal_finance_risks, tags=frozenset({"finance", "goals"})),
