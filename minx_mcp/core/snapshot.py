@@ -52,6 +52,7 @@ async def build_daily_snapshot(
             signals=detector_signals,
             attention_items=_build_attention_items(read_models, detector_signals),
             nutrition=read_models.nutrition,
+            training=read_models.training,
             persistence_warning=warning,
         )
     finally:
@@ -69,6 +70,7 @@ def _build_snapshot_models(
         review_date,
         finance_api=finance_api,
         meals_api=ctx.meals_api,
+        training_api=ctx.training_api,
     )
 
 

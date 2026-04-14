@@ -1,10 +1,15 @@
 # minx-mcp
 
-A personal Life OS built as a set of MCP servers. Domain MCPs own facts (Finance today, Meals and Training planned). Minx Core owns interpretation — it consumes domain events, runs deterministic detectors, and exposes structured snapshots, historical signals, and goal trajectories for any MCP-capable harness to consume.
+A personal Life OS built as a set of MCP servers. Domain MCPs own facts (Finance, Meals, and Training). Minx Core owns interpretation — it consumes domain events, runs deterministic detectors, and exposes structured snapshots, historical signals, and goal trajectories for any MCP-capable harness to consume.
 
 **Architecture:** Domains emit events → Core builds read models → Detectors generate signals → Harness consumes structured data and owns narrative, coaching, and scheduling. See [architecture design](docs/superpowers/specs/2026-04-06-minx-life-os-architecture-design.md) for the full picture.
 
-**Current state:** Slices 1–2.5 implemented. Finance domain is mature. Core exposes `get_daily_snapshot`, `get_insight_history`, `get_goal_trajectory`, `persist_note`, `goal_parse`, goal CRUD, and `finance_query` (all with dual-path structured + natural language input). 392 tests, mypy clean.
+**Current state:** Slices 1–4 implemented. Finance/Meals/Training domains are online. Core exposes `get_daily_snapshot`, `get_insight_history`, `get_goal_trajectory`, `persist_note`, `goal_parse`, goal CRUD, and `finance_query` (all with dual-path structured + natural language input), plus nutrition/training-aware detectors and snapshot context.
+
+**Hermes cutover status (2026-04-14):**
+- Legacy MCPs (`financehub`, `souschef`) disabled in Hermes config for rollback-safe migration.
+- Minx MCP endpoints are active for `minx_finance`, `minx_core`, `minx_meals`, and `minx_training`.
+- Finance MCP canonical local port is `8000`.
 
 ## Setup
 
@@ -44,11 +49,49 @@ python3 -m venv .venv
 .venv/bin/python -m minx_mcp.core --transport http --host 127.0.0.1 --port 8001
 ```
 
+## Run meals over HTTP
+
+```bash
+.venv/bin/python -m minx_mcp.meals --transport http --host 127.0.0.1 --port 8002
+```
+
+## Run training over HTTP
+
+```bash
+.venv/bin/python -m minx_mcp.training --transport http --host 127.0.0.1 --port 8003
+```
+
+## Start full stack for Hermes harness
+
+```bash
+./scripts/start_hermes_stack.sh
+```
+
+This launches:
+- `minx-finance` on `http://127.0.0.1:8000`
+- `minx-core` on `http://127.0.0.1:8001`
+- `minx-meals` on `http://127.0.0.1:8002`
+- `minx-training` on `http://127.0.0.1:8003`
+
+## Run Slice 4 cross-domain smoke flow
+
+```bash
+.venv/bin/python scripts/hermes_slice4_smoke.py --db-path ~/.minx/data/minx.db --review-date 2026-04-13
+```
+
+This seeds a small meals+training scenario and prints the combined snapshot payload (including `cross.training_nutrition_mismatch` when conditions are met). By default the script runs against a temporary copy of the database so your source DB is not modified.
+
+To intentionally write seed data directly into the provided DB:
+
+```bash
+.venv/bin/python scripts/hermes_slice4_smoke.py --db-path ~/.minx/data/minx.db --review-date 2026-04-13 --in-place
+```
+
 ## Default local paths
 
 - Database: `~/.minx/data/minx.db`
 - Vault root: `~/Documents/minx-vault`
-- Import staging root: `~/.minx/staging`
+- Import staging root: `~/.minx/data/imports`
 
 You can override these with:
 

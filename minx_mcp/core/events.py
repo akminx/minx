@@ -19,11 +19,13 @@ logger = logging.getLogger(__name__)
 
 from minx_mcp.finance.events import FINANCE_EVENT_PAYLOADS
 from minx_mcp.meals.events import MEALS_EVENT_PAYLOADS
+from minx_mcp.training.events import TRAINING_EVENT_PAYLOADS
 
 
 PAYLOAD_MODELS: dict[str, type[EventPayload]] = {
     **FINANCE_EVENT_PAYLOADS,
     **MEALS_EVENT_PAYLOADS,
+    **TRAINING_EVENT_PAYLOADS,
 }
 
 PAYLOAD_UPCASTERS: dict[str, dict[int, Callable[[dict[str, Any]], dict[str, Any]]]] = {}

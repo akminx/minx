@@ -1,7 +1,7 @@
 # Minx Life OS Roadmap — Implementation Slices
 
 **Date:** 2026-04-06
-**Status:** Active
+**Status:** Active (updated 2026-04-14 after Slice 4 + Hermes cutover)
 **Parent:** [Minx Life OS Architecture Design](2026-04-06-minx-life-os-architecture-design.md)
 
 Each slice gets its own spec, plan, and implementation cycle. The roadmap is ordered by dependency and by trust: Minx should first become useful, then cross-domain, then harness-aware, then durable, and only after that more autonomous.
@@ -15,15 +15,12 @@ The roadmap now follows four arcs:
 - **Interaction + Trust:** add harness-specific flows, sensitivity policy, and ambient inputs without moving business logic out of Core
 - **Intelligence + Autonomy:** add durable memory, reproducibility, bounded playbooks, and richer surfaces
 
-From the current repo baseline, the recommended execution order is:
+From the current repo baseline, the next recommended execution order is:
 
-1. Slice 2.5: MCP Surface Refactor (reshape tool boundary for harness consumption)
-2. Slice 3: Meals MCP (SousChef port)
-3. Slice 4: Training MCP
-4. Slice 6: Durable Memory + Review Reproducibility
-5. Slice 7: Ideas/Journal MCP
-6. Slice 8: Proactive Autonomy
-7. Slice 9: Dashboard + Richer Surfaces
+1. Slice 6: Durable Memory + Review Reproducibility
+2. Slice 7: Ideas/Journal MCP
+3. Slice 8: Proactive Autonomy
+4. Slice 9: Dashboard + Richer Surfaces
 
 Slice 5 (Harness Adaptation) has been removed. The MCP protocol itself provides portability. Harness-specific behavior lives in the harness (e.g. Hermes skill files), not in Core. See the MCP / Harness Responsibility Split section in the architecture design.
 
@@ -166,7 +163,7 @@ This ordering preserves the architecture doc's north star:
 
 ## Slice 3: Meals MCP
 
-**Status:** Not started
+**Status:** Implemented
 
 **Scope:**
 - Meals domain MCP server: meal logs, foods/ingredients, recipes, nutrition facts
@@ -185,7 +182,7 @@ This ordering preserves the architecture doc's north star:
 
 ## Slice 4: Training MCP
 
-**Status:** Not started
+**Status:** Implemented
 
 **Scope:**
 - Training domain MCP server: workout plans, exercise library, session logs, progression

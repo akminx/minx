@@ -49,6 +49,18 @@ def _anomalies_payload(**overrides):
     return payload
 
 
+def _workout_completed_payload(**overrides):
+    payload = {
+        "session_id": 1,
+        "program_id": 2,
+        "set_count": 5,
+        "total_volume_kg": 2100.0,
+        "occurred_at": "2026-04-13T07:30:00Z",
+    }
+    payload.update(overrides)
+    return payload
+
+
 def _insert_raw_event(
     conn,
     *,
@@ -193,6 +205,42 @@ def test_emit_event_raises_on_unknown_event_type(tmp_path):
         )
 
     assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
+def test_emit_training_event_inserts_validated_payload(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+
+    event_id = emit_event(
+        conn,
+        event_type="workout.completed",
+        domain="training",
+        occurred_at="2026-04-13T07:30:00Z",
+        entity_ref="session-1",
+        source="training.service",
+        payload=_workout_completed_payload(),
+    )
+    assert event_id is not None
+    row = conn.execute("SELECT payload FROM events WHERE id = ?", (event_id,)).fetchone()
+    assert row is not None
+    assert json.loads(row["payload"])["set_count"] == 5
+
+
+def test_emit_training_event_returns_none_on_invalid_payload(tmp_path, caplog):
+    conn = get_connection(tmp_path / "minx.db")
+
+    event_id = emit_event(
+        conn,
+        event_type="workout.completed",
+        domain="training",
+        occurred_at="2026-04-13T07:30:00Z",
+        entity_ref="session-1",
+        source="training.service",
+        payload=_workout_completed_payload(set_count="oops"),
+    )
+
+    assert event_id is None
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    assert "workout.completed" in caplog.text
 
 
 def test_emitted_events_commit_with_caller_transaction(tmp_path):

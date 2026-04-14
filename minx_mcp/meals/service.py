@@ -2,19 +2,40 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import date as date_cls
+from datetime import datetime, timedelta
 from pathlib import Path
 from sqlite3 import Connection, Row
 from typing import Self
+from zoneinfo import ZoneInfo
 
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import emit_event
 from minx_mcp.db import get_connection
-from minx_mcp.meals.models import MealEntry, PantryItem, Recipe, RecipeIngredient, RecipeSubstitution
+from minx_mcp.meals.models import (
+    MealEntry,
+    NutritionPlan,
+    NutritionProfile,
+    NutritionTargets,
+    PantryItem,
+    Recipe,
+    RecipeIngredient,
+    RecipeSubstitution,
+)
+from minx_mcp.meals.nutrition import (
+    ACTIVITY_MULTIPLIERS,
+    SEX_BMR_OFFSETS,
+    calculate_nutrition_targets,
+)
 from minx_mcp.meals.pantry import normalize_ingredient, pantry_item_from_row
 from minx_mcp.meals.recipes import parse_recipe_note
+from minx_mcp.preferences import get_preference
+from minx_mcp.time_utils import format_utc_timestamp, normalize_utc_timestamp
 
 EVENT_SOURCE = "meals.service"
 VALID_MEAL_KINDS = {"breakfast", "lunch", "dinner", "snack", "other"}
+VALID_ACTIVITY_LEVELS = set(ACTIVITY_MULTIPLIERS)
+VALID_SEX_VALUES = set(SEX_BMR_OFFSETS)
 
 
 class MealsService:
@@ -64,44 +85,55 @@ class MealsService:
         if meal_kind not in VALID_MEAL_KINDS:
             raise InvalidInputError("meal_kind must be one of breakfast, lunch, dinner, snack, other")
         items = food_items or []
-        cursor = self.conn.execute(
-            """
-            INSERT INTO meals_meal_entries (
-                occurred_at, meal_kind, summary, food_items_json, protein_grams,
-                calories, carbs_grams, fat_grams, notes, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                occurred_at,
-                meal_kind,
-                summary,
-                json.dumps(items),
-                protein_grams,
-                calories,
-                carbs_grams,
-                fat_grams,
-                notes,
-                source,
-            ),
-        )
-        meal_id = cursor.lastrowid or 0
-        emit_event(
-            self.conn,
-            event_type="meal.logged",
-            domain="meals",
-            occurred_at=occurred_at,
-            entity_ref=f"meal-{meal_id}",
-            source=EVENT_SOURCE,
-            payload={
-                "meal_id": meal_id,
-                "meal_kind": meal_kind,
-                "food_count": len(items),
-                "protein_grams": protein_grams,
-                "calories": calories,
-            },
-        )
+        savepoint = "meals_log_meal"
+        self.conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO meals_meal_entries (
+                    occurred_at, meal_kind, summary, food_items_json, protein_grams,
+                    calories, carbs_grams, fat_grams, notes, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    occurred_at,
+                    meal_kind,
+                    summary,
+                    json.dumps(items),
+                    protein_grams,
+                    calories,
+                    carbs_grams,
+                    fat_grams,
+                    notes,
+                    source,
+                ),
+            )
+            meal_id = int(cursor.lastrowid or 0)
+            event_id = emit_event(
+                self.conn,
+                event_type="meal.logged",
+                domain="meals",
+                occurred_at=occurred_at,
+                entity_ref=f"meal-{meal_id}",
+                source=EVENT_SOURCE,
+                payload={
+                    "meal_id": meal_id,
+                    "meal_kind": meal_kind,
+                    "food_count": len(items),
+                    "protein_grams": protein_grams,
+                    "calories": calories,
+                },
+            )
+            if event_id is None:
+                raise RuntimeError("meal.logged event emission failed")
+            entry = self._get_meal_entry(meal_id)
+        except Exception:
+            self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+        self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         self.conn.commit()
-        return self._get_meal_entry(meal_id)
+        return entry
 
     def add_pantry_item(
         self,
@@ -189,22 +221,173 @@ class MealsService:
         return [pantry_item_from_row(row) for row in rows]
 
     def list_meals(self, date: str | None = None) -> list[MealEntry]:
-        params: tuple[str, str] | tuple[()] = ()
-        where = ""
-        if date is not None:
-            where = "WHERE occurred_at >= ? AND occurred_at < date(?, '+1 day')"
-            params = (date, date)
         rows = self.conn.execute(
-            f"""
+            """
             SELECT id, occurred_at, meal_kind, summary, food_items_json, protein_grams,
                    calories, carbs_grams, fat_grams, notes, source
             FROM meals_meal_entries
-            {where}
             ORDER BY occurred_at ASC, id ASC
-            """,
-            params,
+            """
         ).fetchall()
-        return [_meal_entry_from_row(row) for row in rows]
+        entries = [_meal_entry_from_row(row) for row in rows]
+        if date is None:
+            return entries
+
+        start_utc, end_utc = _local_day_utc_bounds(date, _resolve_timezone_name(self.conn))
+        normalized = [
+            (normalize_utc_timestamp(entry.occurred_at), entry)
+            for entry in entries
+        ]
+        return [
+            entry
+            for occurred_at, entry in sorted(normalized, key=lambda item: (item[0], item[1].id))
+            if start_utc <= occurred_at < end_utc
+        ]
+
+    def set_nutrition_profile(
+        self,
+        *,
+        sex: str,
+        age_years: int,
+        height_cm: float,
+        weight_kg: float,
+        activity_level: str,
+        goal: str = "fat_loss",
+        calorie_deficit_kcal: int = 400,
+        protein_g_per_kg: float = 2.0,
+        fat_g_per_kg: float = 0.77,
+        source: str = "manual",
+    ) -> NutritionPlan:
+        normalized_sex = sex.strip().lower()
+        normalized_activity = activity_level.strip().lower()
+        normalized_goal = goal.strip().lower() or "fat_loss"
+        if normalized_sex not in VALID_SEX_VALUES:
+            raise InvalidInputError("sex must be one of male, female, other")
+        if age_years <= 0:
+            raise InvalidInputError("age_years must be a positive integer")
+        if height_cm <= 0:
+            raise InvalidInputError("height_cm must be a positive number")
+        if weight_kg <= 0:
+            raise InvalidInputError("weight_kg must be a positive number")
+        if normalized_activity not in VALID_ACTIVITY_LEVELS:
+            levels = ", ".join(sorted(VALID_ACTIVITY_LEVELS))
+            raise InvalidInputError(f"activity_level must be one of: {levels}")
+        if calorie_deficit_kcal < 0:
+            raise InvalidInputError("calorie_deficit_kcal must be zero or greater")
+        if protein_g_per_kg <= 0:
+            raise InvalidInputError("protein_g_per_kg must be positive")
+        if fat_g_per_kg <= 0:
+            raise InvalidInputError("fat_g_per_kg must be positive")
+
+        calculated = calculate_nutrition_targets(
+            sex=normalized_sex,
+            age_years=age_years,
+            height_cm=height_cm,
+            weight_kg=weight_kg,
+            activity_level=normalized_activity,
+            calorie_deficit_kcal=calorie_deficit_kcal,
+            protein_g_per_kg=protein_g_per_kg,
+            fat_g_per_kg=fat_g_per_kg,
+        )
+
+        self.conn.execute(
+            """
+            INSERT INTO meals_nutrition_profiles (
+                id, sex, age_years, height_cm, weight_kg, activity_level,
+                goal, calorie_deficit_kcal, protein_g_per_kg, fat_g_per_kg,
+                source
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                sex = excluded.sex,
+                age_years = excluded.age_years,
+                height_cm = excluded.height_cm,
+                weight_kg = excluded.weight_kg,
+                activity_level = excluded.activity_level,
+                goal = excluded.goal,
+                calorie_deficit_kcal = excluded.calorie_deficit_kcal,
+                protein_g_per_kg = excluded.protein_g_per_kg,
+                fat_g_per_kg = excluded.fat_g_per_kg,
+                source = excluded.source,
+                updated_at = datetime('now')
+            """,
+            (
+                normalized_sex,
+                age_years,
+                height_cm,
+                weight_kg,
+                normalized_activity,
+                normalized_goal,
+                calorie_deficit_kcal,
+                protein_g_per_kg,
+                fat_g_per_kg,
+                source,
+            ),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO meals_nutrition_targets (
+                profile_id, bmr_kcal, tdee_kcal, calorie_target_kcal,
+                protein_target_grams, fat_target_grams, carbs_target_grams
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id) DO UPDATE SET
+                bmr_kcal = excluded.bmr_kcal,
+                tdee_kcal = excluded.tdee_kcal,
+                calorie_target_kcal = excluded.calorie_target_kcal,
+                protein_target_grams = excluded.protein_target_grams,
+                fat_target_grams = excluded.fat_target_grams,
+                carbs_target_grams = excluded.carbs_target_grams,
+                updated_at = datetime('now')
+            """,
+            (
+                1,
+                calculated.bmr_kcal,
+                calculated.tdee_kcal,
+                calculated.calorie_target_kcal,
+                calculated.protein_target_grams,
+                calculated.fat_target_grams,
+                calculated.carbs_target_grams,
+            ),
+        )
+        self.conn.commit()
+
+        plan = self.get_nutrition_plan()
+        if plan is None:
+            raise RuntimeError("nutrition profile persisted but could not be loaded")
+        return plan
+
+    def get_nutrition_profile(self) -> NutritionProfile | None:
+        row = self.conn.execute(
+            """
+            SELECT id, sex, age_years, height_cm, weight_kg, activity_level,
+                   goal, calorie_deficit_kcal, protein_g_per_kg, fat_g_per_kg,
+                   source
+            FROM meals_nutrition_profiles
+            WHERE id = 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return _nutrition_profile_from_row(row)
+
+    def get_nutrition_targets(self) -> NutritionTargets | None:
+        row = self.conn.execute(
+            """
+            SELECT profile_id, bmr_kcal, tdee_kcal, calorie_target_kcal,
+                   protein_target_grams, fat_target_grams, carbs_target_grams
+            FROM meals_nutrition_targets
+            WHERE profile_id = 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return _nutrition_targets_from_row(row)
+
+    def get_nutrition_plan(self) -> NutritionPlan | None:
+        profile = self.get_nutrition_profile()
+        targets = self.get_nutrition_targets()
+        if profile is None or targets is None:
+            return None
+        return NutritionPlan(profile=profile, targets=targets)
 
     def index_recipe(self, relative_path: str) -> Recipe:
         if self._vault_root is None:
@@ -418,6 +601,34 @@ def _meal_entry_from_row(row: Row) -> MealEntry:
     )
 
 
+def _nutrition_profile_from_row(row: Row) -> NutritionProfile:
+    return NutritionProfile(
+        id=int(row["id"]),
+        sex=str(row["sex"]),
+        age_years=int(row["age_years"]),
+        height_cm=float(row["height_cm"]),
+        weight_kg=float(row["weight_kg"]),
+        activity_level=str(row["activity_level"]),
+        goal=str(row["goal"]),
+        calorie_deficit_kcal=int(row["calorie_deficit_kcal"]),
+        protein_g_per_kg=float(row["protein_g_per_kg"]),
+        fat_g_per_kg=float(row["fat_g_per_kg"]),
+        source=str(row["source"]),
+    )
+
+
+def _nutrition_targets_from_row(row: Row) -> NutritionTargets:
+    return NutritionTargets(
+        profile_id=int(row["profile_id"]),
+        bmr_kcal=int(row["bmr_kcal"]),
+        tdee_kcal=int(row["tdee_kcal"]),
+        calorie_target_kcal=int(row["calorie_target_kcal"]),
+        protein_target_grams=int(row["protein_target_grams"]),
+        fat_target_grams=int(row["fat_target_grams"]),
+        carbs_target_grams=int(row["carbs_target_grams"]),
+    )
+
+
 def _ingredient_from_row(row: Row) -> RecipeIngredient:
     return RecipeIngredient(
         id=int(row["id"]),
@@ -473,3 +684,20 @@ def _recipe_from_row(
         ingredients=ingredients,
         substitutions=substitutions,
     )
+
+
+def _resolve_timezone_name(conn: Connection) -> str:
+    configured = get_preference(conn, "core", "timezone", None)
+    if isinstance(configured, str) and configured:
+        return configured
+    tzinfo = datetime.now().astimezone().tzinfo
+    key = getattr(tzinfo, "key", None)
+    return key if isinstance(key, str) and key else "UTC"
+
+
+def _local_day_utc_bounds(review_date: str, timezone_name: str) -> tuple[str, str]:
+    zone = ZoneInfo(timezone_name)
+    local_day = date_cls.fromisoformat(review_date)
+    local_start = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
+    local_end = local_start + timedelta(days=1)
+    return format_utc_timestamp(local_start), format_utc_timestamp(local_end)

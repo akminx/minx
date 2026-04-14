@@ -169,13 +169,14 @@ class MealsSeeder:
         tags: list[str] | None = None,
         image_ref: str | None = None,
         source_url: str | None = None,
+        nutrition_summary: dict[str, object] | None = None,
     ) -> int:
         cursor = self._conn.execute(
             """
             INSERT INTO meals_recipes (
                 vault_path, title, normalized_title, source_url,
-                image_ref, tags_json, content_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                image_ref, tags_json, nutrition_summary_json, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 vault_path,
@@ -184,6 +185,7 @@ class MealsSeeder:
                 source_url,
                 image_ref,
                 json.dumps(tags or []),
+                json.dumps(nutrition_summary) if nutrition_summary is not None else None,
                 content_hash,
             ),
         )

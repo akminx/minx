@@ -135,11 +135,116 @@ def detect_skipped_meals(read_models: ReadModels) -> list[InsightCandidate]:
     ]
 
 
+def detect_training_adherence_drop(read_models: ReadModels) -> list[InsightCandidate]:
+    training = read_models.training
+    if training is None or training.adherence_signal != "low":
+        return []
+    return [
+        InsightCandidate(
+            insight_type="training.adherence_drop",
+            dedupe_key=f"{training.date}:training_adherence_drop",
+            summary=f"Training adherence dropped this week ({training.sessions_logged} session logged).",
+            supporting_signals=[
+                f"adherence signal: {training.adherence_signal}",
+                f"sessions in last window: {training.sessions_logged}",
+            ],
+            confidence=0.88,
+            severity="warning",
+            actionability="action_needed",
+            source="detector",
+        )
+    ]
+
+
+def detect_training_volume_stalled(read_models: ReadModels) -> list[InsightCandidate]:
+    training = read_models.training
+    if training is None:
+        return []
+    if training.sessions_logged < 2:
+        return []
+    if training.total_volume_kg >= 1_000.0:
+        return []
+    return [
+        InsightCandidate(
+            insight_type="training.volume_stalled",
+            dedupe_key=f"{training.date}:training_volume_stalled",
+            summary="Training volume looks stalled over the recent window.",
+            supporting_signals=[
+                f"total volume: {training.total_volume_kg:.1f}kg",
+                f"sessions logged: {training.sessions_logged}",
+            ],
+            confidence=0.8,
+            severity="info",
+            actionability="suggestion",
+            source="detector",
+        )
+    ]
+
+
+def detect_training_recovery_risk(read_models: ReadModels) -> list[InsightCandidate]:
+    training = read_models.training
+    if training is None:
+        return []
+    if training.sessions_logged < 5:
+        return []
+    return [
+        InsightCandidate(
+            insight_type="training.recovery_risk",
+            dedupe_key=f"{training.date}:training_recovery_risk",
+            summary="Training frequency may be pushing recovery limits.",
+            supporting_signals=[
+                f"sessions logged: {training.sessions_logged}",
+                f"last session: {training.last_session_at or 'unknown'}",
+            ],
+            confidence=0.78,
+            severity="warning",
+            actionability="suggestion",
+            source="detector",
+        )
+    ]
+
+
+def detect_training_with_low_protein(read_models: ReadModels) -> list[InsightCandidate]:
+    training = read_models.training
+    nutrition = read_models.nutrition
+    if training is None or nutrition is None or nutrition.protein_grams is None:
+        return []
+    if training.adherence_signal not in {"steady", "on_track"}:
+        return []
+    if training.sessions_logged < 2:
+        return []
+    if nutrition.protein_grams >= LOW_PROTEIN_THRESHOLD_GRAMS:
+        return []
+    return [
+        InsightCandidate(
+            insight_type="cross.training_nutrition_mismatch",
+            dedupe_key=f"{training.date}:training_nutrition_mismatch",
+            summary="Training adherence is steady, but protein intake is still low.",
+            supporting_signals=[
+                f"adherence signal: {training.adherence_signal}",
+                f"protein intake: {nutrition.protein_grams:.0f}g",
+            ],
+            confidence=0.84,
+            severity="info",
+            actionability="suggestion",
+            source="detector",
+        )
+    ]
+
+
 DETECTORS: list[Detector] = [
     Detector(key="finance.spending_spike", fn=detect_spending_spike, tags=frozenset({"finance"})),
     Detector(key="finance.open_loops", fn=detect_open_loops, tags=frozenset({"finance"})),
     Detector(key="nutrition.low_protein", fn=detect_low_protein, tags=frozenset({"nutrition"})),
     Detector(key="nutrition.skipped_meals", fn=detect_skipped_meals, tags=frozenset({"nutrition"})),
+    Detector(key="training.adherence_drop", fn=detect_training_adherence_drop, tags=frozenset({"training"})),
+    Detector(key="training.volume_stalled", fn=detect_training_volume_stalled, tags=frozenset({"training"})),
+    Detector(key="training.recovery_risk", fn=detect_training_recovery_risk, tags=frozenset({"training"})),
+    Detector(
+        key="cross.training_nutrition_mismatch",
+        fn=detect_training_with_low_protein,
+        tags=frozenset({"training", "nutrition"}),
+    ),
     Detector(key="core.goal_drift", fn=detect_goal_drift, tags=frozenset({"goals"})),
     Detector(key="finance.category_drift", fn=detect_category_drift, tags=frozenset({"finance", "goals"})),
     Detector(key="finance.goal_risk", fn=detect_goal_finance_risks, tags=frozenset({"finance", "goals"})),

@@ -105,11 +105,56 @@ def create_meals_server(service: MealsService) -> FastMCP:
         )
 
     @mcp.tool(name="recommend_recipes")
-    def recommend_recipes(include_needs_shopping: bool = False) -> dict[str, object]:
+    def recommend_recipes(
+        include_needs_shopping: bool = False,
+        apply_nutrition_filter: bool = False,
+    ) -> dict[str, object]:
         return wrap_tool_call(
             lambda: asdict(
-                recommend(service.conn, include_needs_shopping=include_needs_shopping)
+                recommend(
+                    service.conn,
+                    include_needs_shopping=include_needs_shopping,
+                    apply_nutrition_filter=apply_nutrition_filter,
+                )
             )
+        )
+
+    @mcp.tool(name="nutrition_profile_set")
+    def nutrition_profile_set(
+        sex: str,
+        age_years: int,
+        height_cm: float,
+        weight_kg: float,
+        activity_level: str,
+        goal: str = "fat_loss",
+        calorie_deficit_kcal: int = 400,
+        protein_g_per_kg: float = 2.0,
+        fat_g_per_kg: float = 0.77,
+    ) -> dict[str, object]:
+        return wrap_tool_call(
+            lambda: {
+                "plan": asdict(
+                    service.set_nutrition_profile(
+                        sex=sex,
+                        age_years=age_years,
+                        height_cm=height_cm,
+                        weight_kg=weight_kg,
+                        activity_level=activity_level,
+                        goal=goal,
+                        calorie_deficit_kcal=calorie_deficit_kcal,
+                        protein_g_per_kg=protein_g_per_kg,
+                        fat_g_per_kg=fat_g_per_kg,
+                    )
+                )
+            }
+        )
+
+    @mcp.tool(name="nutrition_profile_get")
+    def nutrition_profile_get() -> dict[str, object]:
+        return wrap_tool_call(
+            lambda: {
+                "plan": asdict(plan) if (plan := service.get_nutrition_plan()) is not None else None
+            }
         )
 
     return mcp

@@ -1,16 +1,29 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import subprocess
 import sys
 import time
 from typing import TextIO
 
+
+def _env_port(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 SERVERS = [
-    {"name": "minx-core", "module": "minx_mcp.core", "port": 8001},
-    {"name": "minx-finance", "module": "minx_mcp.finance", "port": 8000},
-    {"name": "minx-meals", "module": "minx_mcp.meals", "port": 8002},
+    {"name": "minx-core", "module": "minx_mcp.core", "port": _env_port("MINX_CORE_PORT", 8001)},
+    {"name": "minx-finance", "module": "minx_mcp.finance", "port": _env_port("MINX_FINANCE_PORT", 8000)},
+    {"name": "minx-meals", "module": "minx_mcp.meals", "port": _env_port("MINX_MEALS_PORT", 8002)},
+    {"name": "minx-training", "module": "minx_mcp.training", "port": _env_port("MINX_TRAINING_PORT", 8003)},
 ]
 
 

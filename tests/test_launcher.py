@@ -30,7 +30,7 @@ class _FakeProcess:
 
 def test_launcher_builds_distinct_http_commands_for_all_servers() -> None:
     commands = build_launch_commands(
-        ["minx-core", "minx-finance", "minx-meals"],
+        ["minx-core", "minx-finance", "minx-meals", "minx-training"],
         transport="http",
         python_executable=sys.executable,
     )
@@ -62,6 +62,15 @@ def test_launcher_builds_distinct_http_commands_for_all_servers() -> None:
             "http",
             "--port",
             "8002",
+        ],
+        [
+            sys.executable,
+            "-m",
+            "minx_mcp.training",
+            "--transport",
+            "http",
+            "--port",
+            "8003",
         ],
     ]
 

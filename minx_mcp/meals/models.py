@@ -88,11 +88,68 @@ class ClassificationResult:
 
 
 @dataclass(frozen=True)
+class NutritionProfile:
+    id: int
+    sex: str
+    age_years: int
+    height_cm: float
+    weight_kg: float
+    activity_level: str
+    goal: str
+    calorie_deficit_kcal: int
+    protein_g_per_kg: float
+    fat_g_per_kg: float
+    source: str
+
+
+@dataclass(frozen=True)
+class NutritionTargets:
+    profile_id: int
+    bmr_kcal: int
+    tdee_kcal: int
+    calorie_target_kcal: int
+    protein_target_grams: int
+    fat_target_grams: int
+    carbs_target_grams: int
+
+
+@dataclass(frozen=True)
+class NutritionPlan:
+    profile: NutritionProfile
+    targets: NutritionTargets
+
+
+@dataclass(frozen=True)
+class RecommendationNutritionContext:
+    date: str
+    calorie_target_kcal: int
+    protein_target_grams: int
+    consumed_calories_kcal: int | None
+    consumed_protein_grams: float | None
+    remaining_calorie_budget_kcal: int | None
+    remaining_protein_target_grams: float | None
+
+
+@dataclass(frozen=True)
+class RecipeNutritionFit:
+    calories_per_serving: int | None
+    protein_grams_per_serving: float | None
+    fits_remaining_calories: bool | None
+    supports_remaining_protein: bool | None
+    reasons: list[str]
+
+
+@dataclass(frozen=True)
 class RecipeMetadata:
     vault_path: str
     image_ref: str | None
     tags: list[str]
     source_url: str | None
+    prep_time_minutes: int | None = None
+    cook_time_minutes: int | None = None
+    servings: int | None = None
+    notes: str | None = None
+    nutrition_summary: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +167,7 @@ class RecipeRecommendation:
     missing_required_ingredients: list[str]
     reasons: list[str]
     recipe: RecipeMetadata
+    nutrition_fit: RecipeNutritionFit | None = None
 
 
 @dataclass(frozen=True)
@@ -117,4 +175,4 @@ class RecommendationResult:
     recommendations: list[RecipeRecommendation]
     included_classes: list[str]
     shopping_lists_generated: list[object] = field(default_factory=list)
-
+    nutrition_context: RecommendationNutritionContext | None = None

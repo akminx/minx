@@ -15,6 +15,7 @@ from minx_mcp.core.models import (
     OpenLoopsSnapshot,
     ReadModels,
     SpendingSnapshot,
+    TrainingReadInterface,
     TimelineEntry,
 )
 from minx_mcp.finance.read_api import FinanceReadAPI
@@ -142,12 +143,17 @@ def build_read_models(
     review_date: str,
     finance_api: FinanceReadInterface | None = None,
     meals_api: MealsReadInterface | None = None,
+    training_api: TrainingReadInterface | None = None,
 ) -> ReadModels:
     finance_api = finance_api or FinanceReadAPI(conn)
     if meals_api is None:
         from minx_mcp.meals.read_api import MealsReadAPI
 
         meals_api = MealsReadAPI(conn)
+    if training_api is None:
+        from minx_mcp.training.read_api import TrainingReadAPI
+
+        training_api = TrainingReadAPI(conn)
     goals = GoalService(conn).list_active_goals(review_date)
     uncategorized = finance_api.get_uncategorized(review_date, review_date)
     return ReadModels(
@@ -160,8 +166,10 @@ def build_read_models(
         ),
         goal_progress=build_goal_progress(review_date, goals, finance_api),
         nutrition=meals_api.get_nutrition_summary(review_date),
+        training=training_api.get_training_summary(review_date),
         finance_api=finance_api,
         meals_api=meals_api,
+        training_api=training_api,
     )
 
 
@@ -208,4 +216,14 @@ def _summarize_event(event: Event) -> str:
     if event.event_type == "nutrition.day_updated":
         protein = payload.get("protein_grams", "?")
         return f"Nutrition update: {payload['meal_count']} meals, {protein}g protein"
+    if event.event_type == "workout.completed":
+        return (
+            f"Logged workout: {payload.get('set_count', 0)} sets, "
+            f"{float(payload.get('total_volume_kg', 0.0)):.0f}kg volume"
+        )
+    if event.event_type == "training.program_updated":
+        state = "active" if payload.get("is_active") else "updated"
+        return f"Training program {payload.get('name', 'program')} {state}"
+    if event.event_type == "training.milestone_reached":
+        return str(payload.get("summary", "Training milestone reached"))
     return event.event_type

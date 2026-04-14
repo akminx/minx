@@ -5,7 +5,9 @@ import pytest
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import query_events
 from minx_mcp.db import get_connection
+import minx_mcp.meals.service as meals_service_module
 from minx_mcp.meals.service import MealsService
+from minx_mcp.preferences import set_preference
 
 
 def test_log_meal_emits_event(db_path) -> None:
@@ -37,6 +39,24 @@ def test_log_meal_validates_kind(db_path) -> None:
     with pytest.raises(InvalidInputError):
         with svc:
             svc.log_meal(occurred_at="2026-04-12T12:00:00Z", meal_kind="invalid")
+
+
+def test_log_meal_rolls_back_when_event_emission_fails(db_path, monkeypatch) -> None:
+    svc = MealsService(db_path)
+    monkeypatch.setattr(meals_service_module, "emit_event", lambda *args, **kwargs: None)
+    with pytest.raises(RuntimeError):
+        with svc:
+            svc.log_meal(
+                occurred_at="2026-04-12T12:00:00Z",
+                meal_kind="lunch",
+                summary="event failure",
+            )
+    conn = get_connection(db_path)
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM meals_meal_entries").fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 0
 
 
 def test_pantry_crud(db_path) -> None:
@@ -110,3 +130,61 @@ def test_scan_vault_recipes_rejects_directories_outside_vault(db_path, tmp_path)
     with pytest.raises(InvalidInputError):
         with svc:
             svc.scan_vault_recipes(str(outside))
+
+
+def test_set_nutrition_profile_persists_calculated_targets(db_path) -> None:
+    svc = MealsService(db_path)
+    with svc:
+        result = svc.set_nutrition_profile(
+            sex="male",
+            age_years=30,
+            height_cm=180.0,
+            weight_kg=80.0,
+            activity_level="moderately_active",
+            goal="fat_loss",
+            calorie_deficit_kcal=400,
+            protein_g_per_kg=2.0,
+            fat_g_per_kg=0.77,
+        )
+        profile = svc.get_nutrition_profile()
+
+    assert result.targets.bmr_kcal == 1780
+    assert result.targets.tdee_kcal == 2759
+    assert result.targets.calorie_target_kcal == 2359
+    assert result.targets.protein_target_grams == 160
+    assert result.targets.fat_target_grams == 62
+    assert result.targets.carbs_target_grams == 290
+    assert profile is not None
+    assert profile.activity_level == "moderately_active"
+
+
+def test_set_nutrition_profile_validates_inputs(db_path) -> None:
+    svc = MealsService(db_path)
+    with pytest.raises(InvalidInputError):
+        with svc:
+            svc.set_nutrition_profile(
+                sex="male",
+                age_years=0,
+                height_cm=180.0,
+                weight_kg=80.0,
+                activity_level="moderately_active",
+            )
+
+
+def test_list_meals_uses_timezone_local_day_boundaries(db_path) -> None:
+    svc = MealsService(db_path)
+    with svc:
+        set_preference(svc.conn, "core", "timezone", "America/Chicago")
+        svc.log_meal(
+            occurred_at="2026-04-13T04:30:00Z",
+            meal_kind="snack",
+            summary="late prior local day",
+        )
+        svc.log_meal(
+            occurred_at="2026-04-13T05:30:00Z",
+            meal_kind="breakfast",
+            summary="same local day after midnight",
+        )
+        meals = svc.list_meals("2026-04-13")
+
+    assert [meal.summary for meal in meals] == ["same local day after midnight"]

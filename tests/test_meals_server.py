@@ -24,6 +24,8 @@ def test_meals_server_registers_expected_tools(db_path, tmp_path) -> None:
     assert "pantry_add" in tool_names
     assert "pantry_list" in tool_names
     assert "recommend_recipes" in tool_names
+    assert "nutrition_profile_set" in tool_names
+    assert "nutrition_profile_get" in tool_names
 
 
 def test_meal_log_tool(db_path, tmp_path) -> None:
@@ -47,5 +49,28 @@ def test_launcher_server_manifest_includes_meals() -> None:
     from minx_mcp.launcher import SERVERS
 
     names = [server["name"] for server in SERVERS]
-    assert names == ["minx-core", "minx-finance", "minx-meals"]
+    assert names == ["minx-core", "minx-finance", "minx-meals", "minx-training"]
     assert all("module" in server for server in SERVERS)
+
+
+def test_nutrition_profile_tools(db_path, tmp_path) -> None:
+    server = create_meals_server(MealsService(db_path, vault_root=tmp_path))
+
+    set_result = _call(
+        server,
+        "nutrition_profile_set",
+        {
+            "sex": "male",
+            "age_years": 30,
+            "height_cm": 180.0,
+            "weight_kg": 80.0,
+            "activity_level": "moderately_active",
+            "calorie_deficit_kcal": 400,
+        },
+    )
+    get_result = _call(server, "nutrition_profile_get", {})
+
+    assert set_result["success"] is True
+    assert set_result["data"]["plan"]["targets"]["calorie_target_kcal"] == 2359
+    assert get_result["success"] is True
+    assert get_result["data"]["plan"]["profile"]["activity_level"] == "moderately_active"
