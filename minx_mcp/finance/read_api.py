@@ -1,69 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, timedelta
 from sqlite3 import Connection
 
+from minx_mcp.finance.read_models import (
+    CategoryDelta,
+    CategorySpending,
+    ImportJobIssue,
+    IncomeSource,
+    IncomeSummary,
+    MerchantSpending,
+    PeriodComparison,
+    SpendingSummary,
+    UncategorizedSummary,
+)
 from minx_mcp.jobs import STUCK_JOB_TIMEOUT_MINUTES
+from minx_mcp.time_utils import next_day
 
 _GOAL_INELIGIBLE_CATEGORY_NAMES = ("Income",)
-
-
-@dataclass(frozen=True)
-class CategorySpending:
-    category_name: str
-    total_spent_cents: int
-
-
-@dataclass(frozen=True)
-class MerchantSpending:
-    merchant: str
-    total_spent_cents: int
-    transaction_count: int
-
-
-@dataclass(frozen=True)
-class SpendingSummary:
-    total_spent_cents: int
-    by_category: list[CategorySpending]
-    top_merchants: list[MerchantSpending]
-
-
-@dataclass(frozen=True)
-class UncategorizedSummary:
-    transaction_count: int
-    total_spent_cents: int
-
-
-@dataclass(frozen=True)
-class IncomeSummary:
-    total_income_cents: int
-    by_source: list[MerchantSpending]
-
-
-@dataclass(frozen=True)
-class ImportJobIssue:
-    job_id: str
-    issue_kind: str
-    status: str
-    source_ref: str | None
-    updated_at: str
-    error_message: str | None
-
-
-@dataclass(frozen=True)
-class CategoryDelta:
-    category_name: str
-    current_total_spent_cents: int
-    prior_total_spent_cents: int
-    delta_spent_cents: int
-
-
-@dataclass(frozen=True)
-class PeriodComparison:
-    current_total_spent_cents: int
-    prior_total_spent_cents: int
-    category_deltas: list[CategoryDelta]
 
 
 class FinanceReadAPI:
@@ -73,7 +26,7 @@ class FinanceReadAPI:
         self._db = db
 
     def get_spending_summary(self, start_date: str, end_date: str) -> SpendingSummary:
-        end_exclusive = _next_day(end_date)
+        end_exclusive = next_day(end_date)
         total_row = self._db.execute(
             """
             SELECT COALESCE(ABS(SUM(CASE WHEN amount_cents < 0 THEN amount_cents END)), 0) AS total_spent_cents
@@ -131,7 +84,7 @@ class FinanceReadAPI:
         )
 
     def get_uncategorized(self, start_date: str, end_date: str) -> UncategorizedSummary:
-        end_exclusive = _next_day(end_date)
+        end_exclusive = next_day(end_date)
         row = self._db.execute(
             """
             SELECT
@@ -197,11 +150,13 @@ class FinanceReadAPI:
         prior_start: str,
         prior_end: str,
     ) -> PeriodComparison:
-        current_end_exclusive = _next_day(current_end)
-        prior_end_exclusive = _next_day(prior_end)
+        current_end_exclusive = next_day(current_end)
+        prior_end_exclusive = next_day(prior_end)
         current_total = _read_total_spent_cents(self._db, current_start, current_end_exclusive)
         prior_total = _read_total_spent_cents(self._db, prior_start, prior_end_exclusive)
-        current_by_category = _read_category_spend_map(self._db, current_start, current_end_exclusive)
+        current_by_category = _read_category_spend_map(
+            self._db, current_start, current_end_exclusive
+        )
         prior_by_category = _read_category_spend_map(self._db, prior_start, prior_end_exclusive)
         category_deltas = [
             CategoryDelta(
@@ -213,9 +168,7 @@ class FinanceReadAPI:
             )
             for category_name in set(current_by_category) | set(prior_by_category)
         ]
-        category_deltas.sort(
-            key=lambda item: (-abs(item.delta_spent_cents), item.category_name)
-        )
+        category_deltas.sort(key=lambda item: (-abs(item.delta_spent_cents), item.category_name))
         return PeriodComparison(
             current_total_spent_cents=current_total,
             prior_total_spent_cents=prior_total,
@@ -236,9 +189,7 @@ class FinanceReadAPI:
         return [str(row["name"]) for row in rows]
 
     def list_account_names(self) -> list[str]:
-        rows = self._db.execute(
-            "SELECT name FROM finance_accounts ORDER BY name ASC"
-        ).fetchall()
+        rows = self._db.execute("SELECT name FROM finance_accounts ORDER BY name ASC").fetchall()
         return [str(row["name"]) for row in rows]
 
     def list_spending_merchant_names(self) -> list[str]:
@@ -294,7 +245,7 @@ class FinanceReadAPI:
         return int(row["value"])
 
     def get_income_summary(self, start_date: str, end_date: str) -> IncomeSummary:
-        end_exclusive = _next_day(end_date)
+        end_exclusive = next_day(end_date)
         total_row = self._db.execute(
             """
             SELECT COALESCE(SUM(amount_cents), 0) AS total_income_cents
@@ -305,9 +256,9 @@ class FinanceReadAPI:
             (start_date, end_exclusive),
         ).fetchone()
         by_source = [
-            MerchantSpending(
-                merchant=str(row["merchant"]),
-                total_spent_cents=int(row["total_income_cents"]),
+            IncomeSource(
+                name=str(row["merchant"]),
+                total_cents=int(row["total_income_cents"]),
                 transaction_count=int(row["transaction_count"]),
             )
             for row in self._db.execute(
@@ -331,7 +282,7 @@ class FinanceReadAPI:
         )
 
     def get_net_flow(self, start_date: str, end_date: str) -> int:
-        end_exclusive = _next_day(end_date)
+        end_exclusive = next_day(end_date)
         row = self._db.execute(
             """
             SELECT COALESCE(SUM(amount_cents), 0) AS net_flow
@@ -352,7 +303,7 @@ def _build_filtered_expense_query(
     merchant_names: list[str] | None = None,
     account_names: list[str] | None = None,
 ) -> tuple[str, list[str]]:
-    end_exclusive = _next_day(end_date)
+    end_exclusive = next_day(end_date)
     clauses = [
         "t.posted_at >= ?",
         "t.posted_at < ?",
@@ -405,11 +356,4 @@ def _read_category_spend_map(db: Connection, start_date: str, end_exclusive: str
         """,
         (start_date, end_exclusive),
     ).fetchall()
-    return {
-        str(row["category_name"]): int(row["total_spent_cents"])
-        for row in rows
-    }
-
-
-def _next_day(value: str) -> str:
-    return (date.fromisoformat(value) + timedelta(days=1)).isoformat()
+    return {str(row["category_name"]): int(row["total_spent_cents"]) for row in rows}

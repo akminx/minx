@@ -202,11 +202,11 @@ def test_build_spending_snapshot_uses_finance_read_api_and_two_week_comparison(t
         _insert_transaction(
             conn,
             posted_at=f"2026-03-{2 + offset:02d}",
-                description=f"Prior Groceries {offset}",
-                merchant="HEB",
-                amount_cents=-1000,
-                category_id=2,
-            )
+            description=f"Prior Groceries {offset}",
+            merchant="HEB",
+            amount_cents=-1000,
+            category_id=2,
+        )
     conn.commit()
 
     from minx_mcp.core.read_models import build_spending_snapshot
@@ -299,7 +299,9 @@ def test_build_open_loops_snapshot_includes_uncategorized_and_import_job_issues(
     snapshot = build_open_loops_snapshot(conn, "2026-03-15")
 
     assert snapshot.date == "2026-03-15"
-    assert [(loop.loop_type, loop.description, loop.count, loop.severity) for loop in snapshot.loops] == [
+    assert [
+        (loop.loop_type, loop.description, loop.count, loop.severity) for loop in snapshot.loops
+    ] == [
         (
             "uncategorized_transactions",
             "2 uncategorized transactions totaling $35.25",
@@ -373,9 +375,7 @@ def test_build_read_models_uses_stored_timezone_preference(tmp_path):
 
     read_models = build_read_models(conn, "2026-03-15")
 
-    assert [entry.entity_ref for entry in read_models.timeline.entries] == [
-        f"entity-{included_id}"
-    ]
+    assert [entry.entity_ref for entry in read_models.timeline.entries] == [f"entity-{included_id}"]
 
 
 def test_build_read_models_falls_back_to_machine_local_timezone_when_preference_missing(

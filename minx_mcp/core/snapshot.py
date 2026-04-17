@@ -15,7 +15,7 @@ from minx_mcp.core.models import (
     SnapshotContext,
 )
 from minx_mcp.core.read_models import build_read_models
-from minx_mcp.db import get_connection
+from minx_mcp.db import scoped_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
 
 logger = logging.getLogger(__name__)
@@ -38,8 +38,7 @@ async def build_daily_snapshot(
     *,
     force: bool = False,
 ) -> DailySnapshot:
-    conn = get_connection(Path(ctx.db_path))
-    try:
+    with scoped_connection(Path(ctx.db_path)) as conn:
         read_models = _build_snapshot_models(conn, review_date, ctx)
         detector_signals = _sorted_insights(_run_detectors(read_models))
         warning = _persist_warning(conn, review_date, detector_signals, force=force)
@@ -55,8 +54,6 @@ async def build_daily_snapshot(
             training=read_models.training,
             persistence_warning=warning,
         )
-    finally:
-        conn.close()
 
 
 def _build_snapshot_models(
@@ -101,21 +98,15 @@ def _build_attention_items(
 ) -> list[str]:
     ranked: list[tuple[int, int, str]] = []
     for signal in detector_signals:
-        ranked.append(
-            (_SEVERITY_PRIORITY.get(signal.severity, 99), 0, signal.summary)
-        )
+        ranked.append((_SEVERITY_PRIORITY.get(signal.severity, 99), 0, signal.summary))
     for loop in read_models.open_loops.loops:
-        ranked.append(
-            (_SEVERITY_PRIORITY.get(loop.severity, 99), 1, loop.description)
-        )
+        ranked.append((_SEVERITY_PRIORITY.get(loop.severity, 99), 1, loop.description))
     for goal in read_models.goal_progress:
         mapped = _GOAL_STATUS_SEVERITY.get(goal.status)
         if mapped is None:
             continue
         status_text = goal.status.replace("_", " ")
-        ranked.append(
-            (_SEVERITY_PRIORITY.get(mapped, 99), 2, f"{goal.title} is {status_text}.")
-        )
+        ranked.append((_SEVERITY_PRIORITY.get(mapped, 99), 2, f"{goal.title} is {status_text}."))
     ranked.sort(key=lambda item: (item[0], item[1], item[2]))
     return [item[2] for item in ranked]
 
@@ -130,6 +121,7 @@ def _persist_warning(
     try:
         _persist_detector_insights(conn, review_date, insights, force=force)
     except Exception as exc:
+        # Snapshot generation should survive any durability sink failure.
         logger.warning("Detector insight persistence failed for %s: %s", review_date, exc)
         failure = DurabilitySinkFailure("detector_insights", exc)
         return PersistenceWarning(
@@ -157,7 +149,9 @@ def _persist_detector_insights(
     conn.execute(f"SAVEPOINT {savepoint}")
     try:
         _insert_detector_insights(conn, review_date, insights)
-    except Exception:
+    except (
+        Exception
+    ):  # Broad except is intentional: any failure must roll back the savepoint before re-raising
         conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         raise
@@ -179,7 +173,9 @@ def _replace_detector_insights(
             (review_date,),
         )
         _insert_detector_insights(conn, review_date, insights)
-    except Exception:
+    except (
+        Exception
+    ):  # Broad except is intentional: any failure must roll back the savepoint before re-raising
         conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         raise

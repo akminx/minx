@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import threading
 from pathlib import Path
-from sqlite3 import Connection
 
+from minx_mcp.base_service import BaseService
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import emit_event
-from minx_mcp.db import get_connection
 from minx_mcp.finance.analytics import (
     build_finance_monitoring,
     find_anomalies,
@@ -18,45 +16,22 @@ from minx_mcp.finance.analytics import (
 from minx_mcp.finance.import_models import ParsedImportBatch, ParsedTransaction
 from minx_mcp.finance.import_workflow import preview_finance_import, run_finance_import
 from minx_mcp.finance.normalization import normalize_merchant
-from minx_mcp.finance.rules import Rule, apply_rules
 from minx_mcp.finance.report_orchestration import run_monthly_report, run_weekly_report
+from minx_mcp.finance.rules import Rule, apply_rules
 from minx_mcp.jobs import get_job
 from minx_mcp.time_utils import utc_now_isoformat
 from minx_mcp.vault_writer import VaultWriter
 
+MAX_SENSITIVE_QUERY_LIMIT = 500
+
 EVENT_SOURCE = "finance.service"
 
 
-class FinanceService:
+class FinanceService(BaseService):
     def __init__(self, db_path: Path, vault_root: Path, import_root: Path | None = None) -> None:
-        self._db_path = db_path
-        self._local = threading.local()
+        super().__init__(db_path)
         self.import_root = (import_root or db_path.parent).resolve()
         self.vault_writer = VaultWriter(vault_root, ("Finance",))
-
-    @property
-    def db_path(self) -> Path:
-        return self._db_path
-
-    @property
-    def conn(self) -> Connection:
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
-            conn = get_connection(self._db_path)
-            self._local.conn = conn
-        return conn
-
-    def close(self) -> None:
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            conn.close()
-            self._local.conn = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
 
     def finance_import(
         self,
@@ -172,22 +147,30 @@ class FinanceService:
         unique_ids = list(dict.fromkeys(transaction_ids))
         category_id = self._category_id(category_name)
         placeholders = ",".join("?" for _ in unique_ids)
-        cursor = self.conn.execute(
-            f"""
-            UPDATE finance_transactions
-            SET category_id = ?, category_source = 'manual'
-            WHERE id IN ({placeholders})
-            """,
-            [category_id, *unique_ids],
-        )
-        self._emit_finance_event(
-            event_type="finance.transactions_categorized",
-            entity_ref=None,
-            payload={
-                "count": int(cursor.rowcount),
-                "categories": [category_name],
-            },
-        )
+        savepoint = "finance_categorize"
+        self.conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            cursor = self.conn.execute(
+                f"""
+                UPDATE finance_transactions
+                SET category_id = ?, category_source = 'manual'
+                WHERE id IN ({placeholders})
+                """,
+                [category_id, *unique_ids],
+            )
+            self._emit_finance_event(
+                event_type="finance.transactions_categorized",
+                entity_ref=None,
+                payload={
+                    "count": int(cursor.rowcount),
+                    "categories": [category_name],
+                },
+            )
+        except Exception:
+            self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+        self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         self.conn.commit()
         return int(cursor.rowcount)
 
@@ -198,15 +181,11 @@ class FinanceService:
         return {"accounts": [dict(row) for row in rows]}
 
     def list_account_names(self) -> list[str]:
-        rows = self.conn.execute(
-            "SELECT name FROM finance_accounts ORDER BY name ASC"
-        ).fetchall()
+        rows = self.conn.execute("SELECT name FROM finance_accounts ORDER BY name ASC").fetchall()
         return [str(row["name"]) for row in rows]
 
     def list_transaction_category_names(self) -> list[str]:
-        rows = self.conn.execute(
-            "SELECT name FROM finance_categories ORDER BY name ASC"
-        ).fetchall()
+        rows = self.conn.execute("SELECT name FROM finance_categories ORDER BY name ASC").fetchall()
         return [str(row["name"]) for row in rows]
 
     def list_spending_merchant_names(self) -> list[str]:
@@ -231,7 +210,9 @@ class FinanceService:
             transaction_ids,
         ).fetchall()
         existing = {int(row["id"]) for row in rows}
-        return [transaction_id for transaction_id in transaction_ids if transaction_id not in existing]
+        return [
+            transaction_id for transaction_id in transaction_ids if transaction_id not in existing
+        ]
 
     def safe_finance_summary(self) -> dict[str, object]:
         return summarize_finances(self.conn)
@@ -281,7 +262,7 @@ class FinanceService:
         account_name: str | None = None,
         description_contains: str | None = None,
     ) -> dict[str, object]:
-        if limit < 1 or limit > 500:
+        if limit < 1 or limit > MAX_SENSITIVE_QUERY_LIMIT:
             raise InvalidInputError("limit must be between 1 and 500")
         return sensitive_query(
             self.conn,
@@ -452,8 +433,8 @@ class FinanceService:
         event_type: str,
         entity_ref: str | None,
         payload: dict[str, object],
-    ) -> int | None:
-        return emit_event(
+    ) -> int:
+        event_id = emit_event(
             self.conn,
             event_type=event_type,
             domain="finance",
@@ -462,6 +443,9 @@ class FinanceService:
             source=EVENT_SOURCE,
             payload=payload,
         )
+        if event_id is None:
+            raise RuntimeError(f"{event_type} event emission failed")
+        return event_id
 
     def _sum_transaction_amount_cents(self, transaction_ids: list[int]) -> int:
         unique_ids = list(dict.fromkeys(transaction_ids))

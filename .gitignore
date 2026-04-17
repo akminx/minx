@@ -6,4 +6,5 @@ dist/
 build/
 *.egg-info/
 .worktrees/
+.claude/
 .DS_Store

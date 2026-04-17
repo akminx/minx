@@ -5,7 +5,9 @@ import inspect
 
 import pytest
 
-from minx_mcp.core.interpretation.finance_query import interpret_finance_query as _interpret_finance_query
+from minx_mcp.core.interpretation.finance_query import (
+    interpret_finance_query as _interpret_finance_query,
+)
 
 
 class _StubFinanceQueryRead:
@@ -41,11 +43,9 @@ def test_finance_query_interpretation_resolves_sum_spending_request() -> None:
         review_date="2026-03-15",
         finance_api=_StubFinanceQueryRead(),
         llm=_StubFinanceQueryLLM(
-            (
-                '{"intent":"sum_spending","filters":{"start_date":"2026-03-09",'
-                '"end_date":"2026-03-15","category_name":"Restaurants"},'
-                '"confidence":0.93,"needs_clarification":false}'
-            )
+            '{"intent":"sum_spending","filters":{"start_date":"2026-03-09",'
+            '"end_date":"2026-03-15","category_name":"Restaurants"},'
+            '"confidence":0.93,"needs_clarification":false}'
         ),
     )
 
@@ -63,11 +63,9 @@ async def test_finance_query_interpretation_is_async_safe_inside_running_loop() 
         review_date="2026-03-31",
         finance_api=_StubFinanceQueryRead(),
         llm=_StubFinanceQueryLLM(
-            (
-                '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
-                '"end_date":"2026-03-31","merchant":"Whole Foods"},'
-                '"confidence":0.94,"needs_clarification":false}'
-            )
+            '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
+            '"end_date":"2026-03-31","merchant":"Whole Foods"},'
+            '"confidence":0.94,"needs_clarification":false}'
         ),
     )
 
@@ -134,11 +132,9 @@ def test_finance_query_interpretation_returns_clarify_plan_for_ambiguous_merchan
         review_date="2026-03-31",
         finance_api=_StubFinanceQueryRead(),
         llm=_StubFinanceQueryLLM(
-            (
-                '{"intent":"list_transactions","filters":{},"confidence":0.51,'
-                '"needs_clarification":true,"clarification_type":"ambiguous_merchant",'
-                '"question":"Which merchant do you mean?","options":["Target","Target Optical"]}'
-            )
+            '{"intent":"list_transactions","filters":{},"confidence":0.51,'
+            '"needs_clarification":true,"clarification_type":"ambiguous_merchant",'
+            '"question":"Which merchant do you mean?","options":["Target","Target Optical"]}'
         ),
     )
 
@@ -150,6 +146,7 @@ def test_finance_query_interpretation_returns_clarify_plan_for_ambiguous_merchan
 
 def test_finance_query_interpretation_model_rejects_clarify_without_type() -> None:
     from pydantic import ValidationError
+
     from minx_mcp.core.interpretation.models import FinanceQueryInterpretation
 
     with pytest.raises(ValidationError):
@@ -164,6 +161,7 @@ def test_finance_query_interpretation_model_rejects_clarify_without_type() -> No
 
 def test_finance_query_interpretation_model_rejects_clarify_without_question() -> None:
     from pydantic import ValidationError
+
     from minx_mcp.core.interpretation.models import FinanceQueryInterpretation
 
     with pytest.raises(ValidationError):
@@ -182,10 +180,8 @@ def test_finance_query_interpretation_fills_this_week_dates_when_llm_omits_them(
         review_date="2026-03-15",
         finance_api=_StubFinanceQueryRead(),
         llm=_StubFinanceQueryLLM(
-            (
-                '{"intent":"sum_spending","filters":{"category_name":"Restaurants"},'
-                '"confidence":0.93,"needs_clarification":false}'
-            )
+            '{"intent":"sum_spending","filters":{"category_name":"Restaurants"},'
+            '"confidence":0.93,"needs_clarification":false}'
         ),
     )
 
@@ -201,10 +197,8 @@ def test_finance_query_interpretation_fills_last_month_dates_when_llm_omits_them
         review_date="2026-03-31",
         finance_api=_StubFinanceQueryRead(),
         llm=_StubFinanceQueryLLM(
-            (
-                '{"intent":"list_transactions","filters":{"merchant":"Whole Foods"},'
-                '"confidence":0.94,"needs_clarification":false}'
-            )
+            '{"intent":"list_transactions","filters":{"merchant":"Whole Foods"},'
+            '"confidence":0.94,"needs_clarification":false}'
         ),
     )
 
@@ -220,12 +214,10 @@ def test_finance_query_interpretation_preserves_recoverable_dates_on_clarify() -
         review_date="2026-03-15",
         finance_api=_StubFinanceQueryRead(),
         llm=_StubFinanceQueryLLM(
-            (
-                '{"intent":"sum_spending","filters":{"merchant":"Whole Fuds"},'
-                '"confidence":0.61,"needs_clarification":true,'
-                '"clarification_type":"unknown_merchant",'
-                '"question":"Which merchant did you mean?","options":["Whole Foods"]}'
-            )
+            '{"intent":"sum_spending","filters":{"merchant":"Whole Fuds"},'
+            '"confidence":0.61,"needs_clarification":true,'
+            '"clarification_type":"unknown_merchant",'
+            '"question":"Which merchant did you mean?","options":["Whole Foods"]}'
         ),
     )
 

@@ -24,7 +24,7 @@ def render_weekly_markdown(
     period_start: str,
     period_end: str,
 ) -> str:
-    template = Template((TEMPLATE_DIR / "finance-weekly-summary.md").read_text())
+    template = Template((TEMPLATE_DIR / "finance-weekly-summary.md").read_text(encoding="utf-8"))
     return _render(
         template,
         period_start=period_start,
@@ -65,7 +65,7 @@ def render_monthly_markdown(
     period_start: str,
     period_end: str,
 ) -> str:
-    template = Template((TEMPLATE_DIR / "finance-monthly-summary.md").read_text())
+    template = Template((TEMPLATE_DIR / "finance-monthly-summary.md").read_text(encoding="utf-8"))
     return _render(
         template,
         period_start=period_start,
@@ -88,8 +88,7 @@ def render_monthly_markdown(
         recurring_lines=_lines(
             summary.recurring_charge_highlights,
             lambda i: (
-                f"- {i.merchant}: current {_fmt(i.current_outflow)}, "
-                f"prior {_fmt(i.prior_outflow)}"
+                f"- {i.merchant}: current {_fmt(i.current_outflow)}, prior {_fmt(i.prior_outflow)}"
             ),
         ),
         anomaly_lines=_lines(
@@ -116,7 +115,7 @@ def _fmt(value: SupportsFloat) -> str:
     return f"{sign}${abs(amount):.2f}"
 
 
-def _lines(items: Sequence[T], render: Callable[[T], str]) -> str:
+def _lines[T](items: Sequence[T], render: Callable[[T], str]) -> str:
     if not items:
         return "- None"
     return "\n".join(render(item) for item in items)
@@ -128,7 +127,4 @@ def _fmt_review_item(item: MonthlyReviewItem) -> str:
             f"- new merchant {item.merchant} first seen {item.first_seen_at}: "
             f"{_fmt(item.total_amount)}"
         )
-    return (
-        f"- uncategorized {item.posted_at} {item.description}: "
-        f"{_fmt(item.amount)}"
-    )
+    return f"- uncategorized {item.posted_at} {item.description}: {_fmt(item.amount)}"

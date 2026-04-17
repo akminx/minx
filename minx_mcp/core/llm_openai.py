@@ -8,8 +8,8 @@ import httpx
 from pydantic import BaseModel
 
 from minx_mcp.core.llm import (
-    LLMProviderError,
     MALFORMED_PROVIDER_RESPONSE_MESSAGE,
+    LLMProviderError,
     _render_review_prompt,
     extract_openai_message_content,
     normalize_review_result,
@@ -64,9 +64,7 @@ class OpenAICompatibleLLM:
     ) -> LLMReviewResult:
         api_key = os.getenv(self.api_key_env)
         if not api_key:
-            raise LLMProviderError(
-                f"Missing API key environment variable: {self.api_key_env}"
-            )
+            raise LLMProviderError(f"Missing API key environment variable: {self.api_key_env}")
 
         prompt = _render_review_prompt(
             timeline=timeline,
@@ -86,9 +84,7 @@ class OpenAICompatibleLLM:
     ) -> dict:
         api_key = os.getenv(self.api_key_env)
         if not api_key:
-            raise LLMProviderError(
-                f"Missing API key environment variable: {self.api_key_env}"
-            )
+            raise LLMProviderError(f"Missing API key environment variable: {self.api_key_env}")
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:

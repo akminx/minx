@@ -1,8 +1,8 @@
 import pytest
 
 from minx_mcp.core.events import emit_event
-from minx_mcp.core.models import GoalCreateInput, SnapshotContext
 from minx_mcp.core.goals import GoalService
+from minx_mcp.core.models import GoalCreateInput, SnapshotContext
 from minx_mcp.core.snapshot import build_daily_snapshot
 from minx_mcp.db import get_connection
 
@@ -29,7 +29,9 @@ async def test_goal_finance_insight_flags_monthly_spending_cap_risk(tmp_path):
         )
     )
     dcu_id = conn.execute("SELECT id FROM finance_accounts WHERE name = 'DCU'").fetchone()["id"]
-    dining_id = conn.execute("SELECT id FROM finance_categories WHERE name = 'Dining Out'").fetchone()["id"]
+    dining_id = conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Dining Out'"
+    ).fetchone()["id"]
     conn.execute(
         """
         INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
@@ -52,7 +54,14 @@ async def test_goal_finance_insight_flags_monthly_spending_cap_risk(tmp_path):
         occurred_at="2026-03-15T12:00:00Z",
         entity_ref="1",
         source="test",
-        payload={"transaction_count": 1, "account_name": "DCU", "account_id": dcu_id, "job_id": "job-1", "source_kind": "csv", "total_cents": -6800},
+        payload={
+            "transaction_count": 1,
+            "account_name": "DCU",
+            "account_id": dcu_id,
+            "job_id": "job-1",
+            "source_kind": "csv",
+            "total_cents": -6800,
+        },
     )
     conn.commit()
 
@@ -88,7 +97,9 @@ async def test_goal_finance_insight_skips_late_period_goals_that_are_still_on_pa
         )
     )
     dcu_id = conn.execute("SELECT id FROM finance_accounts WHERE name = 'DCU'").fetchone()["id"]
-    dining_id = conn.execute("SELECT id FROM finance_categories WHERE name = 'Dining Out'").fetchone()["id"]
+    dining_id = conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Dining Out'"
+    ).fetchone()["id"]
     conn.execute(
         """
         INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
@@ -111,7 +122,14 @@ async def test_goal_finance_insight_skips_late_period_goals_that_are_still_on_pa
         occurred_at="2026-03-30T12:00:00Z",
         entity_ref="1",
         source="test",
-        payload={"transaction_count": 1, "account_name": "DCU", "account_id": dcu_id, "job_id": "job-1", "source_kind": "csv", "total_cents": -6800},
+        payload={
+            "transaction_count": 1,
+            "account_name": "DCU",
+            "account_id": dcu_id,
+            "job_id": "job-1",
+            "source_kind": "csv",
+            "total_cents": -6800,
+        },
     )
     conn.commit()
 

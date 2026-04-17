@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from minx_mcp.contracts import InvalidInputError
-from minx_mcp.finance.reports import upsert_report_run
+from minx_mcp.finance.report_orchestration import upsert_report_run
 from minx_mcp.finance.service import FinanceService
 
 

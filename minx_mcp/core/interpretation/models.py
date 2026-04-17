@@ -38,25 +38,24 @@ class FinanceQueryInterpretation(BaseModel):
     )
     confidence: float
     needs_clarification: bool = False
-    clarification_type: Literal[
-        "ambiguous_merchant",
-        "unknown_category",
-        "unknown_merchant",
-        "unknown_account",
-        "missing_date_range",
-    ] | None = None
+    clarification_type: (
+        Literal[
+            "ambiguous_merchant",
+            "unknown_category",
+            "unknown_merchant",
+            "unknown_account",
+            "missing_date_range",
+        ]
+        | None
+    ) = None
     question: str | None = None
     options: list[str] | None = None
 
     @model_validator(mode="after")
-    def _clarification_fields_consistent(self) -> "FinanceQueryInterpretation":
+    def _clarification_fields_consistent(self) -> FinanceQueryInterpretation:
         if self.needs_clarification:
             if self.clarification_type is None:
-                raise ValueError(
-                    "clarification_type is required when needs_clarification is True"
-                )
+                raise ValueError("clarification_type is required when needs_clarification is True")
             if self.question is None:
-                raise ValueError(
-                    "question is required when needs_clarification is True"
-                )
+                raise ValueError("question is required when needs_clarification is True")
         return self

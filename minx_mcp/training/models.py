@@ -64,5 +64,3 @@ class TrainingProgressSummary:
     total_volume_kg: float
     last_session_at: str | None
     adherence_signal: str
-
-

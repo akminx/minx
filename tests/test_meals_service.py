@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+import minx_mcp.meals.service as meals_service_module
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import query_events
 from minx_mcp.db import get_connection
-import minx_mcp.meals.service as meals_service_module
 from minx_mcp.meals.service import MealsService
 from minx_mcp.preferences import set_preference
 
@@ -36,21 +36,19 @@ def test_log_meal_emits_event(db_path) -> None:
 
 def test_log_meal_validates_kind(db_path) -> None:
     svc = MealsService(db_path)
-    with pytest.raises(InvalidInputError):
-        with svc:
-            svc.log_meal(occurred_at="2026-04-12T12:00:00Z", meal_kind="invalid")
+    with pytest.raises(InvalidInputError, match="invalid"), svc:
+        svc.log_meal(occurred_at="2026-04-12T12:00:00Z", meal_kind="invalid")
 
 
 def test_log_meal_rolls_back_when_event_emission_fails(db_path, monkeypatch) -> None:
     svc = MealsService(db_path)
     monkeypatch.setattr(meals_service_module, "emit_event", lambda *args, **kwargs: None)
-    with pytest.raises(RuntimeError):
-        with svc:
-            svc.log_meal(
-                occurred_at="2026-04-12T12:00:00Z",
-                meal_kind="lunch",
-                summary="event failure",
-            )
+    with pytest.raises(RuntimeError), svc:
+        svc.log_meal(
+            occurred_at="2026-04-12T12:00:00Z",
+            meal_kind="lunch",
+            summary="event failure",
+        )
     conn = get_connection(db_path)
     try:
         count = conn.execute("SELECT COUNT(*) FROM meals_meal_entries").fetchone()[0]
@@ -66,7 +64,7 @@ def test_pantry_crud(db_path) -> None:
         updated = svc.update_pantry_item(item.id, quantity=6)
         items = svc.list_pantry_items()
         svc.remove_pantry_item(item.id)
-        with pytest.raises(NotFoundError):
+        with pytest.raises(NotFoundError, match=str(item.id)):
             svc.get_pantry_item(item.id)
 
     assert item.normalized_name == "egg"
@@ -114,9 +112,8 @@ def test_index_recipe_rejects_paths_outside_vault(db_path, tmp_path) -> None:
     outside.write_text("---\ntitle: Outside\n---\n## Ingredients\n- 1 egg\n")
     svc = MealsService(db_path, vault_root=vault)
 
-    with pytest.raises(InvalidInputError):
-        with svc:
-            svc.index_recipe("../Outside.md")
+    with pytest.raises(InvalidInputError, match=r"inside vault_root"), svc:
+        svc.index_recipe("../Outside.md")
 
 
 def test_scan_vault_recipes_rejects_directories_outside_vault(db_path, tmp_path) -> None:
@@ -127,9 +124,8 @@ def test_scan_vault_recipes_rejects_directories_outside_vault(db_path, tmp_path)
     (outside / "Outside.md").write_text("---\ntitle: Outside\n---\n## Ingredients\n- 1 egg\n")
     svc = MealsService(db_path, vault_root=vault)
 
-    with pytest.raises(InvalidInputError):
-        with svc:
-            svc.scan_vault_recipes(str(outside))
+    with pytest.raises(InvalidInputError, match=r"inside vault_root"), svc:
+        svc.scan_vault_recipes(str(outside))
 
 
 def test_set_nutrition_profile_persists_calculated_targets(db_path) -> None:
@@ -160,15 +156,14 @@ def test_set_nutrition_profile_persists_calculated_targets(db_path) -> None:
 
 def test_set_nutrition_profile_validates_inputs(db_path) -> None:
     svc = MealsService(db_path)
-    with pytest.raises(InvalidInputError):
-        with svc:
-            svc.set_nutrition_profile(
-                sex="male",
-                age_years=0,
-                height_cm=180.0,
-                weight_kg=80.0,
-                activity_level="moderately_active",
-            )
+    with pytest.raises(InvalidInputError, match=r"age_years must be a positive integer"), svc:
+        svc.set_nutrition_profile(
+            sex="male",
+            age_years=0,
+            height_cm=180.0,
+            weight_kg=80.0,
+            activity_level="moderately_active",
+        )
 
 
 def test_list_meals_uses_timezone_local_day_boundaries(db_path) -> None:

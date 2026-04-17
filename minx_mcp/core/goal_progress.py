@@ -5,6 +5,36 @@ from datetime import date, timedelta
 from minx_mcp.core.models import FinanceReadInterface, GoalProgress, GoalRecord
 from minx_mcp.money import format_cents
 
+GOAL_ON_TRACK_THRESHOLD = 0.9
+GOAL_OFF_TRACK_THRESHOLD = 0.7
+
+
+def get_metric_value(
+    finance_api: FinanceReadInterface,
+    metric_type: str,
+    start_date: str,
+    end_date: str,
+    category_names: list[str] | None,
+    merchant_names: list[str] | None,
+    account_names: list[str] | None,
+) -> int:
+    """Return the metric value (spending total or transaction count) for the given window."""
+    if metric_type.startswith("sum_"):
+        return finance_api.get_filtered_spending_total(
+            start_date,
+            end_date,
+            category_names=category_names or None,
+            merchant_names=merchant_names or None,
+            account_names=account_names or None,
+        )
+    return finance_api.get_filtered_transaction_count(
+        start_date,
+        end_date,
+        category_names=category_names or None,
+        merchant_names=merchant_names or None,
+        account_names=account_names or None,
+    )
+
 
 def build_goal_progress(
     review_date: str,
@@ -58,9 +88,7 @@ def _is_review_date_within_goal_lifetime(goal: GoalRecord, review_date: str) -> 
     review_point = date.fromisoformat(review_date)
     if review_point < date.fromisoformat(goal.starts_on):
         return False
-    if goal.ends_on is not None and review_point > date.fromisoformat(goal.ends_on):
-        return False
-    return True
+    return not (goal.ends_on is not None and review_point > date.fromisoformat(goal.ends_on))
 
 
 def _effective_window(goal: GoalRecord, review_date: str) -> tuple[str, str]:
@@ -147,7 +175,7 @@ def _compute_status(
             return "off_track"
         elapsed_fraction = _elapsed_fraction(current_start, current_end, review_date)
         expected_at_this_point = goal.target_value * elapsed_fraction
-        if actual > expected_at_this_point * 0.9:
+        if actual > expected_at_this_point * GOAL_ON_TRACK_THRESHOLD:
             return "watch"
         return "on_track"
     if goal.metric_type in ("sum_above", "count_above"):
@@ -155,9 +183,9 @@ def _compute_status(
             return "met"
         elapsed_fraction = _elapsed_fraction(current_start, current_end, review_date)
         expected_at_this_point = goal.target_value * elapsed_fraction
-        if actual < expected_at_this_point * 0.7:
+        if actual < expected_at_this_point * GOAL_OFF_TRACK_THRESHOLD:
             return "off_track"
-        if actual < expected_at_this_point * 0.9:
+        if actual < expected_at_this_point * GOAL_ON_TRACK_THRESHOLD:
             return "watch"
         return "on_track"
     return "on_track"
@@ -196,8 +224,10 @@ def _compute_summary(
     if status == "watch":
         return f"Watch: {actual_str} of {target_str} — approaching limit."
     remaining_str = (
-        format_cents(remaining) if is_money and remaining is not None
-        else str(remaining) if remaining is not None
+        format_cents(remaining)
+        if is_money and remaining is not None
+        else str(remaining)
+        if remaining is not None
         else ""
     )
     remaining_part = f" {remaining_str} remaining." if remaining_str else "."

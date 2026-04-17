@@ -6,9 +6,34 @@ from minx_mcp.meals.models import PantryItem
 
 _PLURAL_SUFFIXES = [("ies", "y"), ("ves", "f"), ("es", ""), ("s", "")]
 
+# Words that must not be singularized (suffix stripping would corrupt them).
+_SINGULARIZATION_EXCEPTIONS: frozenset[str] = frozenset(
+    [
+        "asparagus",
+        "bass",
+        "chess",
+        "class",
+        "dress",
+        "gas",
+        "glass",
+        "grass",
+        "hummus",
+        "lentils",
+        "mass",
+        "molasses",
+        "moss",
+        "pass",
+        "series",
+        "species",
+        "toss",
+    ]
+)
+
 
 def normalize_ingredient(name: str) -> str:
     result = name.lower().strip()
+    if result in _SINGULARIZATION_EXCEPTIONS:
+        return result
     for suffix, replacement in _PLURAL_SUFFIXES:
         if result.endswith(suffix) and len(result) > len(suffix) + 1:
             candidate = result[: -len(suffix)] + replacement
@@ -79,10 +104,7 @@ def pantry_item_from_row(row: Row) -> PantryItem:
         unit=row["unit"],
         expiration_date=row["expiration_date"],
         low_stock_threshold=(
-            float(row["low_stock_threshold"])
-            if row["low_stock_threshold"] is not None
-            else None
+            float(row["low_stock_threshold"]) if row["low_stock_threshold"] is not None else None
         ),
         source=str(row["source"]),
     )
-

@@ -1,18 +1,30 @@
-from __future__ import annotations
-
 """SQLite access and migration application.
 
 SQL migrations are loaded only from the packaged tree ``minx_mcp/schema/migrations``
 (next to this module). That directory is what ships in the wheel; the repository
 also keeps ``schema/migrations`` as a mirror—tests enforce matching filenames and
 normalized SQL contents.
+
+Migration contract:
+- Migrations run inside a single transaction and must be idempotent.
+- Non-additive schema changes must guard repeat execution (for example, use
+  ``add_column_if_missing`` before ``ALTER TABLE ... ADD COLUMN``).
+- If data backfill is required, keep schema creation and data updates as separate
+  migrations so backfill retries do not block schema bootstrap.
 """
+
+from __future__ import annotations
 
 import hashlib
 import re
 import sqlite3
 import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
+from sqlite3 import Connection
+
+_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def migration_dir() -> Path:
@@ -45,6 +57,15 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+@contextmanager
+def scoped_connection(db_path: Path) -> Generator[Connection, None, None]:
+    conn = get_connection(db_path)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def apply_migrations(conn: sqlite3.Connection) -> None:
     original_row_factory = conn.row_factory
     try:
@@ -64,18 +85,18 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
             )
             """
         )
-        existing_cols = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(_migrations)").fetchall()
-        }
-        if "checksum" not in existing_cols:
-            conn.execute("ALTER TABLE _migrations ADD COLUMN checksum TEXT")
+        add_column_if_missing(
+            conn,
+            table_name="_migrations",
+            column_name="checksum",
+            column_sql="TEXT",
+        )
         applied = {
             row["name"]: row["checksum"]
             for row in conn.execute("SELECT name, checksum FROM _migrations").fetchall()
         }
         for path in paths:
-            content = path.read_text()
+            content = path.read_text(encoding="utf-8")
             checksum = hashlib.sha256(content.encode()).hexdigest()
             if path.name in applied:
                 stored = applied[path.name]
@@ -93,12 +114,50 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
             )
             applied[path.name] = checksum
         conn.commit()
-    except Exception:
+    except (
+        Exception
+    ):  # Broad except intentional: roll back migration transaction on any failure before re-raising
         if conn.in_transaction:
             conn.rollback()
         raise
     finally:
         conn.row_factory = original_row_factory
+
+
+def add_column_if_missing(
+    conn: Connection,
+    *,
+    table_name: str,
+    column_name: str,
+    column_sql: str,
+) -> bool:
+    """Add a column once and safely no-op on reruns.
+
+    Returns ``True`` when the column was added and ``False`` when it already
+    exists.
+    """
+    table_identifier = _quote_sql_identifier(table_name)
+    column_identifier = _quote_sql_identifier(column_name)
+    columns = conn.execute(f"PRAGMA table_info({table_identifier})").fetchall()
+    if not columns:
+        raise sqlite3.OperationalError(f"no such table: {table_name}")
+    names = {_column_name_from_pragma_row(row) for row in columns}
+    if column_name in names:
+        return False
+    conn.execute(f"ALTER TABLE {table_identifier} ADD COLUMN {column_identifier} {column_sql}")
+    return True
+
+
+def _quote_sql_identifier(value: str) -> str:
+    if not _SQL_IDENTIFIER_RE.match(value):
+        raise ValueError(f"Invalid SQLite identifier: {value}")
+    return f'"{value}"'
+
+
+def _column_name_from_pragma_row(row: sqlite3.Row | tuple[object, ...]) -> str:
+    if isinstance(row, sqlite3.Row):
+        return str(row["name"])
+    return str(row[1])
 
 
 def _split_sql_script(script: str) -> list[str]:

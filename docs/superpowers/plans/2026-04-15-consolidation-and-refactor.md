@@ -1,6 +1,8 @@
 # Consolidation, Refactoring, and Observability Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Execution tracker:** `docs/superpowers/plans/consolidation.md`
 
 **Goal:** Restructure the codebase for long-term maintainability, add observability for production debugging, and re-scope the roadmap to focus on what matters. This covers the consolidation, refactoring, and strategic items from the full project review.
 

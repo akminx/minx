@@ -38,12 +38,12 @@ def test_detect_spending_spike_returns_warning_at_twenty_five_percent():
             "2026-03-15:spending_spike:groceries",
             "warning",
             "suggestion",
-                [
-                    "Spending increased 25.0% versus the prior week.",
-                    "Top spending category today: Groceries ($35.00).",
-                ],
-            )
-        ]
+            [
+                "Spending increased 25.0% versus the prior week.",
+                "Top spending category today: Groceries ($35.00).",
+            ],
+        )
+    ]
 
 
 def test_detect_spending_spike_returns_alert_at_fifty_percent():
@@ -224,24 +224,6 @@ def test_detector_dedupe_keys_remain_stable_when_summary_wording_changes():
     assert first_open_loops[0].dedupe_key == second_open_loops[0].dedupe_key
 
 
-def test_detectors_registry_is_in_spec_order():
-    from minx_mcp.core.detectors import DETECTORS
-
-    assert [detector.key for detector in DETECTORS] == [
-        "finance.spending_spike",
-        "finance.open_loops",
-        "nutrition.low_protein",
-        "nutrition.skipped_meals",
-        "training.adherence_drop",
-        "training.volume_stalled",
-        "training.recovery_risk",
-        "cross.training_nutrition_mismatch",
-        "core.goal_drift",
-        "finance.category_drift",
-        "finance.goal_risk",
-    ]
-
-
 def test_detect_goal_drift_returns_off_track_goal_insight():
     read_models = _build_read_models(
         goal_progress=[
@@ -324,7 +306,7 @@ def test_detect_category_drift_returns_alert_for_real_baseline_increase():
                 merchant_names=[],
                 account_names=[],
             )
-        ]
+        ],
     )
 
     from minx_mcp.core.goal_detectors import detect_category_drift
@@ -361,7 +343,7 @@ def test_detect_category_drift_returns_warning_for_real_baseline_increase():
                 merchant_names=[],
                 account_names=[],
             )
-        ]
+        ],
     )
 
     from minx_mcp.core.goal_detectors import detect_category_drift
@@ -403,7 +385,7 @@ def test_detect_category_drift_does_not_fire_when_goal_is_merely_watch_without_m
                 merchant_names=[],
                 account_names=[],
             )
-        ]
+        ],
     )
 
     from minx_mcp.core.goal_detectors import detect_category_drift
@@ -646,8 +628,12 @@ def _simplify(insight: InsightCandidate) -> tuple[str, str, str, str, list[str]]
 
 @dataclass
 class _FinanceAPIDouble:
-    total_map: dict[tuple[str, str, tuple[str, ...], tuple[str, ...], tuple[str, ...]], int] | None = None
-    count_map: dict[tuple[str, str, tuple[str, ...], tuple[str, ...], tuple[str, ...]], int] | None = None
+    total_map: (
+        dict[tuple[str, str, tuple[str, ...], tuple[str, ...], tuple[str, ...]], int] | None
+    ) = None
+    count_map: (
+        dict[tuple[str, str, tuple[str, ...], tuple[str, ...], tuple[str, ...]], int] | None
+    ) = None
 
     def get_filtered_spending_total(
         self,

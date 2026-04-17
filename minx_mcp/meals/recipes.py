@@ -53,7 +53,7 @@ _LEADING_AMOUNT_RE = re.compile(
 
 
 def parse_recipe_note(path: Path) -> ParsedRecipe:
-    content = path.read_text()
+    content = path.read_text(encoding="utf-8")
     frontmatter, body = _split_frontmatter(content)
     metadata = _parse_frontmatter(frontmatter)
     title = str(metadata.get("title") or _title_from_body(body) or path.stem)
@@ -98,11 +98,7 @@ def _parse_frontmatter(text: str) -> dict[str, object]:
         if not key:
             continue
         if raw_value.startswith("[") and raw_value.endswith("]"):
-            values[key] = [
-                item.strip()
-                for item in raw_value[1:-1].split(",")
-                if item.strip()
-            ]
+            values[key] = [item.strip() for item in raw_value[1:-1].split(",") if item.strip()]
         else:
             values[key] = raw_value
     return values
@@ -211,4 +207,3 @@ def _string_or_none(value: object) -> str | None:
         return None
     result = str(value).strip()
     return result or None
-

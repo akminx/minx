@@ -4,6 +4,7 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
+from minx_mcp.contracts import InvalidInputError
 from minx_mcp.finance.import_models import (
     GenericCSVMapping,
     ParsedImportBatch,
@@ -21,11 +22,28 @@ def parse_generic_csv(
     transactions: list[ParsedTransaction] = []
     with path.open(newline="") as handle:
         for row in csv.DictReader(handle):
-            posted_at = datetime.strptime(
-                str(row[resolved_mapping.date_column]),
-                resolved_mapping.date_format,
-            ).strftime("%Y-%m-%d")
-            description = str(row[resolved_mapping.description_column])
+            try:
+                raw_date = row[resolved_mapping.date_column]
+            except KeyError as exc:
+                raise InvalidInputError(
+                    f"CSV is missing expected column {resolved_mapping.date_column!r}"
+                ) from exc
+            try:
+                raw_amount = row[resolved_mapping.amount_column]
+            except KeyError as exc:
+                raise InvalidInputError(
+                    f"CSV is missing expected column {resolved_mapping.amount_column!r}"
+                ) from exc
+            try:
+                raw_description = row[resolved_mapping.description_column]
+            except KeyError as exc:
+                raise InvalidInputError(
+                    f"CSV is missing expected column {resolved_mapping.description_column!r}"
+                ) from exc
+            posted_at = datetime.strptime(str(raw_date), resolved_mapping.date_format).strftime(
+                "%Y-%m-%d"
+            )
+            description = str(raw_description)
             merchant = (
                 row.get(resolved_mapping.merchant_column, description)
                 if resolved_mapping.merchant_column
@@ -36,16 +54,14 @@ def parse_generic_csv(
                 if resolved_mapping.category_hint_column
                 else None
             )
-            amount_cents = parse_dollars_to_cents(str(row[resolved_mapping.amount_column]))
+            amount_cents = parse_dollars_to_cents(str(raw_amount))
             transactions.append(
                 ParsedTransaction(
                     posted_at=posted_at,
                     description=description,
                     amount_cents=amount_cents,
                     merchant=str(merchant) if merchant is not None else None,
-                    category_hint=(
-                        str(category_hint) if category_hint is not None else None
-                    ),
+                    category_hint=(str(category_hint) if category_hint is not None else None),
                     external_id=None,
                 )
             )

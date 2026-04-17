@@ -109,7 +109,9 @@ def test_finance_risk_fires_for_count_below():
 
 
 def test_finance_risk_skips_sum_above():
-    goal = _make_goal(metric_type="sum_above", target_value=10_000, actual_value=8_500, status="watch")
+    goal = _make_goal(
+        metric_type="sum_above", target_value=10_000, actual_value=8_500, status="watch"
+    )
     read_models = _make_read_models([goal])
 
     assert detect_goal_finance_risks(read_models) == []

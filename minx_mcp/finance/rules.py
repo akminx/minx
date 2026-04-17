@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import Literal
 
 from minx_mcp.finance.normalization import normalize_merchant
 
-RuleStage = Literal["normalize", "categorize", "finalize"]
+RuleStage = Literal["normalize", "categorize"]
 
 _STAGE_ORDER = {
     "normalize": 0,
     "categorize": 1,
-    "finalize": 2,
 }
 
 

@@ -1,6 +1,8 @@
 # Code Quality Cleanup Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Execution tracker:** `docs/superpowers/plans/cleanup.md`
 
 **Goal:** Eliminate bugs, dead code, AI slop patterns, and sloppy practices identified in the full codebase audit. Make every module intentional, correct, and maintainable.
 

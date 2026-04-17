@@ -174,5 +174,4 @@ class RecipeRecommendation:
 class RecommendationResult:
     recommendations: list[RecipeRecommendation]
     included_classes: list[str]
-    shopping_lists_generated: list[object] = field(default_factory=list)
     nutrition_context: RecommendationNutritionContext | None = None

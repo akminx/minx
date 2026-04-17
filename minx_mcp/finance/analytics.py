@@ -4,8 +4,9 @@ from datetime import date, timedelta
 from sqlite3 import Connection
 
 from minx_mcp.audit import log_sensitive_access
-from minx_mcp.money import cents_to_dollars
+from minx_mcp.money import cents_to_display_dollars
 from minx_mcp.preferences import get_finance_anomaly_threshold_cents
+from minx_mcp.time_utils import next_day
 
 
 def summarize_finances(conn: Connection) -> dict[str, object]:
@@ -15,7 +16,7 @@ def summarize_finances(conn: Connection) -> dict[str, object]:
     categories = [
         {
             "category_name": row["category_name"],
-            "total_amount": cents_to_dollars(int(row["total_cents"])),
+            "total_amount": cents_to_display_dollars(int(row["total_cents"])),
         }
         for row in conn.execute(
             """
@@ -27,7 +28,7 @@ def summarize_finances(conn: Connection) -> dict[str, object]:
             """
         ).fetchall()
     ]
-    return {"net_total": cents_to_dollars(int(total_cents)), "categories": categories}
+    return {"net_total": cents_to_display_dollars(int(total_cents)), "categories": categories}
 
 
 def find_anomalies(
@@ -49,7 +50,7 @@ def find_anomalies(
             "transaction_id": row["id"],
             "posted_at": row["posted_at"],
             "description": row["description"],
-            "amount": cents_to_dollars(int(row["amount_cents"])),
+            "amount": cents_to_display_dollars(int(row["amount_cents"])),
         }
         for row in conn.execute(
             f"""
@@ -76,7 +77,7 @@ def find_uncategorized(
             "id": row["id"],
             "posted_at": row["posted_at"],
             "description": row["description"],
-            "amount": cents_to_dollars(int(row["amount_cents"])),
+            "amount": cents_to_display_dollars(int(row["amount_cents"])),
         }
         for row in conn.execute(
             """
@@ -127,7 +128,7 @@ def sensitive_query(
             "raw_merchant": row["raw_merchant"],
             "account_name": str(row["account_name"]),
             "category_name": row["category_name"],
-            "amount": cents_to_dollars(int(row["amount_cents"])),
+            "amount": cents_to_display_dollars(int(row["amount_cents"])),
         }
         for row in conn.execute(
             f"""
@@ -173,11 +174,10 @@ def build_finance_monitoring(
         GROUP BY COALESCE(c.name, 'Uncategorized')
         ORDER BY total_spent_cents DESC, category_name ASC
         """,
-        (period_start, _next_day(period_end)),
+        (period_start, next_day(period_end)),
     ).fetchall()
     current_totals = {
-        str(row["category_name"]): int(row["total_spent_cents"])
-        for row in current_rows
+        str(row["category_name"]): int(row["total_spent_cents"]) for row in current_rows
     }
     merchant_rows = conn.execute(
         """
@@ -191,7 +191,7 @@ def build_finance_monitoring(
         GROUP BY COALESCE(t.merchant, 'Unknown')
         ORDER BY total_spent_cents DESC, merchant ASC
         """,
-        (period_start, _next_day(period_end)),
+        (period_start, next_day(period_end)),
     ).fetchall()
     income_rows = conn.execute(
         """
@@ -207,7 +207,7 @@ def build_finance_monitoring(
         GROUP BY COALESCE(t.merchant, t.description, 'Unknown')
         ORDER BY total_income_cents DESC, merchant ASC
         """,
-        (period_start, _next_day(period_end)),
+        (period_start, next_day(period_end)),
     ).fetchall()
     uncategorized_row = conn.execute(
         """
@@ -220,7 +220,7 @@ def build_finance_monitoring(
           AND t.amount_cents < 0
           AND COALESCE(c.name, 'Uncategorized') = 'Uncategorized'
         """,
-        (period_start, _next_day(period_end)),
+        (period_start, next_day(period_end)),
     ).fetchone()
     prior_totals = {
         str(row["category_name"]): int(row["total_spent_cents"])
@@ -235,15 +235,15 @@ def build_finance_monitoring(
               AND t.amount_cents < 0
             GROUP BY COALESCE(c.name, 'Uncategorized')
             """,
-            (prior_start, _next_day(prior_end)),
+            (prior_start, next_day(prior_end)),
         ).fetchall()
     }
     comparison_rows = [
         {
             "category_name": category_name,
-            "current_total_spent": cents_to_dollars(current_totals.get(category_name, 0)),
-            "prior_total_spent": cents_to_dollars(prior_totals.get(category_name, 0)),
-            "delta_spent": cents_to_dollars(
+            "current_total_spent": cents_to_display_dollars(current_totals.get(category_name, 0)),
+            "prior_total_spent": cents_to_display_dollars(prior_totals.get(category_name, 0)),
+            "delta_spent": cents_to_display_dollars(
                 current_totals.get(category_name, 0) - prior_totals.get(category_name, 0)
             ),
         }
@@ -259,14 +259,14 @@ def build_finance_monitoring(
         "top_categories": [
             {
                 "category_name": str(row["category_name"]),
-                "total_spent": cents_to_dollars(int(row["total_spent_cents"])),
+                "total_spent": cents_to_display_dollars(int(row["total_spent_cents"])),
             }
             for row in current_rows
         ],
         "top_merchants": [
             {
                 "merchant": str(row["merchant"]),
-                "total_spent": cents_to_dollars(int(row["total_spent_cents"])),
+                "total_spent": cents_to_display_dollars(int(row["total_spent_cents"])),
                 "transaction_count": int(row["transaction_count"]),
             }
             for row in merchant_rows
@@ -275,13 +275,13 @@ def build_finance_monitoring(
             {
                 "merchant": str(row["merchant"]),
                 "transaction_count": int(row["transaction_count"]),
-                "total_income": cents_to_dollars(int(row["total_income_cents"])),
+                "total_income": cents_to_display_dollars(int(row["total_income_cents"])),
             }
             for row in income_rows
         ],
         "uncategorized_summary": {
             "transaction_count": int(uncategorized_row["transaction_count"]),
-            "total_spent": cents_to_dollars(int(uncategorized_row["total_spent_cents"])),
+            "total_spent": cents_to_display_dollars(int(uncategorized_row["total_spent_cents"])),
         },
         "changes_vs_prior_period": comparison_rows,
     }
@@ -382,7 +382,7 @@ def _build_sensitive_filter_clauses(
         params.append(start_date)
     if end_date is not None:
         clauses.append("t.posted_at < ?")
-        params.append(_next_day(end_date))
+        params.append(next_day(end_date))
     if category_name is not None:
         clauses.append("COALESCE(c.name, 'Uncategorized') = ?")
         params.append(category_name)
@@ -397,7 +397,3 @@ def _build_sensitive_filter_clauses(
         params.append(description_contains)
 
     return clauses, params
-
-
-def _next_day(value: str) -> str:
-    return (date.fromisoformat(value) + timedelta(days=1)).isoformat()

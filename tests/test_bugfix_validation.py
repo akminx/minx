@@ -4,6 +4,7 @@
 2. Connection scope in _finance_query — LLM call happens outside 'with service:' block.
 3. GoalCaptureOption title template removed — accepts arbitrary string titles.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -16,10 +17,10 @@ from minx_mcp.core.models import GoalCaptureOption
 from minx_mcp.finance.server import _finance_query
 from minx_mcp.finance.service import FinanceService
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_service(tmp_path: Path) -> FinanceService:
     return FinanceService(tmp_path / "minx.db", tmp_path / "vault")
@@ -179,7 +180,11 @@ def test_finance_query_nl_path_validates_before_connection():
         None,
     )
     validate_date_line = next(
-        (i for i, ln in enumerate(lines) if "_validate_date_range" in ln and i > (llm_call_line or 0)),
+        (
+            i
+            for i, ln in enumerate(lines)
+            if "_validate_date_range" in ln and i > (llm_call_line or 0)
+        ),
         None,
     )
     # The last 'with service:' is the NL query execution block
@@ -187,7 +192,9 @@ def test_finance_query_nl_path_validates_before_connection():
     last_with_service = max(with_service_lines) if with_service_lines else None
 
     assert llm_call_line is not None
-    assert validate_date_line is not None, "_validate_date_range must be called after LLM in NL path"
+    assert validate_date_line is not None, (
+        "_validate_date_range must be called after LLM in NL path"
+    )
     assert last_with_service is not None
 
     assert llm_call_line < validate_date_line < last_with_service, (
@@ -273,12 +280,12 @@ def test_goal_capture_option_rejects_none_title_in_payload():
 def test_goal_capture_option_various_custom_titles_all_succeed():
     """A range of custom title strings are all accepted without error."""
     custom_titles = [
-        "Dining Out Spending Cap",           # old pattern still works
-        "My Grocery Budget",                 # different pattern
-        "Q2 Travel Limit",                   # date-prefixed
-        "coffee",                            # lowercase, short
-        "A" * 100,                           # long string
-        "Spending Cap — Dining Out 🍕",      # unicode/emoji
+        "Dining Out Spending Cap",  # old pattern still works
+        "My Grocery Budget",  # different pattern
+        "Q2 Travel Limit",  # date-prefixed
+        "coffee",  # lowercase, short
+        "A" * 100,  # long string
+        "Spending Cap — Dining Out 🍕",  # unicode/emoji
     ]
     for title in custom_titles:
         opt = _make_category_option(title=title)

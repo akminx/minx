@@ -1,8 +1,9 @@
 from pathlib import Path
 
 from minx_mcp.contracts import InvalidInputError
+from minx_mcp.finance.report_builders import build_monthly_report, build_weekly_report
 from minx_mcp.finance.report_models import MonthlyReportSummary, WeeklyReportSummary
-from minx_mcp.finance.reports import build_monthly_report, build_weekly_report, upsert_report_run
+from minx_mcp.finance.report_orchestration import upsert_report_run
 from minx_mcp.finance.service import FinanceService
 
 
@@ -53,8 +54,7 @@ def test_weekly_report_includes_required_sections(tmp_path):
     assert any(item["category_name"] == "Groceries" for item in summary["category_changes"])
     assert any(item["kind"] == "large_uncategorized" for item in summary["anomalies"])
     assert any(
-        item["description"] == "Unknown Merchant"
-        for item in summary["uncategorized_transactions"]
+        item["description"] == "Unknown Merchant" for item in summary["uncategorized_transactions"]
     )
     assert "## Totals" in report_text
     assert "## Top Categories" in report_text
@@ -90,9 +90,7 @@ def test_monthly_report_includes_required_sections(tmp_path):
     assert any(item["account_name"] == "DCU" for item in summary["account_rollups"])
     assert any(item["category_name"] == "Groceries" for item in summary["category_totals"])
     assert any(item["account_name"] == "DCU" for item in summary["changes_vs_prior_month"])
-    assert any(
-        item["merchant"] == "NETFLIX" for item in summary["recurring_charge_highlights"]
-    )
+    assert any(item["merchant"] == "NETFLIX" for item in summary["recurring_charge_highlights"])
     assert any(item["kind"] == "large_uncategorized" for item in summary["anomalies"])
     assert any(
         item["kind"] == "new_merchant" and item["merchant"] == "NEW SHOP"

@@ -4,7 +4,6 @@ import pytest
 
 from minx_mcp.core.models import (
     DailyTimeline,
-    InsightCandidate,
     OpenLoopsSnapshot,
     SpendingSnapshot,
     TimelineEntry,
@@ -399,7 +398,9 @@ class _RecordingLLM:
     def __init__(self, config: dict[str, object]) -> None:
         self.config = config
 
-    async def evaluate_review(self, timeline, spending, open_loops, detector_insights, goal_progress=None):
+    async def evaluate_review(
+        self, timeline, spending, open_loops, detector_insights, goal_progress=None
+    ):
         raise NotImplementedError
 
 

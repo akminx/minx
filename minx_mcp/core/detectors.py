@@ -43,8 +43,7 @@ def detect_spending_spike(read_models: ReadModels) -> list[InsightCandidate]:
             )
         else:
             supporting_signals.append(
-                f"Top spending category today: {primary_category} "
-                f"({format_cents(primary_total)})."
+                f"Top spending category today: {primary_category} ({format_cents(primary_total)})."
             )
 
     severity = "alert" if change_pct >= 50 else "warning"
@@ -80,9 +79,7 @@ def detect_open_loops(read_models: ReadModels) -> list[InsightCandidate]:
                 confidence=0.9 if loop.loop_type in _ACTION_NEEDED_LOOP_TYPES else 0.8,
                 severity=loop.severity,
                 actionability=(
-                    "action_needed"
-                    if loop.loop_type in _ACTION_NEEDED_LOOP_TYPES
-                    else "suggestion"
+                    "action_needed" if loop.loop_type in _ACTION_NEEDED_LOOP_TYPES else "suggestion"
                 ),
                 source="detector",
             )
@@ -237,17 +234,31 @@ DETECTORS: list[Detector] = [
     Detector(key="finance.open_loops", fn=detect_open_loops, tags=frozenset({"finance"})),
     Detector(key="nutrition.low_protein", fn=detect_low_protein, tags=frozenset({"nutrition"})),
     Detector(key="nutrition.skipped_meals", fn=detect_skipped_meals, tags=frozenset({"nutrition"})),
-    Detector(key="training.adherence_drop", fn=detect_training_adherence_drop, tags=frozenset({"training"})),
-    Detector(key="training.volume_stalled", fn=detect_training_volume_stalled, tags=frozenset({"training"})),
-    Detector(key="training.recovery_risk", fn=detect_training_recovery_risk, tags=frozenset({"training"})),
+    Detector(
+        key="training.adherence_drop",
+        fn=detect_training_adherence_drop,
+        tags=frozenset({"training"}),
+    ),
+    Detector(
+        key="training.volume_stalled",
+        fn=detect_training_volume_stalled,
+        tags=frozenset({"training"}),
+    ),
+    Detector(
+        key="training.recovery_risk", fn=detect_training_recovery_risk, tags=frozenset({"training"})
+    ),
     Detector(
         key="cross.training_nutrition_mismatch",
         fn=detect_training_with_low_protein,
         tags=frozenset({"training", "nutrition"}),
     ),
     Detector(key="core.goal_drift", fn=detect_goal_drift, tags=frozenset({"goals"})),
-    Detector(key="finance.category_drift", fn=detect_category_drift, tags=frozenset({"finance", "goals"})),
-    Detector(key="finance.goal_risk", fn=detect_goal_finance_risks, tags=frozenset({"finance", "goals"})),
+    Detector(
+        key="finance.category_drift", fn=detect_category_drift, tags=frozenset({"finance", "goals"})
+    ),
+    Detector(
+        key="finance.goal_risk", fn=detect_goal_finance_risks, tags=frozenset({"finance", "goals"})
+    ),
 ]
 
 

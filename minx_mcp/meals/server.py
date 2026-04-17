@@ -4,7 +4,7 @@ from dataclasses import asdict
 
 from mcp.server.fastmcp import FastMCP
 
-from minx_mcp.contracts import wrap_tool_call
+from minx_mcp.contracts import ToolResponse, wrap_tool_call
 from minx_mcp.meals.recommendations import recommend_recipes as recommend
 from minx_mcp.meals.service import MealsService
 
@@ -20,7 +20,7 @@ def create_meals_server(service: MealsService) -> FastMCP:
         food_items: list[dict[str, object]] | None = None,
         protein_grams: float | None = None,
         calories: int | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: {
                 "meal": asdict(
@@ -43,7 +43,7 @@ def create_meals_server(service: MealsService) -> FastMCP:
         unit: str | None = None,
         expiration_date: str | None = None,
         low_stock_threshold: float | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: {
                 "item": asdict(
@@ -65,7 +65,7 @@ def create_meals_server(service: MealsService) -> FastMCP:
         unit: str | None = None,
         expiration_date: str | None = None,
         low_stock_threshold: float | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: {
                 "item": asdict(
@@ -81,26 +81,24 @@ def create_meals_server(service: MealsService) -> FastMCP:
         )
 
     @mcp.tool(name="pantry_remove")
-    def pantry_remove(item_id: int) -> dict[str, object]:
+    def pantry_remove(item_id: int) -> ToolResponse:
         return wrap_tool_call(lambda: _remove_pantry_item(service, item_id))
 
     @mcp.tool(name="pantry_list")
-    def pantry_list() -> dict[str, object]:
+    def pantry_list() -> ToolResponse:
         return wrap_tool_call(
             lambda: {"items": [asdict(item) for item in service.list_pantry_items()]}
         )
 
     @mcp.tool(name="recipe_index")
-    def recipe_index(vault_path: str) -> dict[str, object]:
+    def recipe_index(vault_path: str) -> ToolResponse:
         return wrap_tool_call(lambda: {"recipe": asdict(service.index_recipe(vault_path))})
 
     @mcp.tool(name="recipe_scan")
-    def recipe_scan(directory: str = "Recipes") -> dict[str, object]:
+    def recipe_scan(directory: str = "Recipes") -> ToolResponse:
         return wrap_tool_call(
             lambda: {
-                "recipes": [
-                    asdict(recipe) for recipe in service.scan_vault_recipes(directory)
-                ]
+                "recipes": [asdict(recipe) for recipe in service.scan_vault_recipes(directory)]
             }
         )
 
@@ -108,7 +106,7 @@ def create_meals_server(service: MealsService) -> FastMCP:
     def recommend_recipes(
         include_needs_shopping: bool = False,
         apply_nutrition_filter: bool = False,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: asdict(
                 recommend(
@@ -130,7 +128,7 @@ def create_meals_server(service: MealsService) -> FastMCP:
         calorie_deficit_kcal: int = 400,
         protein_g_per_kg: float = 2.0,
         fat_g_per_kg: float = 0.77,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: {
                 "plan": asdict(
@@ -150,12 +148,18 @@ def create_meals_server(service: MealsService) -> FastMCP:
         )
 
     @mcp.tool(name="nutrition_profile_get")
-    def nutrition_profile_get() -> dict[str, object]:
+    def nutrition_profile_get() -> ToolResponse:
         return wrap_tool_call(
             lambda: {
                 "plan": asdict(plan) if (plan := service.get_nutrition_plan()) is not None else None
             }
         )
+
+    @mcp.resource("health://status")
+    def health_status() -> str:
+        import json
+
+        return json.dumps({"status": "ok", "server": "minx-meals"})
 
     return mcp
 

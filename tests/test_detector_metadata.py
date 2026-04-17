@@ -13,10 +13,10 @@ from minx_mcp.core.models import (
     SpendingSnapshot,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_read_models(finance_api=None) -> ReadModels:
     return ReadModels(
@@ -52,6 +52,7 @@ def _make_insight() -> InsightCandidate:
 # ---------------------------------------------------------------------------
 # Detector Dataclass
 # ---------------------------------------------------------------------------
+
 
 class TestDetectorDataclass:
     def test_all_detectors_have_unique_keys(self):
@@ -99,6 +100,7 @@ class TestDetectorDataclass:
 # enabled_by_default Filtering
 # ---------------------------------------------------------------------------
 
+
 class TestEnabledByDefaultFiltering:
     def test_disabled_detector_is_skipped_by_run_detectors(self):
         called = []
@@ -116,10 +118,10 @@ class TestEnabledByDefaultFiltering:
 
         import minx_mcp.core.snapshot as snapshot_module
 
-        original_detectors = snapshot_module.DETECTORS
         patched = list(DETECTORS) + [disabled]
         with patch.object(snapshot_module, "DETECTORS", patched):
             from minx_mcp.core.snapshot import _run_detectors
+
             _run_detectors(_make_read_models())
 
         assert "disabled_detector" not in called, (
@@ -133,6 +135,7 @@ class TestEnabledByDefaultFiltering:
             def fn(read_models):
                 called.append(key)
                 return []
+
             return fn
 
         enabled_a = Detector(
@@ -159,6 +162,7 @@ class TestEnabledByDefaultFiltering:
         patched = [enabled_a, enabled_b, disabled]
         with patch.object(snapshot_module, "DETECTORS", patched):
             from minx_mcp.core.snapshot import _run_detectors
+
             _run_detectors(_make_read_models())
 
         assert "test.alpha" in called
@@ -175,11 +179,19 @@ class TestEnabledByDefaultFiltering:
         import minx_mcp.core.snapshot as snapshot_module
 
         patched = [
-            Detector(key="test.enabled", fn=enabled_fn, enabled_by_default=True, tags=frozenset({"test"})),
-            Detector(key="test.disabled", fn=disabled_fn, enabled_by_default=False, tags=frozenset({"test"})),
+            Detector(
+                key="test.enabled", fn=enabled_fn, enabled_by_default=True, tags=frozenset({"test"})
+            ),
+            Detector(
+                key="test.disabled",
+                fn=disabled_fn,
+                enabled_by_default=False,
+                tags=frozenset({"test"}),
+            ),
         ]
         with patch.object(snapshot_module, "DETECTORS", patched):
             from minx_mcp.core.snapshot import _run_detectors
+
             results = _run_detectors(_make_read_models())
 
         assert len(results) == 1
@@ -188,6 +200,7 @@ class TestEnabledByDefaultFiltering:
 # ---------------------------------------------------------------------------
 # Detector Tags
 # ---------------------------------------------------------------------------
+
 
 class TestDetectorTags:
     def test_filter_by_finance_tag(self):
@@ -235,6 +248,7 @@ class TestDetectorTags:
 # FinanceSeeder Integration
 # ---------------------------------------------------------------------------
 
+
 class TestFinanceSeedHelper:
     def test_seeder_creates_queryable_transactions(self, seeder, db_conn):
         tx_id = seeder.transaction(posted_at="2026-04-12", amount_cents=-1500)
@@ -261,9 +275,7 @@ class TestFinanceSeedHelper:
         cid = seeder.category_id("Groceries")
         assert isinstance(cid, int)
         assert cid > 0
-        row = db_conn.execute(
-            "SELECT name FROM finance_categories WHERE id = ?", (cid,)
-        ).fetchone()
+        row = db_conn.execute("SELECT name FROM finance_categories WHERE id = ?", (cid,)).fetchone()
         assert row is not None
         assert row["name"] == "Groceries"
 
@@ -271,9 +283,7 @@ class TestFinanceSeedHelper:
         aid = seeder.account_id()
         assert isinstance(aid, int)
         assert aid > 0
-        row = db_conn.execute(
-            "SELECT name FROM finance_accounts WHERE id = ?", (aid,)
-        ).fetchone()
+        row = db_conn.execute("SELECT name FROM finance_accounts WHERE id = ?", (aid,)).fetchone()
         assert row is not None
         assert row["name"] == "DCU"
 
@@ -294,11 +304,11 @@ class TestFinanceSeedHelper:
         assert len(ids) == len(set(ids))
 
     def test_goal_seeder_returns_valid_goal_id(self, seeder, db_conn):
-        goal_id = seeder.goal(title="Test Budget", target_value=50_000, category_names=["Groceries"])
+        goal_id = seeder.goal(
+            title="Test Budget", target_value=50_000, category_names=["Groceries"]
+        )
         assert goal_id > 0
-        row = db_conn.execute(
-            "SELECT title FROM goals WHERE id = ?", (goal_id,)
-        ).fetchone()
+        row = db_conn.execute("SELECT title FROM goals WHERE id = ?", (goal_id,)).fetchone()
         assert row is not None
         assert row["title"] == "Test Budget"
 
@@ -306,6 +316,7 @@ class TestFinanceSeedHelper:
 # ---------------------------------------------------------------------------
 # Duplicate Query Elimination
 # ---------------------------------------------------------------------------
+
 
 class TestDuplicateQueryElimination:
     def test_get_uncategorized_called_exactly_once(self, db_conn):

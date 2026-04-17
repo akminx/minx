@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from minx_mcp.core.events import PAYLOAD_UPCASTERS, emit_event, query_events
 from minx_mcp.db import get_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -26,7 +23,9 @@ def _seed_batch(conn) -> None:
 def _insert_transaction(conn, *, posted_at, amount_cents, merchant="Merchant", description="Txn"):
     conn.execute(
         """
-        INSERT INTO finance_transactions (account_id, batch_id, posted_at, description, merchant, amount_cents, category_source)
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_source
+        )
         VALUES (1, 1, ?, ?, ?, ?, 'manual')
         """,
         (posted_at, description, merchant, amount_cents),
@@ -88,22 +87,38 @@ def _insert_raw_event(
 def test_get_income_summary_counts_only_positive_amounts(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
-    _insert_transaction(conn, posted_at="2026-03-01", amount_cents=500_00, merchant="Employer", description="Payroll")
-    _insert_transaction(conn, posted_at="2026-03-05", amount_cents=100_00, merchant="Side Hustle", description="Freelance")
-    _insert_transaction(conn, posted_at="2026-03-10", amount_cents=-75_00, merchant="Grocery", description="Food")
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-01",
+        amount_cents=500_00,
+        merchant="Employer",
+        description="Payroll",
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-05",
+        amount_cents=100_00,
+        merchant="Side Hustle",
+        description="Freelance",
+    )
+    _insert_transaction(
+        conn, posted_at="2026-03-10", amount_cents=-75_00, merchant="Grocery", description="Food"
+    )
     conn.commit()
 
     summary = FinanceReadAPI(conn).get_income_summary("2026-03-01", "2026-03-31")
 
     assert summary.total_income_cents == 600_00
-    sources = {s.merchant: s.total_spent_cents for s in summary.by_source}
+    sources = {s.name: s.total_cents for s in summary.by_source}
     assert sources == {"Employer": 500_00, "Side Hustle": 100_00}
 
 
 def test_get_income_summary_returns_zero_when_no_income(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
-    _insert_transaction(conn, posted_at="2026-03-01", amount_cents=-200_00, merchant="Shop", description="Stuff")
+    _insert_transaction(
+        conn, posted_at="2026-03-01", amount_cents=-200_00, merchant="Shop", description="Stuff"
+    )
     conn.commit()
 
     summary = FinanceReadAPI(conn).get_income_summary("2026-03-01", "2026-03-31")
@@ -115,9 +130,19 @@ def test_get_income_summary_returns_zero_when_no_income(tmp_path):
 def test_get_net_flow_returns_income_minus_expenses(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
-    _insert_transaction(conn, posted_at="2026-03-01", amount_cents=300_00, merchant="Employer", description="Payroll")
-    _insert_transaction(conn, posted_at="2026-03-05", amount_cents=-120_00, merchant="Grocery", description="Food")
-    _insert_transaction(conn, posted_at="2026-03-10", amount_cents=-30_00, merchant="Coffee", description="Coffee")
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-01",
+        amount_cents=300_00,
+        merchant="Employer",
+        description="Payroll",
+    )
+    _insert_transaction(
+        conn, posted_at="2026-03-05", amount_cents=-120_00, merchant="Grocery", description="Food"
+    )
+    _insert_transaction(
+        conn, posted_at="2026-03-10", amount_cents=-30_00, merchant="Coffee", description="Coffee"
+    )
     conn.commit()
 
     net = FinanceReadAPI(conn).get_net_flow("2026-03-01", "2026-03-31")
@@ -128,25 +153,67 @@ def test_get_net_flow_returns_income_minus_expenses(tmp_path):
 def test_get_income_summary_date_range_excludes_out_of_range_transactions(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
-    _insert_transaction(conn, posted_at="2026-02-28", amount_cents=200_00, merchant="OldPayroll", description="Before range")
-    _insert_transaction(conn, posted_at="2026-03-15", amount_cents=500_00, merchant="Payroll", description="In range")
-    _insert_transaction(conn, posted_at="2026-04-01", amount_cents=200_00, merchant="FuturePayroll", description="After range")
+    _insert_transaction(
+        conn,
+        posted_at="2026-02-28",
+        amount_cents=200_00,
+        merchant="OldPayroll",
+        description="Before range",
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-15",
+        amount_cents=500_00,
+        merchant="Payroll",
+        description="In range",
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-04-01",
+        amount_cents=200_00,
+        merchant="FuturePayroll",
+        description="After range",
+    )
     conn.commit()
 
     summary = FinanceReadAPI(conn).get_income_summary("2026-03-01", "2026-03-31")
 
     assert summary.total_income_cents == 500_00
     assert len(summary.by_source) == 1
-    assert summary.by_source[0].merchant == "Payroll"
+    assert summary.by_source[0].name == "Payroll"
 
 
 def test_get_net_flow_date_range_excludes_out_of_range_transactions(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
-    _insert_transaction(conn, posted_at="2026-02-28", amount_cents=-999_00, merchant="OldSpend", description="Before range")
-    _insert_transaction(conn, posted_at="2026-03-10", amount_cents=400_00, merchant="Employer", description="In range income")
-    _insert_transaction(conn, posted_at="2026-03-20", amount_cents=-100_00, merchant="Shop", description="In range expense")
-    _insert_transaction(conn, posted_at="2026-04-05", amount_cents=999_00, merchant="FutureIncome", description="After range")
+    _insert_transaction(
+        conn,
+        posted_at="2026-02-28",
+        amount_cents=-999_00,
+        merchant="OldSpend",
+        description="Before range",
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-10",
+        amount_cents=400_00,
+        merchant="Employer",
+        description="In range income",
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-20",
+        amount_cents=-100_00,
+        merchant="Shop",
+        description="In range expense",
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-04-05",
+        amount_cents=999_00,
+        merchant="FutureIncome",
+        description="After range",
+    )
     conn.commit()
 
     net = FinanceReadAPI(conn).get_net_flow("2026-03-01", "2026-03-31")

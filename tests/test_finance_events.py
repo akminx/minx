@@ -1,8 +1,7 @@
-import logging
+from pathlib import Path
 
 import pytest
 
-from minx_mcp.core import events as core_events
 from minx_mcp.core.events import query_events
 from minx_mcp.db import get_connection
 from minx_mcp.finance.service import FinanceService
@@ -11,8 +10,7 @@ from minx_mcp.finance.service import FinanceService
 def _import_source(tmp_path, amount: str = "-45.20", description: str = "H-E-B"):
     source = tmp_path / "free checking transactions.csv"
     source.write_text(
-        "Date,Description,Transaction Type,Amount\n"
-        f"2026-03-02,{description},Withdrawal,{amount}\n"
+        f"Date,Description,Transaction Type,Amount\n2026-03-02,{description},Withdrawal,{amount}\n"
     )
     return source
 
@@ -21,28 +19,6 @@ def _seed_transaction(service: FinanceService, tmp_path):
     source = _import_source(tmp_path)
     service.finance_import(str(source), account_name="DCU", source_kind="dcu_csv")
     return service.sensitive_finance_query(limit=1)["transactions"][0]
-
-
-def _invalid_emit_event(db, event_type, domain, occurred_at, entity_ref, source, payload, **kwargs):
-    invalid_payload = dict(payload)
-    if event_type == "finance.transactions_imported":
-        invalid_payload["transaction_count"] = "bad"
-    elif event_type == "finance.transactions_categorized":
-        invalid_payload["count"] = "bad"
-    elif event_type == "finance.report_generated":
-        invalid_payload["report_type"] = "daily"
-    elif event_type == "finance.anomalies_detected":
-        invalid_payload["count"] = "bad"
-    return core_events.emit_event(
-        db,
-        event_type=event_type,
-        domain=domain,
-        occurred_at=occurred_at,
-        entity_ref=entity_ref,
-        source=source,
-        payload=invalid_payload,
-        **kwargs,
-    )
 
 
 def test_finance_import_emits_event_on_success(tmp_path):
@@ -156,9 +132,12 @@ def test_finance_anomalies_does_not_commit_preexisting_transaction(tmp_path):
     assert len(result["items"]) == 1
     assert len(query_events(service.conn, event_type="finance.anomalies_detected")) == 1
     assert query_events(observer, event_type="finance.anomalies_detected") == []
-    assert observer.execute(
-        "SELECT value_json FROM preferences WHERE domain = 'core' AND key = 'timezone'"
-    ).fetchone() is None
+    assert (
+        observer.execute(
+            "SELECT value_json FROM preferences WHERE domain = 'core' AND key = 'timezone'"
+        ).fetchone()
+        is None
+    )
 
 
 def test_finance_anomalies_event_total_uses_stored_cents(tmp_path, monkeypatch):
@@ -189,45 +168,70 @@ def test_finance_anomalies_event_total_uses_stored_cents(tmp_path, monkeypatch):
     assert events[0].payload["total_cents"] == -50000
 
 
-@pytest.mark.parametrize("operation_name", ["import", "categorize", "weekly_report", "anomalies"])
-def test_finance_operations_log_event_emission_failures_without_breaking_success(
-    tmp_path, monkeypatch, caplog, operation_name
-):
-    service = FinanceService(tmp_path / "minx.db", tmp_path)
-    monkeypatch.setattr("minx_mcp.finance.service.emit_event", _invalid_emit_event)
-    caplog.set_level(logging.WARNING)
+def test_finance_import_rolls_back_if_event_emission_fails(tmp_path, monkeypatch):
+    db_path = tmp_path / "minx.db"
+    service = FinanceService(db_path, tmp_path)
+    observer = get_connection(db_path)
+    source = _import_source(tmp_path)
+    monkeypatch.setattr("minx_mcp.finance.service.emit_event", lambda *args, **kwargs: None)
 
-    if operation_name == "import":
-        source = _import_source(tmp_path)
-        result = service.finance_import(str(source), account_name="DCU", source_kind="dcu_csv")
-        assert result["status"] == "completed"
-        assert service.conn.execute(
-            "SELECT COUNT(*) AS count FROM finance_transactions"
-        ).fetchone()["count"] == 1
-        event_type = "finance.transactions_imported"
-    elif operation_name == "categorize":
-        transaction = _seed_transaction(service, tmp_path)
-        changed = service.finance_categorize([transaction["id"]], "Dining Out")
-        assert changed == 1
-        assert service.sensitive_finance_query(limit=1)["transactions"][0]["category_name"] == "Dining Out"
-        event_type = "finance.transactions_categorized"
-    elif operation_name == "weekly_report":
-        _seed_transaction(service, tmp_path)
-        report = service.generate_weekly_report("2026-03-02", "2026-03-08")
-        assert report["vault_path"].endswith("Finance/weekly-2026-03-02.md")
-        assert service.conn.execute(
-            "SELECT COUNT(*) AS count FROM finance_report_runs"
-        ).fetchone()["count"] == 1
-        event_type = "finance.report_generated"
-    else:
-        source = _import_source(tmp_path, amount="-500.00", description="Unknown Merchant")
+    with pytest.raises(RuntimeError, match="finance.transactions_imported event emission failed"):
         service.finance_import(str(source), account_name="DCU", source_kind="dcu_csv")
-        anomalies = service.finance_anomalies()
-        assert len(anomalies["items"]) == 1
-        event_type = "finance.anomalies_detected"
 
-    assert query_events(service.conn, event_type=event_type) == []
-    assert event_type in caplog.text
+    assert query_events(observer, event_type="finance.transactions_imported") == []
+    assert (
+        observer.execute("SELECT COUNT(*) AS count FROM finance_transactions").fetchone()["count"]
+        == 0
+    )
+    job = observer.execute("SELECT status, error_message FROM jobs").fetchone()
+    assert job["status"] == "failed"
+    assert "finance.transactions_imported event emission failed" in job["error_message"]
+
+
+def test_finance_categorize_rolls_back_if_event_emission_fails(tmp_path, monkeypatch):
+    db_path = tmp_path / "minx.db"
+    service = FinanceService(db_path, tmp_path)
+    transaction = _seed_transaction(service, tmp_path)
+    monkeypatch.setattr("minx_mcp.finance.service.emit_event", lambda *args, **kwargs: None)
+
+    with pytest.raises(
+        RuntimeError, match="finance.transactions_categorized event emission failed"
+    ):
+        service.finance_categorize([transaction["id"]], "Dining Out")
+
+    refreshed = service.sensitive_finance_query(limit=1)["transactions"][0]
+    assert refreshed["category_name"] == "Uncategorized"
+    assert query_events(service.conn, event_type="finance.transactions_categorized") == []
+
+
+def test_report_generation_marks_failed_if_event_emission_fails(tmp_path, monkeypatch):
+    db_path = tmp_path / "minx.db"
+    service = FinanceService(db_path, tmp_path)
+    _seed_transaction(service, tmp_path)
+    monkeypatch.setattr("minx_mcp.finance.service.emit_event", lambda *args, **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="finance.report_generated event emission failed"):
+        service.generate_weekly_report("2026-03-02", "2026-03-08")
+
+    assert query_events(service.conn, event_type="finance.report_generated") == []
+    report_run = service.conn.execute(
+        "SELECT status, error_message, vault_path FROM finance_report_runs"
+    ).fetchone()
+    assert report_run["status"] == "failed"
+    assert "finance.report_generated event emission failed" in report_run["error_message"]
+    assert not Path(report_run["vault_path"]).exists()
+
+
+def test_finance_anomalies_fails_if_event_emission_fails(tmp_path, monkeypatch):
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    source = _import_source(tmp_path, amount="-500.00", description="Unknown Merchant")
+    service.finance_import(str(source), account_name="DCU", source_kind="dcu_csv")
+    monkeypatch.setattr("minx_mcp.finance.service.emit_event", lambda *args, **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="finance.anomalies_detected event emission failed"):
+        service.finance_anomalies()
+
+    assert query_events(service.conn, event_type="finance.anomalies_detected") == []
 
 
 def test_finance_import_rollback_does_not_leave_committed_event(tmp_path, monkeypatch):
@@ -258,7 +262,9 @@ def test_report_generation_rollback_does_not_leave_committed_event(tmp_path, mon
         assert len(query_events(conn, event_type="finance.report_generated")) == 1
         raise RuntimeError("persist blocked")
 
-    monkeypatch.setattr("minx_mcp.finance.report_orchestration.persist_report_run", fail_before_commit)
+    monkeypatch.setattr(
+        "minx_mcp.finance.report_orchestration.persist_report_run", fail_before_commit
+    )
 
     with pytest.raises(RuntimeError, match="persist blocked"):
         service.generate_weekly_report("2026-03-02", "2026-03-08")

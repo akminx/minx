@@ -19,8 +19,7 @@ from minx_mcp.finance.parsers.generic_csv import parse_generic_csv
 def test_detect_robinhood_csv(tmp_path):
     path = tmp_path / "robinhood_transactions.csv"
     path.write_text(
-        "Date,Time,Cardholder,Card,Amount,Description\n"
-        "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
+        "Date,Time,Cardholder,Card,Amount,Description\n2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     assert detect_source_kind(path) == "robinhood_csv"
 
@@ -28,8 +27,7 @@ def test_detect_robinhood_csv(tmp_path):
 def test_detect_dcu_csv_from_content_when_filename_is_unhelpful(tmp_path):
     path = tmp_path / "statement.csv"
     path.write_text(
-        "Date,Description,Transaction Type,Amount\n"
-        "2026-03-01,Payroll,Deposit,1200.00\n"
+        "Date,Description,Transaction Type,Amount\n2026-03-01,Payroll,Deposit,1200.00\n"
     )
 
     assert detect_source_kind(path) == "dcu_csv"
@@ -168,8 +166,7 @@ def test_parse_generic_csv_with_saved_mapping(tmp_path):
 def test_parse_source_file_uses_content_detection_for_unhelpful_filename(tmp_path):
     path = tmp_path / "statement.csv"
     path.write_text(
-        "Date,Description,Transaction Type,Amount\n"
-        "2026-03-01,Payroll,Deposit,1200.00\n"
+        "Date,Description,Transaction Type,Amount\n2026-03-01,Payroll,Deposit,1200.00\n"
     )
 
     parsed = parse_source_file(path, account_name="DCU")
@@ -180,8 +177,7 @@ def test_parse_source_file_uses_content_detection_for_unhelpful_filename(tmp_pat
 def test_parse_source_file_detects_kind_from_snapshot_path(tmp_path):
     path = tmp_path / "statement.csv"
     path.write_text(
-        "Date,Description,Transaction Type,Amount\n"
-        "2026-03-01,Payroll,Deposit,1200.00\n"
+        "Date,Description,Transaction Type,Amount\n2026-03-01,Payroll,Deposit,1200.00\n"
     )
     snapshot_path = tmp_path / "statement.snapshot.csv"
     content_hash = stream_snapshot_copy_and_hash(path, snapshot_path)
@@ -205,8 +201,7 @@ def test_parse_source_file_detects_kind_from_file_bytes_snapshot(tmp_path):
         path,
         account_name="DCU",
         file_bytes=(
-            b"Date,Description,Transaction Type,Amount\n"
-            b"2026-03-01,Payroll,Deposit,1200.00\n"
+            b"Date,Description,Transaction Type,Amount\n2026-03-01,Payroll,Deposit,1200.00\n"
         ),
     )
 
@@ -257,6 +252,15 @@ def test_generic_csv_rejects_more_than_two_decimals(tmp_path):
                 "amount_column": "amount",
             },
         )
+
+
+def test_parse_discover_pdf_4digit_year_passthrough(tmp_path, monkeypatch):
+    path = tmp_path / "discover_statement.pdf"
+    path.write_text("stub")
+    sample = "Transactions\n03/01/2026 03/01/2026 H-E-B $ 42.16 Supermarkets\n"
+    monkeypatch.setattr("minx_mcp.finance.parsers.discover.extract_text", lambda _: sample)
+    parsed = parse_source_file(path, account_name="Discover", source_kind="discover_pdf")
+    assert parsed.transactions[0].posted_at == "2026-03-01"
 
 
 def test_parse_generic_csv_requires_complete_mapping(tmp_path):

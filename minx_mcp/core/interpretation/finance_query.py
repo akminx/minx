@@ -1,22 +1,26 @@
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from datetime import date, timedelta
 from difflib import get_close_matches
-import re
 from typing import Protocol
 
 from minx_mcp.contracts import InvalidInputError
-from minx_mcp.finance.normalization import normalize_merchant
 from minx_mcp.core.interpretation.context import build_finance_query_context
 from minx_mcp.core.interpretation.models import FinanceQueryInterpretation
-from minx_mcp.core.interpretation.runner import run_interpretation
+from minx_mcp.core.interpretation.runner import (
+    StructuredPromptLLMInterface,
+    run_interpretation,
+)
 from minx_mcp.core.models import (
     FinanceQueryClarificationType,
     FinanceQueryFilters,
     FinanceQueryIntent,
     FinanceQueryPlan,
+    JSONLLMInterface,
 )
+from minx_mcp.finance.normalization import normalize_merchant
 
 
 class FinanceQueryReadProtocol(Protocol):
@@ -30,7 +34,7 @@ async def interpret_finance_query(
     message: str,
     review_date: str,
     finance_api: FinanceQueryReadProtocol,
-    llm: object,
+    llm: JSONLLMInterface | StructuredPromptLLMInterface,
 ) -> FinanceQueryPlan:
     _validate_iso_date(review_date, field_name="review_date")
     prompt = _render_finance_query_prompt(message, review_date, finance_api)
@@ -72,7 +76,9 @@ async def interpret_finance_query(
             confidence=raw.confidence,
             clarification_type="unknown_category",
             question="Which category did you mean?",
-            options=_suggest_options(filters.category_name, finance_api.list_transaction_category_names()),
+            options=_suggest_options(
+                filters.category_name, finance_api.list_transaction_category_names()
+            ),
         )
 
     merchant = _canonicalize_value(filters.merchant, finance_api.list_spending_merchant_names())
@@ -241,14 +247,19 @@ def _canonicalize_value(value: str | None, candidates: list[str]) -> str | None:
         merchant_lookup = _normalize_lookup_value(normalized_merchant_value)
         for candidate in candidates:
             candidate_merchant = normalize_merchant(candidate)
-            if candidate_merchant is not None and _normalize_lookup_value(candidate_merchant) == merchant_lookup:
+            if (
+                candidate_merchant is not None
+                and _normalize_lookup_value(candidate_merchant) == merchant_lookup
+            ):
                 return candidate
     return None
 
 
 def _suggest_options(value: str, candidates: list[str]) -> list[str] | None:
     normalized = value.strip().casefold()
-    substring_matches = [candidate for candidate in candidates if normalized in candidate.casefold()]
+    substring_matches = [
+        candidate for candidate in candidates if normalized in candidate.casefold()
+    ]
     if substring_matches:
         return substring_matches[:5]
     matches = get_close_matches(value, candidates, n=5, cutoff=0.4)

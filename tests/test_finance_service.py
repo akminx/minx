@@ -11,8 +11,7 @@ def test_import_job_is_idempotent_for_same_file(tmp_path):
     db_path = tmp_path / "minx.db"
     source = tmp_path / "robinhood_transactions.csv"
     source.write_text(
-        "Date,Time,Cardholder,Card,Amount,Description\n"
-        "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
+        "Date,Time,Cardholder,Card,Amount,Description\n2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     service = FinanceService(db_path, tmp_path)
     first = service.finance_import(str(source), account_name="Robinhood Gold")
@@ -22,7 +21,9 @@ def test_import_job_is_idempotent_for_same_file(tmp_path):
 
 def test_import_uses_content_detection_when_filename_is_unhelpful(tmp_path):
     source = tmp_path / "statement.csv"
-    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
     service = FinanceService(tmp_path / "minx.db", tmp_path)
 
     result = service.finance_import(str(source), account_name="DCU")
@@ -32,7 +33,9 @@ def test_import_uses_content_detection_when_filename_is_unhelpful(tmp_path):
 
 def test_manual_and_rule_based_categorization_both_work(tmp_path):
     source = tmp_path / "free checking transactions.csv"
-    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
     service = FinanceService(tmp_path / "minx.db", tmp_path)
     service.finance_import(str(source), account_name="DCU")
     service.add_category_rule("Groceries", "merchant_contains", "H-E-B")
@@ -63,7 +66,9 @@ def test_apply_category_rules_uses_normalized_merchant_matching(tmp_path):
 
 def test_safe_summary_and_sensitive_query_are_separate(tmp_path):
     source = tmp_path / "free checking transactions.csv"
-    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
     service = FinanceService(tmp_path / "minx.db", tmp_path)
     service.finance_import(str(source), account_name="DCU")
     safe = service.safe_finance_summary()
@@ -80,9 +85,9 @@ def test_sensitive_query_supports_optional_filters(tmp_path):
     dining_id = service.conn.execute(
         "SELECT id FROM finance_categories WHERE name = 'Dining Out'"
     ).fetchone()["id"]
-    dcu_id = service.conn.execute(
-        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
-    ).fetchone()["id"]
+    dcu_id = service.conn.execute("SELECT id FROM finance_accounts WHERE name = 'DCU'").fetchone()[
+        "id"
+    ]
     discover_id = service.conn.execute(
         "SELECT id FROM finance_accounts WHERE name = 'Discover'"
     ).fetchone()["id"]
@@ -125,7 +130,9 @@ def test_sensitive_query_supports_optional_filters(tmp_path):
 
 def test_sensitive_query_hides_internal_amount_cents_field(tmp_path):
     source = tmp_path / "free checking transactions.csv"
-    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
     service = FinanceService(tmp_path / "minx.db", tmp_path)
     service.finance_import(str(source), account_name="DCU")
 
@@ -137,10 +144,7 @@ def test_sensitive_query_hides_internal_amount_cents_field(tmp_path):
 
 def test_finance_import_uses_category_hint_to_match_existing_categories(tmp_path):
     source = tmp_path / "transactions.csv"
-    source.write_text(
-        "posted,description,amount,category\n"
-        "2026-03-02,Coffee,-12.50,Dining Out\n"
-    )
+    source.write_text("posted,description,amount,category\n2026-03-02,Coffee,-12.50,Dining Out\n")
     service = FinanceService(tmp_path / "minx.db", tmp_path)
 
     service.finance_import(
@@ -165,8 +169,7 @@ def test_changed_file_at_same_path_creates_new_import(tmp_path):
     db_path = tmp_path / "minx.db"
     source = tmp_path / "robinhood_transactions.csv"
     source.write_text(
-        "Date,Time,Cardholder,Card,Amount,Description\n"
-        "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
+        "Date,Time,Cardholder,Card,Amount,Description\n2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     service = FinanceService(db_path, tmp_path)
     first = service.finance_import(str(source), account_name="Robinhood Gold")
@@ -187,8 +190,7 @@ def test_changed_file_at_same_path_creates_new_import(tmp_path):
 def test_import_job_is_idempotent_across_path_aliases(tmp_path):
     source = tmp_path / "robinhood_transactions.csv"
     source.write_text(
-        "Date,Time,Cardholder,Card,Amount,Description\n"
-        "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
+        "Date,Time,Cardholder,Card,Amount,Description\n2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     (tmp_path / "alias").mkdir()
     aliased_source = tmp_path / "alias" / ".." / "robinhood_transactions.csv"
@@ -203,8 +205,7 @@ def test_import_job_is_idempotent_across_path_aliases(tmp_path):
 def test_import_job_is_idempotent_across_case_only_aliases(tmp_path):
     source = tmp_path / "robinhood_transactions.csv"
     source.write_text(
-        "Date,Time,Cardholder,Card,Amount,Description\n"
-        "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
+        "Date,Time,Cardholder,Card,Amount,Description\n2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     aliased_source = tmp_path / "ROBINHOOD_TRANSACTIONS.CSV"
     if not aliased_source.is_file():
@@ -236,8 +237,7 @@ def test_finance_import_normal_path_does_not_read_source_via_read_bytes(tmp_path
 
     source = tmp_path / "robinhood_transactions.csv"
     source.write_text(
-        "Date,Time,Cardholder,Card,Amount,Description\n"
-        "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
+        "Date,Time,Cardholder,Card,Amount,Description\n2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     service = FinanceService(tmp_path / "minx.db", tmp_path)
     result = service.finance_import(str(source), account_name="Robinhood Gold")
@@ -247,16 +247,14 @@ def test_finance_import_normal_path_does_not_read_source_via_read_bytes(tmp_path
 def test_import_uses_hashed_file_snapshot_for_parse(tmp_path, monkeypatch):
     import hashlib
 
-    from minx_mcp.finance import importers as importers_module
     from minx_mcp.finance import import_workflow as import_workflow_module
+    from minx_mcp.finance import importers as importers_module
 
     original_contents = (
-        "Date,Time,Cardholder,Card,Amount,Description\n"
-        "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
+        "Date,Time,Cardholder,Card,Amount,Description\n2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     mutated_contents = (
-        "Date,Time,Cardholder,Card,Amount,Description\n"
-        "2026-03-01,09:00,Alex,1234,-99.99,MUTATED\n"
+        "Date,Time,Cardholder,Card,Amount,Description\n2026-03-01,09:00,Alex,1234,-99.99,MUTATED\n"
     )
     source = tmp_path / "robinhood_transactions.csv"
     source.write_text(original_contents)
@@ -306,8 +304,7 @@ def test_import_returns_running_job_without_reexecuting(tmp_path):
 
     source = tmp_path / "robinhood_transactions.csv"
     source.write_text(
-        "Date,Time,Cardholder,Card,Amount,Description\n"
-        "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
+        "Date,Time,Cardholder,Card,Amount,Description\n2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     service = FinanceService(tmp_path / "minx.db", tmp_path)
     content_hash = hashlib.sha256(source.read_bytes()).hexdigest()
@@ -334,7 +331,9 @@ def test_import_returns_running_job_without_reexecuting(tmp_path):
 
 def test_manual_categorization_survives_rule_reapplication(tmp_path):
     source = tmp_path / "free checking transactions.csv"
-    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
     service = FinanceService(tmp_path / "minx.db", tmp_path)
     service.finance_import(str(source), account_name="DCU")
 
@@ -404,8 +403,7 @@ def test_apply_category_rules_can_scope_updates_to_a_batch(tmp_path):
 def test_anomalies_flag_large_uncategorized_transactions(tmp_path):
     source = tmp_path / "free checking transactions.csv"
     source.write_text(
-        "Date,Description,Transaction Type,Amount\n"
-        "2026-03-02,Unknown Merchant,Withdrawal,-500.00\n"
+        "Date,Description,Transaction Type,Amount\n2026-03-02,Unknown Merchant,Withdrawal,-500.00\n"
     )
     service = FinanceService(tmp_path / "minx.db", tmp_path)
     service.finance_import(str(source), account_name="DCU")
@@ -467,7 +465,9 @@ def test_merchant_rule_treats_like_wildcards_as_literal_text(tmp_path):
 
 def test_apply_category_rules_clears_stale_rule_categories_when_rules_change(tmp_path):
     source = tmp_path / "free checking transactions.csv"
-    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
     service = FinanceService(tmp_path / "minx.db", tmp_path)
     service.finance_import(str(source), account_name="DCU")
 
@@ -498,8 +498,7 @@ def test_close_reopens_connection_on_next_use(tmp_path):
 def test_import_batch_stores_content_hash_as_raw_fingerprint(tmp_path):
     source = tmp_path / "robinhood_transactions.csv"
     contents = (
-        "Date,Time,Cardholder,Card,Amount,Description\n"
-        "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
+        "Date,Time,Cardholder,Card,Amount,Description\n2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     source.write_text(contents)
     service = FinanceService(tmp_path / "minx.db", tmp_path)
@@ -557,20 +556,20 @@ def test_service_import_rejects_paths_outside_allowed_import_root(tmp_path):
     import_root.mkdir()
     outside_source = tmp_path / "outside.csv"
     outside_source.write_text(
-        "Date,Description,Transaction Type,Amount\n"
-        "2026-03-02,H-E-B,Withdrawal,-45.20\n"
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
     )
     service = FinanceService(tmp_path / "minx.db", tmp_path, import_root=import_root)
 
-    with pytest.raises(InvalidInputError, match="source_ref must be inside the allowed import root"):
+    with pytest.raises(
+        InvalidInputError, match="source_ref must be inside the allowed import root"
+    ):
         service.finance_import(str(outside_source), account_name="DCU")
 
 
 def test_service_import_rejects_unsupported_explicit_source_kind_before_job_creation(tmp_path):
     source = tmp_path / "free checking transactions.csv"
     source.write_text(
-        "Date,Description,Transaction Type,Amount\n"
-        "2026-03-02,H-E-B,Withdrawal,-45.20\n"
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
     )
     service = FinanceService(tmp_path / "minx.db", tmp_path)
 
@@ -600,7 +599,9 @@ def test_service_get_job_raises_not_found_for_missing_job(tmp_path):
 def test_finance_import_stores_amount_cents(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path)
     source = tmp_path / "free checking transactions.csv"
-    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-28,HEB,Withdrawal,-12.50\n")
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-28,HEB,Withdrawal,-12.50\n"
+    )
 
     service.finance_import(str(source), "DCU", source_kind="dcu_csv")
 

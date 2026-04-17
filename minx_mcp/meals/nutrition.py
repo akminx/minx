@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 ACTIVITY_MULTIPLIERS: dict[str, float] = {
     "sedentary": 1.2,
     "lightly_active": 1.375,
     "moderately_active": 1.55,
     "very_active": 1.725,
 }
+
+MIN_CALORIE_FLOOR_KCAL = 1200
 
 SEX_BMR_OFFSETS: dict[str, int] = {
     "male": 5,
@@ -39,14 +40,9 @@ def calculate_nutrition_targets(
     protein_g_per_kg: float,
     fat_g_per_kg: float,
 ) -> NutritionTargetsCalculated:
-    bmr = round(
-        10.0 * weight_kg
-        + 6.25 * height_cm
-        - 5.0 * age_years
-        + float(SEX_BMR_OFFSETS[sex])
-    )
+    bmr = round(10.0 * weight_kg + 6.25 * height_cm - 5.0 * age_years + float(SEX_BMR_OFFSETS[sex]))
     tdee = round(float(bmr) * ACTIVITY_MULTIPLIERS[activity_level])
-    calorie_target = max(tdee - calorie_deficit_kcal, 1200)
+    calorie_target = max(tdee - calorie_deficit_kcal, MIN_CALORIE_FLOOR_KCAL)
     protein_grams = max(round(weight_kg * protein_g_per_kg), 0)
     fat_grams = max(round(weight_kg * fat_g_per_kg), 0)
     carbs_calories = max(calorie_target - (protein_grams * 4) - (fat_grams * 9), 0)

@@ -1,27 +1,35 @@
 from __future__ import annotations
 
 import json
-from typing import Any
-from typing import TypeVar
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ValidationError
 
 from minx_mcp.core.interpretation.logging import log_interpretation_failure
 from minx_mcp.core.llm import LLMProviderError
+from minx_mcp.core.models import JSONLLMInterface
 
 T = TypeVar("T", bound=BaseModel)
 
 
-async def run_interpretation(*, llm: object, prompt: str, result_model: type[T]) -> T:
-    structured_runner = getattr(llm, "run_structured_prompt", None)
-    if structured_runner is not None and callable(structured_runner):
+@runtime_checkable
+class StructuredPromptLLMInterface(Protocol):
+    async def run_structured_prompt(self, prompt: str, result_model: type[BaseModel]) -> Any: ...
+
+
+async def run_interpretation[T: BaseModel](
+    *,
+    llm: JSONLLMInterface | StructuredPromptLLMInterface,
+    prompt: str,
+    result_model: type[T],
+) -> T:
+    if isinstance(llm, StructuredPromptLLMInterface):
         try:
-            payload = await structured_runner(prompt, result_model)
+            payload = await llm.run_structured_prompt(prompt, result_model)
             return _validate_interpretation_payload(payload, result_model)
         except LLMProviderError:
-            runner = getattr(llm, "run_json_prompt", None)
-            if runner is not None and callable(runner):
-                payload = await runner(prompt)
+            if isinstance(llm, JSONLLMInterface):
+                payload = await llm.run_json_prompt(prompt)
                 return _validate_interpretation_payload(payload, result_model)
             raise
         except (TypeError, json.JSONDecodeError, ValidationError) as exc:
@@ -36,12 +44,13 @@ async def run_interpretation(*, llm: object, prompt: str, result_model: type[T])
             )
             raise
 
-    runner = getattr(llm, "run_json_prompt", None)
-    if runner is None or not callable(runner):
-        raise RuntimeError("Interpretation LLM must implement run_json_prompt or run_structured_prompt")
+    if not isinstance(llm, JSONLLMInterface):
+        raise RuntimeError(
+            "Interpretation LLM must implement run_json_prompt or run_structured_prompt"
+        )
 
     try:
-        payload = await runner(prompt)
+        payload = await llm.run_json_prompt(prompt)
         return _validate_interpretation_payload(payload, result_model)
     except (TypeError, json.JSONDecodeError, ValidationError) as exc:
         _log_schema_validation_failure(prompt=prompt, result_model=result_model, error=exc)
@@ -56,7 +65,7 @@ async def run_interpretation(*, llm: object, prompt: str, result_model: type[T])
         raise
 
 
-def _validate_interpretation_payload(payload: Any, result_model: type[T]) -> T:
+def _validate_interpretation_payload[T: BaseModel](payload: Any, result_model: type[T]) -> T:
     if isinstance(payload, result_model):
         return payload
     if isinstance(payload, str):
@@ -65,7 +74,7 @@ def _validate_interpretation_payload(payload: Any, result_model: type[T]) -> T:
     return result_model.model_validate(payload)
 
 
-def _log_schema_validation_failure(
+def _log_schema_validation_failure[T: BaseModel](
     *,
     prompt: str,
     result_model: type[T],

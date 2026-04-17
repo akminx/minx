@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from minx_mcp.contracts import InvalidInputError
-from minx_mcp.db import get_connection
+from minx_mcp.db import scoped_connection
 
 
 def get_insight_history(
@@ -27,8 +27,7 @@ def get_insight_history(
         raise InvalidInputError("end_date must be a valid ISO date") from exc
     start_day = end_day - timedelta(days=days - 1)
 
-    conn = get_connection(Path(db_path))
-    try:
+    with scoped_connection(Path(db_path)) as conn:
         rows = conn.execute(
             """
             SELECT review_date, insight_type, dedupe_key, summary, supporting_signals,
@@ -40,8 +39,6 @@ def get_insight_history(
             """,
             (start_day.isoformat(), end_day.isoformat()),
         ).fetchall()
-    finally:
-        conn.close()
 
     insights: list[dict[str, object]] = []
     pattern_counter: Counter[tuple[str, str]] = Counter()

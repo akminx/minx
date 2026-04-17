@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
-from minx_mcp.contracts import InvalidInputError
 from minx_mcp.db import get_connection
 from minx_mcp.finance.analytics import (
     _prior_period_window,
@@ -20,7 +17,15 @@ def _seed_batch(conn) -> None:
     )
 
 
-def _insert_transaction(conn, *, posted_at: str, merchant: str, amount_cents: int, category_id: int | None = None, description: str = "Test") -> None:
+def _insert_transaction(
+    conn,
+    *,
+    posted_at: str,
+    merchant: str,
+    amount_cents: int,
+    category_id: int | None = None,
+    description: str = "Test",
+) -> None:
     conn.execute(
         """
         INSERT INTO finance_transactions
@@ -34,6 +39,7 @@ def _insert_transaction(conn, *, posted_at: str, merchant: str, amount_cents: in
 # ---------------------------------------------------------------------------
 # _prior_period_window
 # ---------------------------------------------------------------------------
+
 
 def test_prior_period_window_7_day_span():
     prior_start, prior_end = _prior_period_window("2026-03-08", "2026-03-14")
@@ -57,6 +63,7 @@ def test_prior_period_window_month_boundary_crossing():
 # sensitive_query_total_cents
 # ---------------------------------------------------------------------------
 
+
 def test_sensitive_query_total_cents_returns_zero_for_no_matches(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
@@ -70,10 +77,18 @@ def test_sensitive_query_total_cents_returns_zero_for_no_matches(tmp_path):
 def test_sensitive_query_total_cents_respects_category_filter(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
-    dining_id = conn.execute("SELECT id FROM finance_categories WHERE name = 'Dining Out'").fetchone()["id"]
-    groceries_id = conn.execute("SELECT id FROM finance_categories WHERE name = 'Groceries'").fetchone()["id"]
-    _insert_transaction(conn, posted_at="2026-03-10", merchant="Cafe", amount_cents=-1000, category_id=dining_id)
-    _insert_transaction(conn, posted_at="2026-03-10", merchant="HEB", amount_cents=-5000, category_id=groceries_id)
+    dining_id = conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Dining Out'"
+    ).fetchone()["id"]
+    groceries_id = conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    _insert_transaction(
+        conn, posted_at="2026-03-10", merchant="Cafe", amount_cents=-1000, category_id=dining_id
+    )
+    _insert_transaction(
+        conn, posted_at="2026-03-10", merchant="HEB", amount_cents=-5000, category_id=groceries_id
+    )
     conn.commit()
 
     total = sensitive_query_total_cents(conn, category_name="Dining Out")
@@ -101,7 +116,9 @@ def test_sensitive_query_total_cents_end_date_is_inclusive(tmp_path):
     conn.commit()
 
     total_with = sensitive_query_total_cents(conn, start_date="2026-03-15", end_date="2026-03-15")
-    total_without = sensitive_query_total_cents(conn, start_date="2026-03-16", end_date="2026-03-16")
+    total_without = sensitive_query_total_cents(
+        conn, start_date="2026-03-16", end_date="2026-03-16"
+    )
 
     assert total_with == 800
     assert total_without == 600
@@ -110,6 +127,7 @@ def test_sensitive_query_total_cents_end_date_is_inclusive(tmp_path):
 # ---------------------------------------------------------------------------
 # sensitive_query_count
 # ---------------------------------------------------------------------------
+
 
 def test_sensitive_query_count_counts_correctly(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
@@ -140,12 +158,24 @@ def test_sensitive_query_count_respects_date_filter(tmp_path):
 # find_uncategorized
 # ---------------------------------------------------------------------------
 
+
 def test_find_uncategorized_returns_only_uncategorized_in_window(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
-    dining_id = conn.execute("SELECT id FROM finance_categories WHERE name = 'Dining Out'").fetchone()["id"]
-    _insert_transaction(conn, posted_at="2026-03-10", merchant="Cafe", amount_cents=-1000, description="Cafe meal")
-    _insert_transaction(conn, posted_at="2026-03-11", merchant="HEB", amount_cents=-5000, category_id=dining_id, description="HEB shop")
+    dining_id = conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Dining Out'"
+    ).fetchone()["id"]
+    _insert_transaction(
+        conn, posted_at="2026-03-10", merchant="Cafe", amount_cents=-1000, description="Cafe meal"
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-11",
+        merchant="HEB",
+        amount_cents=-5000,
+        category_id=dining_id,
+        description="HEB shop",
+    )
     conn.commit()
 
     results = find_uncategorized(conn, "2026-03-01", "2026-03-31")
@@ -170,6 +200,7 @@ def test_find_uncategorized_end_exclusive_semantics(tmp_path):
 # ---------------------------------------------------------------------------
 # build_finance_monitoring
 # ---------------------------------------------------------------------------
+
 
 def test_build_finance_monitoring_empty_db_returns_zeros_without_crash(tmp_path):
     conn = get_connection(tmp_path / "minx.db")

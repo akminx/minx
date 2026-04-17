@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, TypedDict
 
 INVALID_INPUT = "INVALID_INPUT"
 NOT_FOUND = "NOT_FOUND"
@@ -10,6 +11,13 @@ CONFLICT = "CONFLICT"
 INTERNAL_ERROR = "INTERNAL_ERROR"
 
 logger = logging.getLogger(__name__)
+
+
+class ToolResponse(TypedDict, total=False):
+    success: bool
+    data: Any
+    error: str | None
+    error_code: str | None
 
 
 class MinxContractError(Exception):
@@ -35,29 +43,65 @@ class ConflictError(MinxContractError):
         super().__init__(message, CONFLICT, data)
 
 
-def ok(data: Any) -> dict[str, Any]:
+def ok(data: Any) -> ToolResponse:
     return {"success": True, "data": data, "error": None, "error_code": None}
 
 
-def fail(message: str, error_code: str, data: Any | None = None) -> dict[str, Any]:
+def fail(message: str, error_code: str, data: Any | None = None) -> ToolResponse:
     return {"success": False, "data": data, "error": message, "error_code": error_code}
 
 
-def wrap_tool_call(fn: Callable[[], Any]) -> dict[str, Any]:
-    try:
-        return ok(fn())
-    except MinxContractError as exc:
+def _handle_tool_error(exc: Exception, tool_name: str, start: float) -> ToolResponse:
+    duration_ms = int((time.monotonic() - start) * 1000)
+    if isinstance(exc, MinxContractError):
+        logger.warning(
+            "tool call failed",
+            extra={
+                "tool": tool_name,
+                "duration_ms": duration_ms,
+                "success": False,
+                "error_code": exc.error_code,
+            },
+        )
         return fail(exc.message, exc.error_code, exc.data)
-    except Exception:
-        logger.exception("Unexpected exception in MCP tool")
-        return fail("Internal server error", INTERNAL_ERROR)
+    logger.exception("Unexpected exception in MCP tool")
+    logger.warning(
+        "tool call failed",
+        extra={
+            "tool": tool_name,
+            "duration_ms": duration_ms,
+            "success": False,
+            "error_code": INTERNAL_ERROR,
+        },
+    )
+    return fail("Internal server error", INTERNAL_ERROR)
 
 
-async def wrap_async_tool_call(fn: Callable[[], Awaitable[Any]]) -> dict[str, Any]:
+def wrap_tool_call(fn: Callable[[], Any], tool_name: str = "") -> ToolResponse:
+    start = time.monotonic()
     try:
-        return ok(await fn())
-    except MinxContractError as exc:
-        return fail(exc.message, exc.error_code, exc.data)
-    except Exception:
-        logger.exception("Unexpected exception in MCP tool")
-        return fail("Internal server error", INTERNAL_ERROR)
+        result = ok(fn())
+        duration_ms = int((time.monotonic() - start) * 1000)
+        logger.info(
+            "tool call",
+            extra={"tool": tool_name, "duration_ms": duration_ms, "success": True},
+        )
+        return result
+    except Exception as exc:
+        return _handle_tool_error(exc, tool_name, start)
+
+
+async def wrap_async_tool_call(
+    fn: Callable[[], Awaitable[Any]], tool_name: str = ""
+) -> ToolResponse:
+    start = time.monotonic()
+    try:
+        result = ok(await fn())
+        duration_ms = int((time.monotonic() - start) * 1000)
+        logger.info(
+            "tool call",
+            extra={"tool": tool_name, "duration_ms": duration_ms, "success": True},
+        )
+        return result
+    except Exception as exc:
+        return _handle_tool_error(exc, tool_name, start)

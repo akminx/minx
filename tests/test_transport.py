@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from minx_mcp.transport import build_transport_config, run_server
 from minx_mcp import document_text
+from minx_mcp.transport import build_transport_config, run_server
 
 
 def test_transport_config_supports_stdio_and_http():
@@ -24,11 +24,12 @@ def test_extract_text_uses_configured_liteparse_binary(monkeypatch, tmp_path):
     def fake_get_settings():
         return Settings()
 
-    def fake_run(args, capture_output, check, text):
+    def fake_run(args, capture_output, check, text, timeout):
         calls["args"] = args
         calls["capture_output"] = capture_output
         calls["check"] = check
         calls["text"] = text
+        calls["timeout"] = timeout
         return CompletedProcess()
 
     monkeypatch.setattr(document_text, "get_settings", fake_get_settings)
@@ -46,6 +47,7 @@ def test_extract_text_uses_configured_liteparse_binary(monkeypatch, tmp_path):
         "capture_output": True,
         "check": True,
         "text": True,
+        "timeout": 30,
     }
 
 

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from typing import Sequence, TypedDict
+from collections.abc import Sequence
+from typing import TypedDict
+
+from minx_mcp.core.goal_models import GoalRecord
 
 
 class GoalPromptGoal(TypedDict):
-    id: object
-    title: object
-    status: object
-    period: object
-    target_value: object
+    id: int
+    title: str
+    status: str
+    period: str
+    target_value: int
 
 
 class GoalCaptureContext(TypedDict):
@@ -30,7 +33,7 @@ class FinanceQueryContext(TypedDict):
 def build_goal_capture_context(
     message: str,
     review_date: str,
-    active_goals: Sequence[object],
+    active_goals: Sequence[GoalRecord],
     category_names: list[str],
     merchant_names: list[str],
 ) -> GoalCaptureContext:
@@ -39,13 +42,13 @@ def build_goal_capture_context(
         "review_date": review_date,
         "active_goals": [
             {
-                "id": getattr(g, "id", None),
-                "title": getattr(g, "title", None),
-                "status": getattr(g, "status", None),
-                "period": getattr(g, "period", None),
-                "target_value": getattr(g, "target_value", None),
+                "id": goal.id,
+                "title": goal.title,
+                "status": goal.status,
+                "period": goal.period,
+                "target_value": goal.target_value,
             }
-            for g in active_goals[:10]
+            for goal in active_goals[:10]
         ],
         "category_names": category_names[:50],
         "merchant_names": merchant_names[:50],

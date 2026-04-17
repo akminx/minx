@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+import minx_mcp.training.service as training_service_module
+from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import query_events
 from minx_mcp.db import get_connection
-from minx_mcp.contracts import InvalidInputError, NotFoundError
-import minx_mcp.training.service as training_service_module
 from minx_mcp.training.service import TrainingService
 
 
@@ -214,26 +214,61 @@ def test_log_session_invalid_set_row_does_not_persist_partial_session(db_path) -
 
 def test_upsert_program_rejects_duplicate_day_index_as_invalid_input(db_path) -> None:
     svc = TrainingService(db_path)
+    with pytest.raises(InvalidInputError), svc:
+        svc.upsert_program(
+            name="Duplicate Days",
+            days=[
+                {"day_index": 1, "label": "A", "exercises": []},
+                {"day_index": 1, "label": "B", "exercises": []},
+            ],
+        )
+
+
+def test_upsert_exercise_preserves_display_name_casing(db_path) -> None:
+    svc = TrainingService(db_path)
+    with svc:
+        exercise = svc.upsert_exercise(display_name="Bench Press")
+    assert exercise.display_name == "Bench Press"
+    # not "bench press"
+
+
+def test_upsert_exercise_update_preserves_display_name_casing(db_path) -> None:
+    svc = TrainingService(db_path)
+    with svc:
+        svc.upsert_exercise(display_name="bench press")
+        updated = svc.upsert_exercise(display_name="Bench Press")
+    assert updated.display_name == "Bench Press"
+
+
+def test_coerce_optional_int_raises_invalid_input_on_bad_value(db_path) -> None:
+    from minx_mcp.training.service import _coerce_optional_int
+
     with pytest.raises(InvalidInputError):
-        with svc:
-            svc.upsert_program(
-                name="Duplicate Days",
-                days=[
-                    {"day_index": 1, "label": "A", "exercises": []},
-                    {"day_index": 1, "label": "B", "exercises": []},
-                ],
-            )
+        _coerce_optional_int("not_a_number")
+
+
+def test_coerce_optional_float_raises_invalid_input_on_bad_value(db_path) -> None:
+    from minx_mcp.training.service import _coerce_optional_float
+
+    with pytest.raises(InvalidInputError):
+        _coerce_optional_float("not_a_number")
+
+
+def test_coerce_nullable_string_raises_invalid_input_on_non_string(db_path) -> None:
+    from minx_mcp.training.service import _coerce_nullable_string
+
+    with pytest.raises(InvalidInputError):
+        _coerce_nullable_string(42)
 
 
 def test_upsert_program_rolls_back_on_event_emission_failure(db_path, monkeypatch) -> None:
     svc = TrainingService(db_path)
     monkeypatch.setattr(training_service_module, "emit_event", lambda *args, **kwargs: None)
-    with pytest.raises(RuntimeError):
-        with svc:
-            svc.upsert_program(
-                name="Event Failure Program",
-                days=[{"day_index": 1, "label": "A", "exercises": []}],
-            )
+    with pytest.raises(RuntimeError), svc:
+        svc.upsert_program(
+            name="Event Failure Program",
+            days=[{"day_index": 1, "label": "A", "exercises": []}],
+        )
     conn = get_connection(db_path)
     try:
         count = conn.execute("SELECT COUNT(*) FROM training_programs").fetchone()[0]
@@ -245,13 +280,12 @@ def test_upsert_program_rolls_back_on_event_emission_failure(db_path, monkeypatc
 def test_log_session_rolls_back_on_event_emission_failure(db_path, monkeypatch) -> None:
     svc = TrainingService(db_path)
     monkeypatch.setattr(training_service_module, "emit_event", lambda *args, **kwargs: None)
-    with pytest.raises(RuntimeError):
-        with svc:
-            squat = svc.upsert_exercise(display_name="Back Squat")
-            svc.log_session(
-                occurred_at="2026-04-14T08:00:00Z",
-                sets=[{"exercise_id": squat.id, "reps": 5, "weight_kg": 100.0}],
-            )
+    with pytest.raises(RuntimeError), svc:
+        squat = svc.upsert_exercise(display_name="Back Squat")
+        svc.log_session(
+            occurred_at="2026-04-14T08:00:00Z",
+            sets=[{"exercise_id": squat.id, "reps": 5, "weight_kg": 100.0}],
+        )
     conn = get_connection(db_path)
     try:
         session_count = conn.execute("SELECT COUNT(*) FROM training_sessions").fetchone()[0]

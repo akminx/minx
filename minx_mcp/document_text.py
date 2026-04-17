@@ -21,9 +21,10 @@ def extract_text(path: Path) -> str:
             capture_output=True,
             check=True,
             text=True,
+            timeout=30,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"LiteParse timed out after 30s on {path.name}") from exc
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(
-            f"LiteParse failed on {path.name}: {exc.stderr.strip()}"
-        ) from exc
+        raise RuntimeError(f"LiteParse failed on {path.name}: {exc.stderr.strip()}") from exc
     return proc.stdout

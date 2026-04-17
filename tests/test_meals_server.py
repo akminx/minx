@@ -1,19 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
+from minx_mcp.db import get_connection
 from minx_mcp.meals.server import create_meals_server
 from minx_mcp.meals.service import MealsService
-
-
-def _call(server, tool_name: str, args: dict[str, object]) -> dict[str, object]:
-    result = asyncio.run(server.call_tool(tool_name, args))
-    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
-        return result[1]
-    if isinstance(result, list) and result and hasattr(result[0], "text"):
-        return json.loads(result[0].text)
-    return result
+from tests.helpers import call_server as _call
 
 
 def test_meals_server_registers_expected_tools(db_path, tmp_path) -> None:
@@ -43,6 +35,18 @@ def test_meal_log_tool(db_path, tmp_path) -> None:
 
     assert result["success"] is True
     assert result["data"]["meal"]["meal_kind"] == "lunch"
+
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT meal_kind, summary FROM meals_meal_entries WHERE id = ?",
+            (result["data"]["meal"]["id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["meal_kind"] == "lunch"
+    assert row["summary"] == "Chicken salad"
 
 
 def test_launcher_server_manifest_includes_meals() -> None:

@@ -6,12 +6,11 @@ from datetime import date as date_cls
 from datetime import datetime, timedelta
 from pathlib import Path
 from sqlite3 import Connection, Row
-from typing import Self
 from zoneinfo import ZoneInfo
 
+from minx_mcp.base_service import BaseService
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import emit_event
-from minx_mcp.db import get_connection
 from minx_mcp.meals.models import (
     MealEntry,
     NutritionPlan,
@@ -30,7 +29,7 @@ from minx_mcp.meals.nutrition import (
 from minx_mcp.meals.pantry import normalize_ingredient, pantry_item_from_row
 from minx_mcp.meals.recipes import parse_recipe_note
 from minx_mcp.preferences import get_preference
-from minx_mcp.time_utils import format_utc_timestamp, normalize_utc_timestamp
+from minx_mcp.time_utils import format_utc_timestamp
 
 EVENT_SOURCE = "meals.service"
 VALID_MEAL_KINDS = {"breakfast", "lunch", "dinner", "snack", "other"}
@@ -38,35 +37,20 @@ VALID_ACTIVITY_LEVELS = set(ACTIVITY_MULTIPLIERS)
 VALID_SEX_VALUES = set(SEX_BMR_OFFSETS)
 
 
-class MealsService:
+class MealsService(BaseService):
     def __init__(self, db_path: Path, vault_root: Path | None = None) -> None:
-        self._db_path = db_path
+        super().__init__(db_path)
         self._vault_root = vault_root
-        self._local = threading.local()
 
-    @property
-    def db_path(self) -> Path:
-        return self._db_path
-
-    @property
-    def conn(self) -> Connection:
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
-            conn = get_connection(self._db_path)
-            self._local.conn = conn
-        return conn
-
-    def close(self) -> None:
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            conn.close()
-            self._local.conn = None
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.close()
+    @classmethod
+    def from_connection(cls, conn: Connection) -> MealsService:
+        """Create an instance with an injected connection. Does NOT open a new connection."""
+        instance = cls.__new__(cls)
+        instance._db_path = Path(".")
+        instance._vault_root = None
+        instance._local = threading.local()
+        instance._local.conn = conn
+        return instance
 
     def log_meal(
         self,
@@ -83,7 +67,9 @@ class MealsService:
         source: str = "manual",
     ) -> MealEntry:
         if meal_kind not in VALID_MEAL_KINDS:
-            raise InvalidInputError("meal_kind must be one of breakfast, lunch, dinner, snack, other")
+            raise InvalidInputError(
+                f"invalid meal_kind {meal_kind!r}; must be one of breakfast, lunch, dinner, snack, other"
+            )
         items = food_items or []
         savepoint = "meals_log_meal"
         self.conn.execute(f"SAVEPOINT {savepoint}")
@@ -221,28 +207,30 @@ class MealsService:
         return [pantry_item_from_row(row) for row in rows]
 
     def list_meals(self, date: str | None = None) -> list[MealEntry]:
+        if date is None:
+            rows = self.conn.execute(
+                """
+                SELECT id, occurred_at, meal_kind, summary, food_items_json, protein_grams,
+                       calories, carbs_grams, fat_grams, notes, source
+                FROM meals_meal_entries
+                ORDER BY occurred_at ASC, id ASC
+                """
+            ).fetchall()
+            return [_meal_entry_from_row(row) for row in rows]
+
+        start_utc, end_utc = _local_day_utc_bounds(date, _resolve_timezone_name(self.conn))
         rows = self.conn.execute(
             """
             SELECT id, occurred_at, meal_kind, summary, food_items_json, protein_grams,
                    calories, carbs_grams, fat_grams, notes, source
             FROM meals_meal_entries
+            WHERE datetime(occurred_at) >= datetime(?)
+              AND datetime(occurred_at) < datetime(?)
             ORDER BY occurred_at ASC, id ASC
-            """
+            """,
+            (start_utc, end_utc),
         ).fetchall()
-        entries = [_meal_entry_from_row(row) for row in rows]
-        if date is None:
-            return entries
-
-        start_utc, end_utc = _local_day_utc_bounds(date, _resolve_timezone_name(self.conn))
-        normalized = [
-            (normalize_utc_timestamp(entry.occurred_at), entry)
-            for entry in entries
-        ]
-        return [
-            entry
-            for occurred_at, entry in sorted(normalized, key=lambda item: (item[0], item[1].id))
-            if start_utc <= occurred_at < end_utc
-        ]
+        return [_meal_entry_from_row(row) for row in rows]
 
     def set_nutrition_profile(
         self,
@@ -452,7 +440,9 @@ class MealsService:
                     recipe_id,
                 ),
             )
-            self.conn.execute("DELETE FROM meals_recipe_ingredients WHERE recipe_id = ?", (recipe_id,))
+            self.conn.execute(
+                "DELETE FROM meals_recipe_ingredients WHERE recipe_id = ?", (recipe_id,)
+            )
         ingredient_ids_by_name: dict[str, int] = {}
         for ingredient in parsed.ingredients:
             cursor = self.conn.execute(
@@ -529,7 +519,12 @@ class MealsService:
             ORDER BY title ASC, id ASC
             """
         ).fetchall()
-        return [_recipe_from_row(row, self._ingredients(int(row["id"])), self._substitutions(int(row["id"]))) for row in rows]
+        return [
+            _recipe_from_row(
+                row, self._ingredients(int(row["id"])), self._substitutions(int(row["id"]))
+            )
+            for row in rows
+        ]
 
     def _get_meal_entry(self, meal_id: int) -> MealEntry:
         row = self.conn.execute(

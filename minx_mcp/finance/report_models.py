@@ -174,9 +174,7 @@ class MonthlyReportSummary:
             "period_end": self.period_end,
             "account_rollups": [item.to_dict() for item in self.account_rollups],
             "category_totals": [item.to_dict() for item in self.category_totals],
-            "changes_vs_prior_month": [
-                item.to_dict() for item in self.changes_vs_prior_month
-            ],
+            "changes_vs_prior_month": [item.to_dict() for item in self.changes_vs_prior_month],
             "recurring_charge_highlights": [
                 item.to_dict() for item in self.recurring_charge_highlights
             ],

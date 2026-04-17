@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import date
 import json
+from datetime import date
 from sqlite3 import Connection, Row
 
 from minx_mcp.contracts import InvalidInputError, NotFoundError
@@ -69,9 +69,7 @@ class GoalService:
         return self.get_goal(cursor.lastrowid)
 
     def get_goal(self, goal_id: int) -> GoalRecord:
-        row = self._conn.execute(
-            "SELECT * FROM goals WHERE id = ?", (goal_id,)
-        ).fetchone()
+        row = self._conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"Goal {goal_id} not found")
         return _row_to_record(row)
@@ -83,9 +81,7 @@ class GoalService:
                 "SELECT * FROM goals WHERE status = ? ORDER BY id", (normalized_status,)
             ).fetchall()
         else:
-            rows = self._conn.execute(
-                "SELECT * FROM goals WHERE status = 'active' ORDER BY id"
-            ).fetchall()
+            rows = self._conn.execute("SELECT * FROM goals ORDER BY id").fetchall()
         return [_row_to_record(row) for row in rows]
 
     def update_goal(self, goal_id: int, payload: GoalUpdateInput) -> GoalRecord:
@@ -98,7 +94,8 @@ class GoalService:
         next_ends_on = (
             None
             if payload.clear_ends_on
-            else payload.ends_on if payload.ends_on is not None
+            else payload.ends_on
+            if payload.ends_on is not None
             else current.ends_on
         )
         validate_goal_state(
@@ -188,23 +185,19 @@ def validate_goal_state(
         raise InvalidInputError("target_value must be a positive integer")
     if metric_type not in _VALID_METRIC_TYPES:
         raise InvalidInputError(
-            f"Invalid metric_type: {metric_type}; "
-            f"must be one of {sorted(_VALID_METRIC_TYPES)}"
+            f"Invalid metric_type: {metric_type}; must be one of {sorted(_VALID_METRIC_TYPES)}"
         )
     if period not in _VALID_PERIODS:
         raise InvalidInputError(
-            f"Invalid period: {period}; "
-            f"must be one of {sorted(_VALID_PERIODS)}"
+            f"Invalid period: {period}; must be one of {sorted(_VALID_PERIODS)}"
         )
     if domain not in _VALID_DOMAINS:
         raise InvalidInputError(
-            f"Invalid domain: {domain}; "
-            f"must be one of {sorted(_VALID_DOMAINS)}"
+            f"Invalid domain: {domain}; must be one of {sorted(_VALID_DOMAINS)}"
         )
     if status is not None and status not in _VALID_STATUSES:
         raise InvalidInputError(
-            f"Invalid status: {status}; "
-            f"must be one of {sorted(_VALID_STATUSES)}"
+            f"Invalid status: {status}; must be one of {sorted(_VALID_STATUSES)}"
         )
 
     starts_on_date = _validate_iso_date(starts_on, "starts_on")

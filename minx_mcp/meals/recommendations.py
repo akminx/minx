@@ -1,32 +1,31 @@
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
 from sqlite3 import Connection
 
 from minx_mcp.meals.models import (
     ClassificationResult,
-    RecommendationNutritionContext,
-    RecommendationResult,
     Recipe,
     RecipeMetadata,
     RecipeNutritionFit,
     RecipeRecommendation,
+    RecommendationNutritionContext,
+    RecommendationResult,
 )
 from minx_mcp.meals.pantry import get_expiring_items, get_low_stock_items
 from minx_mcp.meals.service import MealsService
 
 _CLASS_ORDER = {"make_now": 0, "make_with_substitutions": 1, "needs_shopping": 2, "excluded": 3}
 
+MAX_PROTEIN_THRESHOLD_GRAMS = 40.0
+
 
 def classify_recipe(
     *,
     required_names: list[str],
-    optional_names: list[str],
     pantry_names: set[str],
     substitution_map: dict[str, list[str]],
 ) -> ClassificationResult:
-    del optional_names
     if not required_names:
         return ClassificationResult(
             availability_class="excluded",
@@ -46,7 +45,9 @@ def classify_recipe(
         if name in pantry_names:
             matched.append(name)
             continue
-        substitute = next((sub for sub in substitution_map.get(name, []) if sub in pantry_names), None)
+        substitute = next(
+            (sub for sub in substitution_map.get(name, []) if sub in pantry_names), None
+        )
         if substitute is not None:
             matched.append(name)
             substitutions.append({"ingredient": name, "substitute": substitute})
@@ -78,7 +79,9 @@ def rank_recommendations(recs: list[RecipeRecommendation]) -> list[RecipeRecomme
         key=lambda rec: (
             _CLASS_ORDER.get(rec.availability_class, 99),
             _fit_sort_key(rec.nutrition_fit.fits_remaining_calories if rec.nutrition_fit else None),
-            _fit_sort_key(rec.nutrition_fit.supports_remaining_protein if rec.nutrition_fit else None),
+            _fit_sort_key(
+                rec.nutrition_fit.supports_remaining_protein if rec.nutrition_fit else None
+            ),
             -rec.expiring_ingredient_hits,
             -rec.low_stock_ingredient_hits,
             -rec.pantry_coverage_ratio,
@@ -96,10 +99,7 @@ def recommend_recipes(
     include_needs_shopping: bool = False,
     apply_nutrition_filter: bool = False,
 ) -> RecommendationResult:
-    service = MealsService.__new__(MealsService)
-    service._db_path = Path(".")
-    service._vault_root = None
-    service._local = type("_Local", (), {"conn": conn})()
+    service = MealsService.from_connection(conn)
     recipes = service.list_recipes()
     pantry_items = service.list_pantry_items()
     pantry_names = {item.normalized_name for item in pantry_items}
@@ -126,7 +126,9 @@ def recommend_recipes(
     if include_needs_shopping or not has_base:
         included.add("needs_shopping")
     filtered = [
-        rec for rec in recommendations if rec.availability_class in included and rec.availability_class != "excluded"
+        rec
+        for rec in recommendations
+        if rec.availability_class in included and rec.availability_class != "excluded"
     ]
     if apply_nutrition_filter and nutrition_context is not None:
         filtered = [
@@ -136,8 +138,11 @@ def recommend_recipes(
         ]
     return RecommendationResult(
         recommendations=filtered,
-        included_classes=[cls for cls in ("make_now", "make_with_substitutions", "needs_shopping") if cls in included],
-        shopping_lists_generated=[],
+        included_classes=[
+            cls
+            for cls in ("make_now", "make_with_substitutions", "needs_shopping")
+            if cls in included
+        ],
         nutrition_context=nutrition_context,
     )
 
@@ -149,8 +154,14 @@ def _recommendation_for_recipe(
     low_stock_names: set[str],
     nutrition_context: RecommendationNutritionContext | None,
 ) -> RecipeRecommendation:
-    required = [ingredient.normalized_name for ingredient in recipe.ingredients if ingredient.is_required]
-    optional = [ingredient.normalized_name for ingredient in recipe.ingredients if not ingredient.is_required]
+    required = [
+        ingredient.normalized_name for ingredient in recipe.ingredients if ingredient.is_required
+    ]
+    optional = [
+        ingredient.normalized_name
+        for ingredient in recipe.ingredients
+        if not ingredient.is_required
+    ]
     by_id = {ingredient.id: ingredient.normalized_name for ingredient in recipe.ingredients}
     substitution_map: dict[str, list[str]] = {}
     for substitution in recipe.substitutions:
@@ -160,7 +171,6 @@ def _recommendation_for_recipe(
         substitution_map.setdefault(original, []).append(substitution.substitute_normalized_name)
     classification = classify_recipe(
         required_names=required,
-        optional_names=optional,
         pantry_names=pantry_names,
         substitution_map=substitution_map,
     )
@@ -280,7 +290,7 @@ def _recipe_nutrition_fit(
         else:
             reasons.append("exceeds remaining calorie budget")
     if protein is not None and context.remaining_protein_target_grams is not None:
-        threshold = min(context.remaining_protein_target_grams, 40.0)
+        threshold = min(context.remaining_protein_target_grams, MAX_PROTEIN_THRESHOLD_GRAMS)
         supports_protein = protein >= threshold
         if supports_protein:
             reasons.append("supports remaining protein target")

@@ -5,10 +5,10 @@ import pytest
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.finance.report_orchestration import validate_monthly_window, validate_weekly_window
 
-
 # ---------------------------------------------------------------------------
 # validate_weekly_window
 # ---------------------------------------------------------------------------
+
 
 def test_validate_weekly_window_7_day_span_passes():
     validate_weekly_window("2026-03-09", "2026-03-15")
@@ -37,6 +37,7 @@ def test_validate_weekly_window_start_after_end_raises():
 # ---------------------------------------------------------------------------
 # validate_monthly_window
 # ---------------------------------------------------------------------------
+
 
 def test_validate_monthly_window_full_march_passes():
     validate_monthly_window("2026-03-01", "2026-03-31")

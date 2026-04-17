@@ -1,8 +1,56 @@
 from __future__ import annotations
+
+import asyncio
+import inspect
 import json
+from pathlib import Path
 from sqlite3 import Connection
+
 from minx_mcp.core.goals import GoalService
 from minx_mcp.core.models import GoalCreateInput
+
+# ---------------------------------------------------------------------------
+# Tool-call helpers
+# ---------------------------------------------------------------------------
+
+
+def get_tool(server, name: str):
+    """Encapsulate private _tool_manager access in one place."""
+    return server._tool_manager.get_tool(name)
+
+
+def call_tool_sync(fn, *args, **kwargs):
+    """Call a sync or async tool function, blocking until complete."""
+    result = fn(*args, **kwargs)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
+
+
+def call_server(server, tool_name: str, args: dict[str, object]) -> dict[str, object]:
+    """Call a FastMCP server tool by name, returning the parsed dict payload."""
+    result = asyncio.run(server.call_tool(tool_name, args))
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
+        return result[1]
+    if isinstance(result, list) and result and hasattr(result[0], "text"):
+        import json as _json
+
+        return _json.loads(result[0].text)
+    return result  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Shared test config
+# ---------------------------------------------------------------------------
+
+
+class MinxTestConfig:
+    """Minimal config accepted by ``create_core_server``."""
+
+    def __init__(self, db_path: Path, vault_path: Path) -> None:
+        self.db_path = db_path
+        self.vault_path = vault_path
+
 
 class FinanceSeeder:
     def __init__(self, conn: Connection) -> None:
@@ -54,7 +102,6 @@ class FinanceSeeder:
             """,
             (account_id, batch_id, posted_at, description, merchant, amount_cents, category_id),
         )
-        self._conn.commit()
         return cursor.lastrowid or 0
 
     def goal(
@@ -71,20 +118,22 @@ class FinanceSeeder:
         ends_on: str | None = None,
     ) -> int:
         svc = GoalService(self._conn)
-        record = svc.create_goal(GoalCreateInput(
-            goal_type="spending_cap",
-            title=title,
-            metric_type=metric_type,
-            target_value=target_value,
-            period=period,
-            domain="finance",
-            category_names=category_names or [],
-            merchant_names=merchant_names or [],
-            account_names=account_names or [],
-            starts_on=starts_on,
-            ends_on=ends_on,
-            notes=None,
-        ))
+        record = svc.create_goal(
+            GoalCreateInput(
+                goal_type="spending_cap",
+                title=title,
+                metric_type=metric_type,
+                target_value=target_value,
+                period=period,
+                domain="finance",
+                category_names=category_names or [],
+                merchant_names=merchant_names or [],
+                account_names=account_names or [],
+                starts_on=starts_on,
+                ends_on=ends_on,
+                notes=None,
+            )
+        )
         return record.id
 
     def category_id(self, name: str) -> int:
@@ -128,7 +177,6 @@ class MealsSeeder:
                 calories,
             ),
         )
-        self._conn.commit()
         return cursor.lastrowid or 0
 
     def pantry_item(
@@ -157,7 +205,6 @@ class MealsSeeder:
                 low_stock_threshold,
             ),
         )
-        self._conn.commit()
         return cursor.lastrowid or 0
 
     def recipe(
@@ -189,7 +236,6 @@ class MealsSeeder:
                 content_hash,
             ),
         )
-        self._conn.commit()
         return cursor.lastrowid or 0
 
     def recipe_ingredient(
@@ -210,9 +256,16 @@ class MealsSeeder:
                 quantity, unit, is_required, sort_order
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (recipe_id, display_text, normalized_name, quantity, unit, int(is_required), sort_order),
+            (
+                recipe_id,
+                display_text,
+                normalized_name,
+                quantity,
+                unit,
+                int(is_required),
+                sort_order,
+            ),
         )
-        self._conn.commit()
         return cursor.lastrowid or 0
 
     def substitution(
@@ -231,5 +284,4 @@ class MealsSeeder:
             """,
             (recipe_ingredient_id, substitute_normalized_name, display_text, priority),
         )
-        self._conn.commit()
         return cursor.lastrowid or 0

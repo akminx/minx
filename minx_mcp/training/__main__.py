@@ -1,34 +1,15 @@
 from __future__ import annotations
 
-import argparse
-
-from minx_mcp.config import get_settings
+from minx_mcp.config import Settings
+from minx_mcp.entrypoint import run_domain_server
 from minx_mcp.training.server import create_training_server
 from minx_mcp.training.service import TrainingService
-from minx_mcp.transport import run_server
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--transport", choices=["stdio", "http"], default=None)
-    parser.add_argument("--host", default=None)
-    parser.add_argument("--port", type=int, default=None)
-    return parser
-
-
-def main() -> None:
-    settings = get_settings()
-    args = build_parser().parse_args()
+def _create(settings: Settings) -> object:
     service = TrainingService(settings.db_path)
-    server = create_training_server(service)
-    run_server(
-        server,
-        transport=args.transport or settings.default_transport,
-        host=args.host or settings.http_host,
-        port=args.port or settings.http_port,
-    )
+    return create_training_server(service)
 
 
 if __name__ == "__main__":
-    main()
-
+    run_domain_server(_create)

@@ -5,8 +5,7 @@ def test_finance_import_preview_returns_detected_mapping_and_sample(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path, import_root=tmp_path)
     source = tmp_path / "free checking transactions.csv"
     source.write_text(
-        "Date,Description,Transaction Type,Amount\n"
-        "2026-03-02,H-E-B,Withdrawal,-45.20\n"
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
     )
 
     result = service.finance_import_preview(str(source), "DCU")
@@ -36,8 +35,7 @@ def test_finance_import_preview_rejects_paths_outside_import_root(tmp_path):
     import_root.mkdir()
     outside = tmp_path / "outside.csv"
     outside.write_text(
-        "Date,Description,Transaction Type,Amount\n"
-        "2026-03-02,H-E-B,Withdrawal,-45.20\n"
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
     )
     service = FinanceService(tmp_path / "minx.db", tmp_path, import_root=import_root)
 
@@ -52,10 +50,7 @@ def test_finance_import_preview_rejects_paths_outside_import_root(tmp_path):
 def test_finance_import_preview_reports_mapping_clarify_for_unknown_generic_csv(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path, import_root=tmp_path)
     source = tmp_path / "transactions.csv"
-    source.write_text(
-        "posted,details,amount\n"
-        "03/02/2026,Coffee,-12.50\n"
-    )
+    source.write_text("posted,details,amount\n03/02/2026,Coffee,-12.50\n")
 
     result = service.finance_import_preview(str(source), "DCU", source_kind="generic_csv")
 

@@ -7,8 +7,6 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-
-_log = logging.getLogger(__name__)
 from sqlite3 import Connection
 from typing import Any, Protocol
 
@@ -25,6 +23,8 @@ from minx_mcp.finance.normalization import normalize_merchant
 from minx_mcp.jobs import mark_completed, mark_failed, mark_running, submit_job
 from minx_mcp.preferences import get_csv_mapping
 
+logger = logging.getLogger(__name__)
+
 
 class FinanceImportHost(Protocol):
     """Narrow surface used by `run_finance_import` (implemented by `FinanceService`)."""
@@ -38,7 +38,9 @@ class FinanceImportHost(Protocol):
 
     def _insert_batch(self, account_id: int, parsed: ParsedImportBatch) -> int: ...
 
-    def _insert_transaction(self, account_id: int, batch_id: int, txn: ParsedTransaction) -> int: ...
+    def _insert_transaction(
+        self, account_id: int, batch_id: int, txn: ParsedTransaction
+    ) -> int: ...
 
     def apply_category_rules(self, batch_id: int | None = None, *, commit: bool = True) -> None: ...
 
@@ -48,16 +50,21 @@ class FinanceImportHost(Protocol):
         event_type: str,
         entity_ref: str | None,
         payload: dict[str, object],
-    ) -> int | None: ...
+    ) -> int: ...
 
 
-def run_finance_import(
+def _validate_import_inputs(
     host: FinanceImportHost,
     source_ref: str,
     account_name: str,
-    source_kind: str | None = None,
-    mapping: dict[str, object] | None = None,
-) -> dict[str, object]:
+    source_kind: str | None,
+    mapping: dict[str, object] | None,
+) -> tuple[Path, Path, Any, str, dict[str, object] | None]:
+    """Validate and resolve common import inputs.
+
+    Returns (resolved_path, canonical_source_path, account, effective_source_kind,
+    effective_mapping).  Raises InvalidInputError on any validation failure.
+    """
     path = Path(source_ref)
     if not path.is_file():
         raise InvalidInputError("source_ref must point to an existing file")
@@ -71,19 +78,32 @@ def run_finance_import(
     except ValueError as exc:
         raise InvalidInputError("source_ref must be inside the allowed import root") from exc
     account = host._account(account_name)
-    account_id = int(account["id"])
     if source_kind is not None and source_kind not in SUPPORTED_SOURCE_KINDS:
         raise InvalidInputError(f"Unsupported finance source kind: {source_kind}")
     effective_source_kind = source_kind or detect_source_kind(canonical_source_path)
     effective_mapping = mapping
-    canonical_source_ref = str(canonical_source_path)
     if effective_source_kind == "generic_csv" and effective_mapping is None:
         profile_name = str(account["import_profile"]) if account["import_profile"] else account_name
         effective_mapping = get_csv_mapping(host.conn, profile_name)
         if effective_mapping is None and profile_name != account_name:
             effective_mapping = get_csv_mapping(host.conn, account_name)
-        if effective_mapping is None:
-            raise InvalidInputError(f"No saved generic CSV mapping for account: {account_name}")
+    return resolved_path, canonical_source_path, account, effective_source_kind, effective_mapping
+
+
+def run_finance_import(
+    host: FinanceImportHost,
+    source_ref: str,
+    account_name: str,
+    source_kind: str | None = None,
+    mapping: dict[str, object] | None = None,
+) -> dict[str, object]:
+    resolved_path, canonical_source_path, account, effective_source_kind, effective_mapping = (
+        _validate_import_inputs(host, source_ref, account_name, source_kind, mapping)
+    )
+    if effective_source_kind == "generic_csv" and effective_mapping is None:
+        raise InvalidInputError(f"No saved generic CSV mapping for account: {account_name}")
+    account_id = int(account["id"])
+    canonical_source_ref = str(canonical_source_path)
 
     fd, snap_tmp = tempfile.mkstemp(
         suffix=resolved_path.suffix,
@@ -96,7 +116,9 @@ def run_finance_import(
         idempotency_key = hashlib.sha256(
             f"{account_name}|{canonical_source_ref}|{content_hash}".encode()
         ).hexdigest()
-        job = submit_job(host.conn, "finance_import", "system", canonical_source_ref, idempotency_key)
+        job = submit_job(
+            host.conn, "finance_import", "system", canonical_source_ref, idempotency_key
+        )
         if job["status"] in {"completed", "running"}:
             return {"job_id": job["id"], "status": job["status"], "result": job["result"]}
 
@@ -188,36 +210,17 @@ def preview_finance_import(
     source_kind: str | None = None,
     mapping: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    path = Path(source_ref)
-    if not path.is_file():
-        raise InvalidInputError("source_ref must point to an existing file")
-    resolved_path = path.resolve()
-    canonical_source_path = _canonicalize_existing_path(
-        resolved_path,
-        anchor=host.import_root,
+    _resolved_path, canonical_source_path, _account, effective_source_kind, effective_mapping = (
+        _validate_import_inputs(host, source_ref, account_name, source_kind, mapping)
     )
-    try:
-        canonical_source_path.relative_to(host.import_root)
-    except ValueError as exc:
-        raise InvalidInputError("source_ref must be inside the allowed import root") from exc
-    account = host._account(account_name)
-    if source_kind is not None and source_kind not in SUPPORTED_SOURCE_KINDS:
-        raise InvalidInputError(f"Unsupported finance source kind: {source_kind}")
-    effective_source_kind = source_kind or detect_source_kind(canonical_source_path)
-    effective_mapping = mapping
     if effective_source_kind == "generic_csv" and effective_mapping is None:
-        profile_name = str(account["import_profile"]) if account["import_profile"] else account_name
-        effective_mapping = get_csv_mapping(host.conn, profile_name)
-        if effective_mapping is None and profile_name != account_name:
-            effective_mapping = get_csv_mapping(host.conn, account_name)
-        if effective_mapping is None:
-            return {
-                "preview": {
-                    "result_type": "clarify",
-                    "reason": "missing_mapping",
-                    "source_kind": effective_source_kind,
-                }
+        return {
+            "preview": {
+                "result_type": "clarify",
+                "reason": "missing_mapping",
+                "source_kind": effective_source_kind,
             }
+        }
 
     parsed = parse_source_file(
         canonical_source_path,
@@ -276,6 +279,8 @@ def _canonicalize_existing_path(path: Path, *, anchor: Path | None = None) -> Pa
                     actual_part = child.name
                     break
         except OSError as exc:
-            _log.warning("Cannot list directory %s during path canonicalization: %s", current, exc)
+            logger.warning(
+                "Cannot list directory %s during path canonicalization: %s", current, exc
+            )
         current = current / actual_part
     return current

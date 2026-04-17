@@ -14,7 +14,7 @@ def parse_discover_pdf(path: Path, account_name: str) -> ParsedImportBatch:
     for line in text.splitlines():
         match = re.match(
             (
-                r"^(?P<trans>\d{2}/\d{2}/\d{2})\s+\d{2}/\d{2}/\d{2}\s+"
+                r"^(?P<trans>\d{2}/\d{2}/\d{2,4})\s+\d{2}/\d{2}/\d{2,4}\s+"
                 r"(?P<desc>.+?)\s+\$\s*(?P<amount>\d+\.\d{2})\s+(?P<category>.+)$"
             ),
             line.strip(),
@@ -25,7 +25,7 @@ def parse_discover_pdf(path: Path, account_name: str) -> ParsedImportBatch:
         description = match.group("desc")
         transactions.append(
             ParsedTransaction(
-                posted_at=f"20{year}-{month}-{day}",
+                posted_at=f"{year if len(year) == 4 else f'20{year}'}-{month}-{day}",
                 description=description,
                 amount_cents=-parse_dollars_to_cents(match.group("amount")),
                 merchant=description,

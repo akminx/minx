@@ -182,10 +182,10 @@ def _seed_single_transaction(conn, posted_at: str, amount_cents: int) -> None:
     category_id = conn.execute(
         "SELECT id FROM finance_categories WHERE name = 'Dining Out'"
     ).fetchone()["id"]
-    account_id = conn.execute(
-        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
+    account_id = conn.execute("SELECT id FROM finance_accounts WHERE name = 'DCU'").fetchone()["id"]
+    batch_id = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) + 1 AS id FROM finance_import_batches"
     ).fetchone()["id"]
-    batch_id = conn.execute("SELECT COALESCE(MAX(id), 0) + 1 AS id FROM finance_import_batches").fetchone()["id"]
     conn.execute(
         """
         INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from minx_mcp.core.goal_parse import (
     _resolve_exact_subject,
     capture_goal_message,
@@ -12,10 +10,10 @@ from minx_mcp.core.models import GoalRecord
 from minx_mcp.db import get_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _run(coro):
     return asyncio.run(coro)
@@ -32,7 +30,9 @@ def _make_db_and_api(tmp_path):
     return conn, FinanceReadAPI(conn)
 
 
-def _insert_transaction(conn, *, merchant: str, amount_cents: int = -1000, category_id: int | None = None) -> None:
+def _insert_transaction(
+    conn, *, merchant: str, amount_cents: int = -1000, category_id: int | None = None
+) -> None:
     conn.execute(
         """
         INSERT INTO finance_transactions
@@ -71,6 +71,7 @@ def _goal_record(**overrides) -> GoalRecord:
 # _resolve_exact_subject unit tests
 # ---------------------------------------------------------------------------
 
+
 def test_resolve_exact_subject_category_case_insensitive(tmp_path):
     conn, api = _make_db_and_api(tmp_path)
     # "Dining Out" is seeded by the migrations
@@ -101,17 +102,20 @@ def test_resolve_exact_subject_returns_none_for_nonexistent(tmp_path):
 # Create path (regex-based, no LLM)
 # ---------------------------------------------------------------------------
 
+
 def test_capture_goal_message_create_with_known_category(tmp_path):
     conn, api = _make_db_and_api(tmp_path)
     # "Dining Out" is seeded by migrations
 
-    result = _run(capture_goal_message(
-        message="spend less than $200 on Dining Out monthly",
-        review_date="2026-03-15",
-        finance_api=api,
-        goals=[],
-        llm=None,
-    ))
+    result = _run(
+        capture_goal_message(
+            message="spend less than $200 on Dining Out monthly",
+            review_date="2026-03-15",
+            finance_api=api,
+            goals=[],
+            llm=None,
+        )
+    )
 
     assert result.result_type == "create"
     assert result.action == "goal_create"
@@ -125,13 +129,15 @@ def test_capture_goal_message_create_weekly_cap_on_known_merchant(tmp_path):
     conn, api = _make_db_and_api(tmp_path)
     _insert_transaction(conn, merchant="Coffee Shop")
 
-    result = _run(capture_goal_message(
-        message="spend less than $50 on Coffee Shop weekly",
-        review_date="2026-03-15",
-        finance_api=api,
-        goals=[],
-        llm=None,
-    ))
+    result = _run(
+        capture_goal_message(
+            message="spend less than $50 on Coffee Shop weekly",
+            review_date="2026-03-15",
+            finance_api=api,
+            goals=[],
+            llm=None,
+        )
+    )
 
     assert result.result_type == "create"
     assert result.payload is not None
@@ -145,13 +151,15 @@ def test_capture_goal_message_create_ambiguous_subject(tmp_path):
     # "Dining Out" is in categories; also add it as a merchant
     _insert_transaction(conn, merchant="Dining Out")
 
-    result = _run(capture_goal_message(
-        message="spend less than $100 on Dining Out monthly",
-        review_date="2026-03-15",
-        finance_api=api,
-        goals=[],
-        llm=None,
-    ))
+    result = _run(
+        capture_goal_message(
+            message="spend less than $100 on Dining Out monthly",
+            review_date="2026-03-15",
+            finance_api=api,
+            goals=[],
+            llm=None,
+        )
+    )
 
     assert result.result_type == "clarify"
     assert result.clarification_type == "ambiguous_subject"
@@ -162,13 +170,15 @@ def test_capture_goal_message_create_ambiguous_subject(tmp_path):
 def test_capture_goal_message_create_subject_matches_nothing(tmp_path):
     conn, api = _make_db_and_api(tmp_path)
 
-    result = _run(capture_goal_message(
-        message="spend less than $100 on ZorgBlorp monthly",
-        review_date="2026-03-15",
-        finance_api=api,
-        goals=[],
-        llm=None,
-    ))
+    result = _run(
+        capture_goal_message(
+            message="spend less than $100 on ZorgBlorp monthly",
+            review_date="2026-03-15",
+            finance_api=api,
+            goals=[],
+            llm=None,
+        )
+    )
 
     assert result.result_type == "clarify"
     assert result.clarification_type == "vague_intent"
@@ -177,13 +187,15 @@ def test_capture_goal_message_create_subject_matches_nothing(tmp_path):
 def test_capture_goal_message_create_no_dollar_amount(tmp_path):
     conn, api = _make_db_and_api(tmp_path)
 
-    result = _run(capture_goal_message(
-        message="spend less on Groceries monthly",
-        review_date="2026-03-15",
-        finance_api=api,
-        goals=[],
-        llm=None,
-    ))
+    result = _run(
+        capture_goal_message(
+            message="spend less on Groceries monthly",
+            review_date="2026-03-15",
+            finance_api=api,
+            goals=[],
+            llm=None,
+        )
+    )
 
     assert result.result_type == "no_match"
 
@@ -191,13 +203,15 @@ def test_capture_goal_message_create_no_dollar_amount(tmp_path):
 def test_capture_goal_message_no_goal_intent(tmp_path):
     conn, api = _make_db_and_api(tmp_path)
 
-    result = _run(capture_goal_message(
-        message="what is the weather today",
-        review_date="2026-03-15",
-        finance_api=api,
-        goals=[],
-        llm=None,
-    ))
+    result = _run(
+        capture_goal_message(
+            message="what is the weather today",
+            review_date="2026-03-15",
+            finance_api=api,
+            goals=[],
+            llm=None,
+        )
+    )
 
     assert result.result_type == "no_match"
 
@@ -206,17 +220,20 @@ def test_capture_goal_message_no_goal_intent(tmp_path):
 # Update path (regex-based, no LLM)
 # ---------------------------------------------------------------------------
 
+
 def test_capture_goal_message_pause_single_matching_goal(tmp_path):
     conn, api = _make_db_and_api(tmp_path)
     goal = _goal_record(id=7, category_names=["Dining Out"])
 
-    result = _run(capture_goal_message(
-        message="pause my Dining Out goal",
-        review_date="2026-03-15",
-        finance_api=api,
-        goals=[goal],
-        llm=None,
-    ))
+    result = _run(
+        capture_goal_message(
+            message="pause my Dining Out goal",
+            review_date="2026-03-15",
+            finance_api=api,
+            goals=[goal],
+            llm=None,
+        )
+    )
 
     assert result.result_type == "update"
     assert result.payload == {"status": "paused"}
@@ -228,13 +245,15 @@ def test_capture_goal_message_pause_ambiguous_goals(tmp_path):
     goal_a = _goal_record(id=1, title="Dining Out Spending Cap", category_names=["Dining Out"])
     goal_b = _goal_record(id=2, title="Dining Out Spending Cap", category_names=["Dining Out"])
 
-    result = _run(capture_goal_message(
-        message="pause my Dining Out goal",
-        review_date="2026-03-15",
-        finance_api=api,
-        goals=[goal_a, goal_b],
-        llm=None,
-    ))
+    result = _run(
+        capture_goal_message(
+            message="pause my Dining Out goal",
+            review_date="2026-03-15",
+            finance_api=api,
+            goals=[goal_a, goal_b],
+            llm=None,
+        )
+    )
 
     assert result.result_type == "clarify"
     assert result.clarification_type == "ambiguous_goal"
@@ -243,13 +262,15 @@ def test_capture_goal_message_pause_ambiguous_goals(tmp_path):
 def test_capture_goal_message_pause_no_matching_goals(tmp_path):
     conn, api = _make_db_and_api(tmp_path)
 
-    result = _run(capture_goal_message(
-        message="pause my Dining Out goal",
-        review_date="2026-03-15",
-        finance_api=api,
-        goals=[],
-        llm=None,
-    ))
+    result = _run(
+        capture_goal_message(
+            message="pause my Dining Out goal",
+            review_date="2026-03-15",
+            finance_api=api,
+            goals=[],
+            llm=None,
+        )
+    )
 
     assert result.result_type == "clarify"
     assert result.clarification_type == "missing_goal"
@@ -259,13 +280,15 @@ def test_capture_goal_message_retarget_with_amount(tmp_path):
     conn, api = _make_db_and_api(tmp_path)
     goal = _goal_record(id=7, category_names=["Dining Out"])
 
-    result = _run(capture_goal_message(
-        message="retarget my Dining Out goal to $75",
-        review_date="2026-03-15",
-        finance_api=api,
-        goals=[goal],
-        llm=None,
-    ))
+    result = _run(
+        capture_goal_message(
+            message="retarget my Dining Out goal to $75",
+            review_date="2026-03-15",
+            finance_api=api,
+            goals=[goal],
+            llm=None,
+        )
+    )
 
     assert result.result_type == "update"
     assert result.payload is not None
@@ -276,6 +299,7 @@ def test_capture_goal_message_retarget_with_amount(tmp_path):
 # Edge cases
 # ---------------------------------------------------------------------------
 
+
 def test_capture_goal_message_unsupported_goal_type_only(tmp_path):
     conn, api = _make_db_and_api(tmp_path)
     goal = _goal_record(
@@ -285,12 +309,14 @@ def test_capture_goal_message_unsupported_goal_type_only(tmp_path):
         category_names=["Dining Out"],
     )
 
-    result = _run(capture_goal_message(
-        message="pause my Dining Out goal",
-        review_date="2026-03-15",
-        finance_api=api,
-        goals=[goal],
-        llm=None,
-    ))
+    result = _run(
+        capture_goal_message(
+            message="pause my Dining Out goal",
+            review_date="2026-03-15",
+            finance_api=api,
+            goals=[goal],
+            llm=None,
+        )
+    )
 
     assert result.result_type == "no_match"

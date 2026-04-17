@@ -1,6 +1,6 @@
 # Project Handoff
 
-Status as of 2026-04-15: Slices 1 through 4 are implemented. Consolidation and code quality work is planned. Slices 6 (Durable Memory) and 8 (Proactive Autonomy) are fully designed and ready for implementation after consolidation.
+Status as of 2026-04-17: Slices 1 through 4 are implemented, and consolidation/code-quality/observability hardening is complete. Slices 6 (Durable Memory) and 8 (Proactive Autonomy) are fully designed and now prioritized as the next implementation work.
 
 Hermes cutover snapshot (2026-04-14):
 - Minx MCP ports: finance `8000`, core `8001`, meals `8002`, training `8003`
@@ -47,16 +47,16 @@ Key architectural decisions that govern future work:
 | 3: Meals MCP | Implemented | Meals logging/planning, nutrition read model integration, meal/nutrition events and detectors |
 | 4: Training MCP Skeleton + Integration | Implemented | Training domain server/service/schema/read API/events/progression, core snapshot/detector integration, harness-start scripts |
 
-## Planned Work (Priority Order)
+## Priority Roadmap (Post-Consolidation)
 
 | Item | Status | Spec/Plan |
 |---|---|---|
-| Code quality cleanup | Planned | [code-quality-cleanup.md](docs/superpowers/plans/2026-04-15-code-quality-cleanup.md) |
-| Consolidation + refactor | Planned | [consolidation-and-refactor.md](docs/superpowers/plans/2026-04-15-consolidation-and-refactor.md) |
-| Slice 6: Durable Memory | Designed | [slice6-durable-memory.md](docs/superpowers/specs/2026-04-15-slice6-durable-memory.md) |
-| Slice 8: Proactive Autonomy | Designed | [slice8-proactive-autonomy.md](docs/superpowers/specs/2026-04-15-slice8-proactive-autonomy.md) |
-| Slice 5: Harness Adaptation | Deferred | Not needed — one harness (Hermes), playbook registry covers discovery |
+| Consolidation + code quality | Completed (2026-04-17) | [cleanup.md](docs/superpowers/plans/cleanup.md), [consolidation.md](docs/superpowers/plans/consolidation.md) |
+| Observability + CI hardening | Completed (2026-04-17) | [consolidation-and-refactor.md](docs/superpowers/plans/2026-04-15-consolidation-and-refactor.md) |
+| Slice 6: Durable Memory | Next (designed) | [slice6-durable-memory.md](docs/superpowers/specs/2026-04-15-slice6-durable-memory.md) |
+| Slice 8: Proactive Autonomy | Next after Slice 6 (designed) | [slice8-proactive-autonomy.md](docs/superpowers/specs/2026-04-15-slice8-proactive-autonomy.md) |
 | Slice 7: Journal MCP | Deferred | Standard CRUD, same pattern as Meals/Training, build when wanted |
+| Slice 5: Harness Adaptation | Deferred | One harness (Hermes) today; add harness-specific behavior directly to Core/Hermes as needed |
 | Slice 9: Dashboard | Deferred | Independent technology layer, no MCP dependencies |
 
 ## Current MCP Surface (High Level)
@@ -80,6 +80,7 @@ Slice 8 will add:
 
 - Startup helper is available at `scripts/start_hermes_stack.sh` for bringing up Finance/Core/Meals/Training MCP services.
 - Slice 4 smoke script exists at `scripts/hermes_slice4_smoke.py` for harness-facing integration checks.
+- A real Hermes-style streamable HTTP MCP smoke test exists at `tests/test_hermes_http_smoke.py`; it starts all four servers on temporary ports and verifies cross-domain tool calls over `/mcp`.
 - Slice 8 will add playbook runner scripts and wiki maintenance to Hermes cron.
 
 ## Canonical Specs And Inputs
@@ -101,6 +102,7 @@ Run these before handoff, PR, or harness integration runs:
 ```bash
 uv run pytest -q
 uv run mypy
+uv run ruff check .
 ```
 
 Record the date and command outcome in the current handoff/PR notes, but do not freeze long-term health in this file with fixed counts.

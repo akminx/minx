@@ -3,24 +3,21 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from collections.abc import Callable
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
 from minx_mcp.event_payloads import EventPayload
-from minx_mcp.time_utils import format_utc_timestamp, normalize_utc_timestamp, utc_now_isoformat
-
-logger = logging.getLogger(__name__)
-
-
 from minx_mcp.finance.events import FINANCE_EVENT_PAYLOADS
 from minx_mcp.meals.events import MEALS_EVENT_PAYLOADS
+from minx_mcp.time_utils import format_utc_timestamp, normalize_utc_timestamp, utc_now_isoformat
 from minx_mcp.training.events import TRAINING_EVENT_PAYLOADS
 
+logger = logging.getLogger(__name__)
 
 PAYLOAD_MODELS: dict[str, type[EventPayload]] = {
     **FINANCE_EVENT_PAYLOADS,
@@ -28,10 +25,35 @@ PAYLOAD_MODELS: dict[str, type[EventPayload]] = {
     **TRAINING_EVENT_PAYLOADS,
 }
 
+# UPCASTER REGISTRY RULES:
+# - Keys in each event's upcaster dict are integer target versions (1-based).
+# - Versions must be contiguous integers starting from 1 (no gaps, no duplicates).
+# - Each upcaster transforms a payload from version N-1 to version N.
+# - All upcasters receive and return plain dicts.
+# - Register upcasters before first use (module import time).
 PAYLOAD_UPCASTERS: dict[str, dict[int, Callable[[dict[str, Any]], dict[str, Any]]]] = {}
 
 
-def _upcast_payload(event_type: str, payload: dict[str, Any], schema_version: int) -> dict[str, Any]:
+def _validate_upcaster_contiguity(
+    registry: dict[str, dict[int, Callable[[dict[str, Any]], dict[str, Any]]]] | None = None,
+) -> None:
+    """Raise if any upcaster chain has version gaps or duplicates. Defaults to global registry."""
+    target = registry if registry is not None else PAYLOAD_UPCASTERS
+    for event_type, upcasters in target.items():
+        if not upcasters:
+            continue
+        versions = sorted(upcasters)
+        expected = list(range(1, len(versions) + 1))
+        if versions != expected:
+            raise ValueError(
+                f"PAYLOAD_UPCASTERS[{event_type!r}] has non-contiguous version keys "
+                f"{versions!r}; expected {expected!r} (must start at 1 with no gaps)"
+            )
+
+
+def _upcast_payload(
+    event_type: str, payload: dict[str, Any], schema_version: int
+) -> dict[str, Any]:
     upcasters = PAYLOAD_UPCASTERS.get(event_type)
     if upcasters is None:
         return payload
@@ -75,8 +97,7 @@ def emit_event(
         model = PAYLOAD_MODELS.get(event_type)
         if model is None:
             raise UnknownEventTypeError(
-                f"Unknown event type {event_type!r}; "
-                f"registered types: {sorted(PAYLOAD_MODELS)}"
+                f"Unknown event type {event_type!r}; registered types: {sorted(PAYLOAD_MODELS)}"
             )
 
         validated = model.model_validate(payload)
@@ -119,8 +140,22 @@ def emit_event(
             exc,
         )
         return None
+    except sqlite3.IntegrityError as exc:
+        logger.error(
+            "Event emission integrity error for %s (possible schema or constraint violation): %s",
+            event_type,
+            exc,
+        )
+        return None
+    except sqlite3.DatabaseError as exc:
+        logger.exception(
+            "Event emission DB error for %s (possible DB corruption): %s",
+            event_type,
+            exc,
+        )
+        return None
     except Exception:
-        logger.exception("Event emission failed for %s", event_type)
+        logger.exception("Event emission unexpected error for %s", event_type)
         return None
 
 
@@ -208,9 +243,7 @@ def _normalize_range(
 
     zone = ZoneInfo(timezone_name)
     start_utc = _local_date_to_utc_boundary(start, zone) if start is not None else None
-    end_utc = (
-        _local_date_to_utc_boundary(end, zone, add_days=1) if end is not None else None
-    )
+    end_utc = _local_date_to_utc_boundary(end, zone, add_days=1) if end is not None else None
     return start_utc, end_utc
 
 
@@ -223,3 +256,7 @@ def _local_date_to_utc_boundary(
     local_day = date.fromisoformat(value) + timedelta(days=add_days)
     local_midnight = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
     return format_utc_timestamp(local_midnight)
+
+
+# Run at import time after all module-level upcaster registrations.
+_validate_upcaster_contiguity()

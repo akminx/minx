@@ -1,10 +1,10 @@
 import json
 import sqlite3
 
-from minx_mcp.db import get_connection
 import pytest
 
 from minx_mcp.core.events import Event, UnknownEventTypeError, emit_event, query_events
+from minx_mcp.db import get_connection
 
 
 def _imported_payload(**overrides):
@@ -104,12 +104,15 @@ def _insert_raw_event(
 
 
 def _seed_event(conn, *, event_type, occurred_at, domain="finance", payload=None):
-    payload = payload or {
-        "finance.transactions_imported": _imported_payload(),
-        "finance.transactions_categorized": _categorized_payload(),
-        "finance.report_generated": _report_payload(),
-        "finance.anomalies_detected": _anomalies_payload(),
-    }[event_type]
+    payload = (
+        payload
+        or {
+            "finance.transactions_imported": _imported_payload(),
+            "finance.transactions_categorized": _categorized_payload(),
+            "finance.report_generated": _report_payload(),
+            "finance.anomalies_detected": _anomalies_payload(),
+        }[event_type]
+    )
     event_id = emit_event(
         conn,
         event_type=event_type,

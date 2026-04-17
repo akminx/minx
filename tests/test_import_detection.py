@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from minx_mcp.contracts import InvalidInputError
@@ -7,12 +9,11 @@ from minx_mcp.core.interpretation.import_detection import (
     _detect_from_filename,
     _detect_from_tabular_text,
 )
-from pathlib import Path
-
 
 # ---------------------------------------------------------------------------
 # _detect_from_filename
 # ---------------------------------------------------------------------------
+
 
 def test_detect_from_filename_robinhood_csv():
     path = Path("downloads/robinhood_transactions.csv")
@@ -38,6 +39,7 @@ def test_detect_from_filename_unknown_returns_none():
 # _detect_from_tabular_text (via tmp files)
 # ---------------------------------------------------------------------------
 
+
 def test_detect_from_tabular_text_robinhood_columns(tmp_path):
     csv_path = tmp_path / "transactions.csv"
     csv_path.write_text(
@@ -53,8 +55,7 @@ def test_detect_from_tabular_text_robinhood_columns(tmp_path):
 def test_detect_from_tabular_text_dcu_columns(tmp_path):
     csv_path = tmp_path / "transactions.csv"
     csv_path.write_text(
-        "Date,Description,Transaction Type,Amount\n"
-        "2026-03-15,Coffee Shop,Debit,-15.00\n"
+        "Date,Description,Transaction Type,Amount\n2026-03-15,Coffee Shop,Debit,-15.00\n"
     )
 
     result = _detect_from_tabular_text(csv_path)
@@ -64,10 +65,7 @@ def test_detect_from_tabular_text_dcu_columns(tmp_path):
 
 def test_detect_from_tabular_text_generic_csv(tmp_path):
     csv_path = tmp_path / "transactions.csv"
-    csv_path.write_text(
-        "Field1,Field2,Field3\n"
-        "value1,value2,value3\n"
-    )
+    csv_path.write_text("Field1,Field2,Field3\nvalue1,value2,value3\n")
 
     result = _detect_from_tabular_text(csv_path)
 

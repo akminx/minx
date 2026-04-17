@@ -3,8 +3,16 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from minx_mcp.core._utils import slugify
+from minx_mcp.core.goal_progress import get_metric_value
 from minx_mcp.core.models import GoalProgress, InsightCandidate, ReadModels
 from minx_mcp.money import format_cents
+
+# Drift thresholds for spending goals (cents)
+DRIFT_SPEND_ALERT_DELTA = 5_000  # $50 — minimum spend delta to trigger alert severity
+DRIFT_SPEND_WARN_DELTA = 2_000  # $20 — minimum spend delta to trigger warning severity
+# Drift thresholds for count goals (transaction count)
+DRIFT_COUNT_ALERT_DELTA = 4  # 4+ extra transactions → alert
+DRIFT_COUNT_WARN_DELTA = 2  # 2+ extra transactions → warning
 
 
 def detect_goal_drift(read_models: ReadModels) -> list[InsightCandidate]:
@@ -122,21 +130,14 @@ def _read_goal_window_value(
     finance_api = read_models.finance_api
     if finance_api is None:
         return 0
-
-    if goal.metric_type.startswith("sum_"):
-        return finance_api.get_filtered_spending_total(
-            start_date,
-            end_date,
-            category_names=goal.category_names or None,
-            merchant_names=goal.merchant_names or None,
-            account_names=goal.account_names or None,
-        )
-    return finance_api.get_filtered_transaction_count(
+    return get_metric_value(
+        finance_api,
+        goal.metric_type,
         start_date,
         end_date,
-        category_names=goal.category_names or None,
-        merchant_names=goal.merchant_names or None,
-        account_names=goal.account_names or None,
+        goal.category_names,
+        goal.merchant_names,
+        goal.account_names,
     )
 
 
@@ -146,14 +147,14 @@ def _category_drift_severity(
     delta: int,
 ) -> str | None:
     if goal.metric_type.startswith("sum_"):
-        if ratio >= 1.5 and delta >= 5_000:
+        if ratio >= 1.5 and delta >= DRIFT_SPEND_ALERT_DELTA:
             return "alert"
-        if ratio >= 1.25 and delta >= 2_000:
+        if ratio >= 1.25 and delta >= DRIFT_SPEND_WARN_DELTA:
             return "warning"
         return None
-    if ratio >= 1.5 and delta >= 4:
+    if ratio >= 1.5 and delta >= DRIFT_COUNT_ALERT_DELTA:
         return "alert"
-    if ratio >= 1.25 and delta >= 2:
+    if ratio >= 1.25 and delta >= DRIFT_COUNT_WARN_DELTA:
         return "warning"
     return None
 
@@ -179,5 +180,3 @@ def _goal_filter_label(goal: GoalProgress) -> str:
     if goal.account_names:
         parts.append(", ".join(goal.account_names))
     return " / ".join(parts)
-
-

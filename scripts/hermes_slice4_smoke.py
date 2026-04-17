@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import argparse
+import asyncio
 import json
 import shutil
 import tempfile
@@ -81,9 +81,7 @@ def main() -> None:
         if source_db.exists():
             shutil.copy2(source_db, run_db)
     try:
-        payload = asyncio.run(
-            run_smoke(run_db, str(args.review_date))
-        )
+        payload = asyncio.run(run_smoke(run_db, str(args.review_date)))
     except ValueError as exc:
         parser.error(f"--review-date must be a valid ISO date: {exc}")
     finally:

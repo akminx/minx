@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import inspect
 from pathlib import Path
 
 import pytest
@@ -9,23 +7,23 @@ import pytest
 from minx_mcp.core.events import emit_event
 from minx_mcp.core.server import create_core_server
 from minx_mcp.db import get_connection
-
-
-def _call_tool_sync(fn, *args, **kwargs):
-    result = fn(*args, **kwargs)
-    if inspect.isawaitable(result):
-        return asyncio.run(result)
-    return result
+from tests.helpers import MinxTestConfig, get_tool
 
 
 def test_core_server_registers_slice25_tool_names(tmp_path: Path) -> None:
     server = create_core_server(_TestConfig(tmp_path / "minx.db", tmp_path / "vault"))
 
-    assert server._tool_manager.get_tool("get_daily_snapshot").name == "get_daily_snapshot"
-    assert server._tool_manager.get_tool("get_insight_history").name == "get_insight_history"
-    assert server._tool_manager.get_tool("get_goal_trajectory").name == "get_goal_trajectory"
-    assert server._tool_manager.get_tool("persist_note").name == "persist_note"
-    assert server._tool_manager.get_tool("goal_parse").name == "goal_parse"
+    expected_tools = {
+        "get_daily_snapshot",
+        "get_insight_history",
+        "get_goal_trajectory",
+        "persist_note",
+        "goal_parse",
+    }
+    import asyncio
+
+    registered = {t.name for t in asyncio.run(server.list_tools())}
+    assert expected_tools.issubset(registered)
 
 
 @pytest.mark.asyncio
@@ -52,13 +50,18 @@ async def test_get_daily_snapshot_tool_returns_structured_snapshot(tmp_path: Pat
     conn.close()
 
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    snapshot_tool = server._tool_manager.get_tool("get_daily_snapshot").fn
+    snapshot_tool = get_tool(server, "get_daily_snapshot").fn
 
     result = await snapshot_tool("2026-03-15", False)
 
     assert result["success"] is True
     assert result["data"]["date"] == "2026-03-15"
-    assert "signals" in result["data"]
+    signals = result["data"]["signals"]
+    assert isinstance(signals, list)
+    for sig in signals:
+        assert "insight_type" in sig
+        assert "summary" in sig
+        assert "severity" in sig
     assert "attention_items" in result["data"]
     assert "narrative" not in result["data"]
 
@@ -67,7 +70,7 @@ def test_persist_note_creates_and_conflicts_without_overwrite(tmp_path: Path) ->
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    persist_note = server._tool_manager.get_tool("persist_note").fn
+    persist_note = get_tool(server, "persist_note").fn
 
     created = persist_note("Minx/Reviews/test.md", "# hi", False)
     conflicted = persist_note("Minx/Reviews/test.md", "# hi", False)
@@ -95,7 +98,7 @@ def test_get_insight_history_tool_wraps_history_result(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    history_tool = server._tool_manager.get_tool("get_insight_history").fn
+    history_tool = get_tool(server, "get_insight_history").fn
 
     result = history_tool(28, None, None, "2026-03-31")
 
@@ -107,7 +110,7 @@ def test_get_goal_trajectory_tool_returns_invalid_input_for_bad_date(tmp_path: P
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    trajectory_tool = server._tool_manager.get_tool("get_goal_trajectory").fn
+    trajectory_tool = get_tool(server, "get_goal_trajectory").fn
 
     result = trajectory_tool(1, 4, "not-a-date")
 
@@ -115,19 +118,14 @@ def test_get_goal_trajectory_tool_returns_invalid_input_for_bad_date(tmp_path: P
     assert result["error_code"] == "INVALID_INPUT"
 
 
-class _TestConfig:
-    def __init__(self, db_path: Path, vault_path: Path) -> None:
-        self.db_path = db_path
-        self.vault_path = vault_path
+_TestConfig = MinxTestConfig
 
 
 def _seed_transaction(conn, *, posted_at: str, amount_cents: int) -> None:
     category_id = conn.execute(
         "SELECT id FROM finance_categories WHERE name = 'Dining Out'"
     ).fetchone()["id"]
-    account_id = conn.execute(
-        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
-    ).fetchone()["id"]
+    account_id = conn.execute("SELECT id FROM finance_accounts WHERE name = 'DCU'").fetchone()["id"]
     conn.execute(
         """
         INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)

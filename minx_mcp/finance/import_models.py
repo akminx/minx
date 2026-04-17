@@ -24,7 +24,7 @@ class ParsedImportBatch:
     raw_fingerprint: str
     transactions: list[ParsedTransaction]
 
-    def with_source_metadata(self, source_ref: str, raw_fingerprint: str) -> "ParsedImportBatch":
+    def with_source_metadata(self, source_ref: str, raw_fingerprint: str) -> ParsedImportBatch:
         return replace(self, source_ref=source_ref, raw_fingerprint=raw_fingerprint)
 
 
@@ -41,7 +41,7 @@ class GenericCSVMapping:
     def from_value(
         cls,
         value: object,
-    ) -> "GenericCSVMapping":
+    ) -> GenericCSVMapping:
         if isinstance(value, cls):
             return value
         if not isinstance(value, dict):
@@ -61,9 +61,7 @@ class GenericCSVMapping:
             if not isinstance(mapping.get(field), str) or not str(mapping[field]).strip()
         ]
         if missing:
-            raise InvalidInputError(
-                f"generic csv mapping is missing required field: {missing[0]}"
-            )
+            raise InvalidInputError(f"generic csv mapping is missing required field: {missing[0]}")
 
         merchant_column = mapping.get("merchant_column")
         category_hint_column = mapping.get("category_hint_column")

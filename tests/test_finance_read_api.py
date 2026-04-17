@@ -50,7 +50,10 @@ def test_get_spending_summary_returns_total_categories_and_top_merchants(tmp_pat
         ("Groceries", 6400),
         ("Dining Out", 1250),
     ]
-    assert [(item.merchant, item.total_spent_cents, item.transaction_count) for item in summary.top_merchants] == [
+    assert [
+        (item.merchant, item.total_spent_cents, item.transaction_count)
+        for item in summary.top_merchants
+    ] == [
         ("Neighborhood Market", 6400, 2),
         ("Coffee Shop", 1250, 1),
     ]
@@ -210,7 +213,9 @@ def test_get_import_job_issues_returns_failed_and_stale_jobs_in_deterministic_or
 
     issues = FinanceReadAPI(conn).get_import_job_issues()
 
-    assert [(issue.job_id, issue.issue_kind, issue.status, issue.source_ref) for issue in issues] == [
+    assert [
+        (issue.job_id, issue.issue_kind, issue.status, issue.source_ref) for issue in issues
+    ] == [
         ("job-failed-a", "failed", "failed", "/imports/a.csv"),
         ("job-failed-b", "failed", "failed", "/imports/b.csv"),
         ("job-stale", "stale", "running", "/imports/c.csv"),
@@ -382,8 +387,22 @@ def test_finance_read_api_aggregations_use_amount_cents_not_legacy_amount(tmp_pa
 def test_get_filtered_spending_total_respects_category_filter(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
-    _insert_transaction(conn, posted_at="2026-03-15", description="Lunch", merchant="Cafe", amount_cents=-1200, category_id=3)
-    _insert_transaction(conn, posted_at="2026-03-15", description="Groceries", merchant="HEB", amount_cents=-4500, category_id=2)
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-15",
+        description="Lunch",
+        merchant="Cafe",
+        amount_cents=-1200,
+        category_id=3,
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-15",
+        description="Groceries",
+        merchant="HEB",
+        amount_cents=-4500,
+        category_id=2,
+    )
     conn.commit()
 
     from minx_mcp.finance.read_api import FinanceReadAPI
@@ -400,7 +419,14 @@ def test_get_filtered_spending_total_respects_category_filter(tmp_path):
 def test_get_filtered_spending_total_returns_zero_when_no_matches(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
-    _insert_transaction(conn, posted_at="2026-03-15", description="Groceries", merchant="HEB", amount_cents=-4500, category_id=2)
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-15",
+        description="Groceries",
+        merchant="HEB",
+        amount_cents=-4500,
+        category_id=2,
+    )
     conn.commit()
 
     from minx_mcp.finance.read_api import FinanceReadAPI
@@ -417,9 +443,30 @@ def test_get_filtered_spending_total_returns_zero_when_no_matches(tmp_path):
 def test_get_filtered_transaction_count_counts_matching_expense_rows(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
-    _insert_transaction(conn, posted_at="2026-03-15", description="Dinner", merchant="Cafe", amount_cents=-1200, category_id=3)
-    _insert_transaction(conn, posted_at="2026-03-15", description="Coffee", merchant="Cafe", amount_cents=-500, category_id=3)
-    _insert_transaction(conn, posted_at="2026-03-15", description="Groceries", merchant="HEB", amount_cents=-4500, category_id=2)
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-15",
+        description="Dinner",
+        merchant="Cafe",
+        amount_cents=-1200,
+        category_id=3,
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-15",
+        description="Coffee",
+        merchant="Cafe",
+        amount_cents=-500,
+        category_id=3,
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-15",
+        description="Groceries",
+        merchant="HEB",
+        amount_cents=-4500,
+        category_id=2,
+    )
     conn.commit()
 
     from minx_mcp.finance.read_api import FinanceReadAPI
@@ -436,8 +483,22 @@ def test_get_filtered_transaction_count_counts_matching_expense_rows(tmp_path):
 def test_get_filtered_spending_total_with_merchant_filter(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
-    _insert_transaction(conn, posted_at="2026-03-15", description="Lunch", merchant="Cafe", amount_cents=-1200, category_id=3)
-    _insert_transaction(conn, posted_at="2026-03-15", description="Dinner", merchant="Restaurant", amount_cents=-3000, category_id=3)
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-15",
+        description="Lunch",
+        merchant="Cafe",
+        amount_cents=-1200,
+        category_id=3,
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-15",
+        description="Dinner",
+        merchant="Restaurant",
+        amount_cents=-3000,
+        category_id=3,
+    )
     conn.commit()
 
     from minx_mcp.finance.read_api import FinanceReadAPI
@@ -454,8 +515,22 @@ def test_get_filtered_spending_total_with_merchant_filter(tmp_path):
 def test_get_filtered_spending_total_with_no_filters_returns_all_expenses(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     _seed_batch(conn)
-    _insert_transaction(conn, posted_at="2026-03-15", description="Lunch", merchant="Cafe", amount_cents=-1200, category_id=3)
-    _insert_transaction(conn, posted_at="2026-03-15", description="Groceries", merchant="HEB", amount_cents=-4500, category_id=2)
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-15",
+        description="Lunch",
+        merchant="Cafe",
+        amount_cents=-1200,
+        category_id=3,
+    )
+    _insert_transaction(
+        conn,
+        posted_at="2026-03-15",
+        description="Groceries",
+        merchant="HEB",
+        amount_cents=-4500,
+        category_id=2,
+    )
     conn.commit()
 
     from minx_mcp.finance.read_api import FinanceReadAPI

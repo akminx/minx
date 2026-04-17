@@ -39,7 +39,9 @@ def submit_job(
                     (job["id"], f"-{STUCK_JOB_TIMEOUT_MINUTES} minutes"),
                 ).fetchone()
                 if stuck:
-                    recovery_msg = f"Auto-recovered: stuck in running for >{STUCK_JOB_TIMEOUT_MINUTES}m"
+                    recovery_msg = (
+                        f"Auto-recovered: stuck in running for >{STUCK_JOB_TIMEOUT_MINUTES}m"
+                    )
                     conn.execute(
                         """
                         UPDATE jobs
@@ -56,6 +58,8 @@ def submit_job(
                         (job["id"], recovery_msg),
                     )
                     conn.commit()
+                    # Intentional fall-through: after recovering the stuck job above,
+                    # we continue to insert a new job entry for the current retry attempt.
                 else:
                     return job
             else:
@@ -71,6 +75,11 @@ def submit_job(
             (job_id, job_type, requested_by, source_ref, idempotency_key),
         )
     except IntegrityError as exc:
+        # String-matching is intentional: sqlite3.IntegrityError does not expose a
+        # structured constraint name, so we guard against re-raising on genuinely
+        # unexpected integrity errors (e.g. foreign key violations) by checking that
+        # the constraint text mentions our known unique index on idempotency_key.
+        # This is a race-condition fallback: the upfront SELECT missed a concurrent insert.
         if not idempotency_key or "jobs.idempotency_key" not in str(exc):
             raise
         existing = conn.execute(
@@ -95,7 +104,9 @@ def mark_running(conn: Connection, job_id: str, *, commit: bool = True) -> None:
     _set_status(conn, job_id, "running", None, commit=commit)
 
 
-def mark_completed(conn: Connection, job_id: str, result: dict[str, object], *, commit: bool = True) -> None:
+def mark_completed(
+    conn: Connection, job_id: str, result: dict[str, object], *, commit: bool = True
+) -> None:
     _set_status(conn, job_id, "completed", json.dumps(result), commit=commit)
 
 
@@ -125,7 +136,9 @@ def get_job(conn: Connection, job_id: str) -> dict[str, object | None] | None:
     return _row_to_job(row) if row else None
 
 
-def _set_status(conn: Connection, job_id: str, status: str, result_json: str | None, *, commit: bool = True) -> None:
+def _set_status(
+    conn: Connection, job_id: str, status: str, result_json: str | None, *, commit: bool = True
+) -> None:
     _require_job_row(conn, job_id)
     conn.execute(
         """

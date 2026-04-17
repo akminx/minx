@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
+import pytest
+
 from minx_mcp.contracts import NotFoundError
 from minx_mcp.db import get_connection
 from minx_mcp.jobs import get_job, mark_completed, mark_failed, mark_running, submit_job
@@ -9,12 +11,8 @@ from minx_mcp.jobs import get_job, mark_completed, mark_failed, mark_running, su
 def test_mark_running_unknown_job_raises_not_found(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     fake_id = "00000000-0000-0000-0000-000000000000"
-    try:
+    with pytest.raises(NotFoundError, match=fake_id):
         mark_running(conn, fake_id)
-    except NotFoundError as exc:
-        assert fake_id in str(exc)
-    else:
-        raise AssertionError("expected NotFoundError")
 
 
 def test_submit_job_reuses_idempotency_key(tmp_path):
@@ -88,10 +86,12 @@ def test_submit_job_handles_idempotency_race_without_integrity_error(tmp_path):
 
         def fetchone(self):
             nonlocal select_gate_count
-            if "SELECT * FROM jobs WHERE idempotency_key = ?" in self._sql:
-                if select_gate_count < 2:
-                    select_gate_count += 1
-                    barrier.wait()
+            if (
+                "SELECT * FROM jobs WHERE idempotency_key = ?" in self._sql
+                and select_gate_count < 2
+            ):
+                select_gate_count += 1
+                barrier.wait()
             return self._inner.fetchone()
 
         def __iter__(self):

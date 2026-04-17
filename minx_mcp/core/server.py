@@ -7,10 +7,17 @@ from typing import Protocol
 
 from mcp.server.fastmcp import FastMCP
 
-from minx_mcp.contracts import ConflictError, InvalidInputError, wrap_async_tool_call, wrap_tool_call
+from minx_mcp.contracts import (
+    ConflictError,
+    InvalidInputError,
+    ToolResponse,
+    wrap_async_tool_call,
+    wrap_tool_call,
+)
 from minx_mcp.core.goal_parse import parse_goal_input
 from minx_mcp.core.goal_progress import build_progress_for_goal
 from minx_mcp.core.goals import GoalService
+from minx_mcp.core.history import get_insight_history
 from minx_mcp.core.llm import create_llm
 from minx_mcp.core.models import (
     GoalCaptureOption,
@@ -19,13 +26,14 @@ from minx_mcp.core.models import (
     GoalProgress,
     GoalRecord,
     GoalUpdateInput,
+    JSONLLMInterface,
     SnapshotContext,
 )
-from minx_mcp.core.history import get_insight_history
 from minx_mcp.core.snapshot import build_daily_snapshot
 from minx_mcp.core.trajectory import get_goal_trajectory
-from minx_mcp.db import get_connection
+from minx_mcp.db import scoped_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
+from minx_mcp.validation import resolve_date_or_today
 from minx_mcp.vault_writer import VaultWriter
 
 
@@ -44,7 +52,7 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
     async def get_daily_snapshot_tool(
         review_date: str | None = None,
         force: bool = False,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return await wrap_async_tool_call(lambda: _daily_snapshot(config, review_date, force))
 
     @mcp.tool(name="goal_create")
@@ -61,7 +69,7 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         starts_on: str | None = None,
         ends_on: str | None = None,
         notes: str | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: _goal_create(
                 config,
@@ -83,11 +91,11 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         )
 
     @mcp.tool(name="goal_list")
-    def goal_list(status: str | None = None) -> dict[str, object]:
+    def goal_list(status: str | None = None) -> ToolResponse:
         return wrap_tool_call(lambda: _goal_list(config, status))
 
     @mcp.tool(name="goal_get")
-    def goal_get(goal_id: int, review_date: str | None = None) -> dict[str, object]:
+    def goal_get(goal_id: int, review_date: str | None = None) -> ToolResponse:
         return wrap_tool_call(lambda: _goal_get(config, goal_id, review_date))
 
     @mcp.tool(name="goal_update")
@@ -100,7 +108,7 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         notes: str | None = None,
         clear_ends_on: bool = False,
         clear_notes: bool = False,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: _goal_update(
                 config,
@@ -118,15 +126,15 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         )
 
     @mcp.tool(name="goal_archive")
-    def goal_archive(goal_id: int) -> dict[str, object]:
+    def goal_archive(goal_id: int) -> ToolResponse:
         return wrap_tool_call(lambda: _goal_archive(config, goal_id))
 
     @mcp.tool(name="goal_parse")
     async def goal_parse(
         message: str | None = None,
-        structured_input: dict | None = None,
+        structured_input: dict[str, object] | None = None,
         review_date: str | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return await wrap_async_tool_call(
             lambda: _goal_parse(config, message, structured_input, review_date)
         )
@@ -137,7 +145,7 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         insight_type: str | None = None,
         goal_id: int | None = None,
         end_date: str | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: get_insight_history(
                 config.db_path,
@@ -153,7 +161,7 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         goal_id: int,
         periods: int = 4,
         as_of_date: str | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: get_goal_trajectory(
                 config.db_path,
@@ -163,15 +171,19 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
             )
         )
 
+    @mcp.resource("health://status")
+    def health_status() -> str:
+        import json
+
+        return json.dumps({"status": "ok", "server": "minx-core"})
+
     @mcp.tool(name="persist_note")
     def persist_note(
         relative_path: str,
         content: str,
         overwrite: bool = False,
-    ) -> dict[str, object]:
-        return wrap_tool_call(
-            lambda: _persist_note(config, relative_path, content, overwrite)
-        )
+    ) -> ToolResponse:
+        return wrap_tool_call(lambda: _persist_note(config, relative_path, content, overwrite))
 
     return mcp
 
@@ -194,21 +206,15 @@ async def _daily_snapshot(
 
 
 def _goal_create(config: CoreServiceConfig, payload: GoalCreateInput) -> dict[str, object]:
-    conn = get_connection(config.db_path)
-    try:
+    with scoped_connection(config.db_path) as conn:
         goal = GoalService(conn).create_goal(payload)
         return {"goal": _goal_record_to_dict(goal)}
-    finally:
-        conn.close()
 
 
 def _goal_list(config: CoreServiceConfig, status: str | None) -> dict[str, object]:
-    conn = get_connection(config.db_path)
-    try:
+    with scoped_connection(config.db_path) as conn:
         goals = GoalService(conn).list_goals(status=status)
         return {"goals": [_goal_record_to_dict(goal) for goal in goals]}
-    finally:
-        conn.close()
 
 
 def _goal_get(
@@ -217,8 +223,7 @@ def _goal_get(
     review_date: str | None,
 ) -> dict[str, object]:
     effective_review_date = _resolve_review_date(review_date)
-    conn = get_connection(config.db_path)
-    try:
+    with scoped_connection(config.db_path) as conn:
         goal_service = GoalService(conn)
         goal = goal_service.get_goal(goal_id)
         progress = build_progress_for_goal(
@@ -230,8 +235,6 @@ def _goal_get(
             "goal": _goal_record_to_dict(goal),
             "progress": _goal_progress_to_dict(progress),
         }
-    finally:
-        conn.close()
 
 
 def _goal_update(
@@ -239,27 +242,21 @@ def _goal_update(
     goal_id: int,
     payload: GoalUpdateInput,
 ) -> dict[str, object]:
-    conn = get_connection(config.db_path)
-    try:
+    with scoped_connection(config.db_path) as conn:
         goal = GoalService(conn).update_goal(goal_id, payload)
         return {"goal": _goal_record_to_dict(goal)}
-    finally:
-        conn.close()
 
 
 def _goal_archive(config: CoreServiceConfig, goal_id: int) -> dict[str, object]:
-    conn = get_connection(config.db_path)
-    try:
+    with scoped_connection(config.db_path) as conn:
         goal = GoalService(conn).archive_goal(goal_id)
         return {"goal": _goal_record_to_dict(goal)}
-    finally:
-        conn.close()
 
 
 async def _goal_parse(
     config: CoreServiceConfig,
     message: str | None,
-    structured_input: dict | None,
+    structured_input: dict[str, object] | None,
     review_date: str | None,
 ) -> dict[str, object]:
     normalized_message = None
@@ -271,8 +268,7 @@ async def _goal_parse(
             raise InvalidInputError("message must be at most 500 characters")
 
     effective_review_date = _resolve_review_date(review_date)
-    conn = get_connection(config.db_path)
-    try:
+    with scoped_connection(config.db_path) as conn:
         goal_service = GoalService(conn)
         active_goals = goal_service.list_active_goals(effective_review_date)
         paused_goals = [
@@ -292,26 +288,17 @@ async def _goal_parse(
             llm=llm,
         )
         return _goal_parse_result_to_dict(result)
-    finally:
-        conn.close()
 
 
 def _resolve_review_date(review_date: str | None) -> str:
-    effective_date = review_date if review_date is not None else date.today().isoformat()
-    try:
-        date.fromisoformat(effective_date)
-    except ValueError as exc:
-        raise InvalidInputError("review_date must be a valid ISO date") from exc
-    return effective_date
+    return resolve_date_or_today(review_date, field_name="review_date")
 
 
 def _goal_is_available_on(goal: GoalRecord, review_date: str) -> bool:
     review_point = date.fromisoformat(review_date)
     if review_point < date.fromisoformat(goal.starts_on):
         return False
-    if goal.ends_on is not None and review_point > date.fromisoformat(goal.ends_on):
-        return False
-    return True
+    return not (goal.ends_on is not None and review_point > date.fromisoformat(goal.ends_on))
 
 
 def _goal_record_to_dict(goal: GoalRecord) -> dict[str, object]:
@@ -364,9 +351,9 @@ def _goal_capture_option_to_dict(option: GoalCaptureOption) -> dict[str, object]
     }
 
 
-def _resolve_goal_capture_llm(config: CoreServiceConfig) -> object | None:
+def _resolve_goal_capture_llm(config: CoreServiceConfig) -> JSONLLMInterface | None:
     configured = create_llm(db_path=config.db_path)
-    if configured is None or not callable(getattr(configured, "run_json_prompt", None)):
+    if not isinstance(configured, JSONLLMInterface):
         return None
     return configured
 

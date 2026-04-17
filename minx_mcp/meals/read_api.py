@@ -9,7 +9,7 @@ from minx_mcp.core.models import NutritionSnapshot
 from minx_mcp.meals.models import PantryItem
 from minx_mcp.meals.pantry import pantry_item_from_row
 from minx_mcp.preferences import get_preference
-from minx_mcp.time_utils import format_utc_timestamp, normalize_utc_timestamp
+from minx_mcp.time_utils import format_utc_timestamp
 
 
 class MealsReadAPI:
@@ -18,31 +18,21 @@ class MealsReadAPI:
 
     def get_nutrition_summary(self, date: str) -> NutritionSnapshot:
         start_utc, end_utc = _local_day_utc_bounds(date, _resolve_timezone_name(self._db))
-        candidate_rows = self._db.execute(
+        rows = self._db.execute(
             """
             SELECT id, occurred_at, meal_kind, protein_grams, calories
             FROM meals_meal_entries
+            WHERE datetime(occurred_at) >= datetime(?)
+              AND datetime(occurred_at) < datetime(?)
             ORDER BY occurred_at ASC, id ASC
-            """
+            """,
+            (start_utc, end_utc),
         ).fetchall()
-        normalized_rows = [
-            (normalize_utc_timestamp(str(row["occurred_at"])), row)
-            for row in candidate_rows
-        ]
-        rows = [
-            row
-            for normalized, row in sorted(normalized_rows, key=lambda item: (item[0], int(item[1]["id"])))
-            if start_utc <= normalized < end_utc
-        ]
         meal_kinds = {str(row["meal_kind"]) for row in rows}
         protein_values = [
-            float(row["protein_grams"])
-            for row in rows
-            if row["protein_grams"] is not None
+            float(row["protein_grams"]) for row in rows if row["protein_grams"] is not None
         ]
-        calorie_values = [
-            int(row["calories"]) for row in rows if row["calories"] is not None
-        ]
+        calorie_values = [int(row["calories"]) for row in rows if row["calories"] is not None]
         return NutritionSnapshot(
             date=date,
             meal_count=len(rows),

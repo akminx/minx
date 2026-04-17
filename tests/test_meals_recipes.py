@@ -42,4 +42,3 @@ def test_parse_recipe_frontmatter_minute_strings_and_obsidian_image(tmp_path) ->
         "chickpea pasta",
         "lentil pasta",
     }
-

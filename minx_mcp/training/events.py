@@ -29,4 +29,3 @@ TRAINING_EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "training.program_updated": TrainingProgramUpdatedPayload,
     "training.milestone_reached": TrainingMilestoneReachedPayload,
 }
-

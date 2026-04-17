@@ -16,7 +16,7 @@ def parse_dollars_to_cents(value: str) -> int:
     return int((amount * 100).to_integral_exact())
 
 
-def cents_to_dollars(value: int) -> float:
+def cents_to_display_dollars(value: int) -> float:
     return float(Decimal(value) / 100)
 
 

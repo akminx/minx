@@ -60,7 +60,7 @@ def test_goal_service_list_goals_filters_by_status(tmp_path):
 
     assert [g.title for g in active] == ["Goal A", "Goal B"]
     assert [g.title for g in archived] == ["Goal C"]
-    assert [g.title for g in all_goals] == ["Goal A", "Goal B"]
+    assert [g.title for g in all_goals] == ["Goal A", "Goal B", "Goal C"]
 
 
 def test_goal_service_list_goals_rejects_invalid_status(tmp_path):
@@ -79,24 +79,28 @@ def test_goal_service_list_goals_rejects_empty_string_status(tmp_path):
         service.list_goals(status="")
 
 
-def test_goal_service_list_goals_defaults_to_active_only(tmp_path):
+def test_goal_service_list_goals_returns_all_when_no_status(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     service = GoalService(conn)
-    active = service.create_goal(_make_valid_input(title="Goal A"))
+    service.create_goal(_make_valid_input(title="Goal A"))
     archived = service.create_goal(_make_valid_input(title="Goal B"))
     service.archive_goal(archived.id)
 
     listed = service.list_goals()
 
-    assert [goal.title for goal in listed] == ["Goal A"]
+    assert [goal.title for goal in listed] == ["Goal A", "Goal B"]
 
 
 def test_goal_service_list_active_goals_respects_date_window(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     service = GoalService(conn)
-    service.create_goal(_make_valid_input(title="March", starts_on="2026-03-01", ends_on="2026-03-31"))
+    service.create_goal(
+        _make_valid_input(title="March", starts_on="2026-03-01", ends_on="2026-03-31")
+    )
     service.create_goal(_make_valid_input(title="April", starts_on="2026-04-01", ends_on=None))
-    service.create_goal(_make_valid_input(title="Feb", starts_on="2026-02-01", ends_on="2026-02-28"))
+    service.create_goal(
+        _make_valid_input(title="Feb", starts_on="2026-02-01", ends_on="2026-02-28")
+    )
 
     active_march = service.list_active_goals("2026-03-15")
     active_april = service.list_active_goals("2026-04-15")
@@ -110,7 +114,9 @@ def test_goal_service_rejects_goal_without_any_finance_filter(tmp_path):
     service = GoalService(conn)
 
     with pytest.raises(InvalidInputError, match="at least one finance filter"):
-        service.create_goal(_make_valid_input(category_names=[], merchant_names=[], account_names=[]))
+        service.create_goal(
+            _make_valid_input(category_names=[], merchant_names=[], account_names=[])
+        )
 
 
 def test_goal_service_rejects_invalid_metric_type(tmp_path):
@@ -182,9 +188,7 @@ def test_goal_service_rejects_ends_on_before_starts_on(tmp_path):
     service = GoalService(conn)
 
     with pytest.raises(InvalidInputError, match="ends_on"):
-        service.create_goal(
-            _make_valid_input(starts_on="2026-03-10", ends_on="2026-03-09")
-        )
+        service.create_goal(_make_valid_input(starts_on="2026-03-10", ends_on="2026-03-09"))
 
 
 def test_goal_service_get_nonexistent_goal_raises(tmp_path):
@@ -245,11 +249,13 @@ def test_goal_service_rejects_blank_merchant_name(tmp_path):
     service = GoalService(conn)
 
     with pytest.raises(InvalidInputError, match="merchant_names must not contain blank entries"):
-        service.create_goal(_make_valid_input(
-            category_names=[],
-            merchant_names=[""],
-            account_names=["Checking"],
-        ))
+        service.create_goal(
+            _make_valid_input(
+                category_names=[],
+                merchant_names=[""],
+                account_names=["Checking"],
+            )
+        )
 
 
 def test_goal_service_rejects_blank_account_name(tmp_path):
@@ -257,11 +263,13 @@ def test_goal_service_rejects_blank_account_name(tmp_path):
     service = GoalService(conn)
 
     with pytest.raises(InvalidInputError, match="account_names must not contain blank entries"):
-        service.create_goal(_make_valid_input(
-            category_names=[],
-            merchant_names=[],
-            account_names=["\t"],
-        ))
+        service.create_goal(
+            _make_valid_input(
+                category_names=[],
+                merchant_names=[],
+                account_names=["\t"],
+            )
+        )
 
 
 def test_goal_service_normalizes_filter_names_on_create(tmp_path):

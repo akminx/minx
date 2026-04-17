@@ -3,14 +3,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from minx_mcp.contracts import InvalidInputError
 from minx_mcp import document_text
+from minx_mcp.contracts import InvalidInputError
 
 _PDF_DISCOVER_LINE = re.compile(
-    (
-        r"^(?P<trans>\d{2}/\d{2}/\d{2})\s+\d{2}/\d{2}/\d{2}\s+"
-        r"(?P<desc>.+?)\s+\$\s*(?P<amount>\d+\.\d{2})\s+(?P<category>.+)$"
-    )
+    r"^(?P<trans>\d{2}/\d{2}/\d{2})\s+\d{2}/\d{2}/\d{2}\s+"
+    r"(?P<desc>.+?)\s+\$\s*(?P<amount>\d+\.\d{2})\s+(?P<category>.+)$"
 )
 _PDF_DCU_LINE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<desc>.+?)\s+(?P<amount>-?\d+\.\d{2})$"
@@ -45,9 +43,7 @@ def _detect_from_pdf_text(path: Path) -> str:
     try:
         text = document_text.extract_text(path)
     except Exception as exc:  # pragma: no cover - exercised through failure paths
-        raise InvalidInputError(
-            f"Could not inspect PDF contents for {path.name}: {exc}"
-        ) from exc
+        raise InvalidInputError(f"Could not inspect PDF contents for {path.name}: {exc}") from exc
 
     for line in _nonempty_lines(text):
         if _PDF_DISCOVER_LINE.match(line):
@@ -56,9 +52,7 @@ def _detect_from_pdf_text(path: Path) -> str:
             return "dcu_pdf"
 
     preview = _preview_text(text)
-    raise InvalidInputError(
-        f"Could not detect finance source for {path}: sampled text {preview}"
-    )
+    raise InvalidInputError(f"Could not detect finance source for {path}: sampled text {preview}")
 
 
 def _detect_from_tabular_text(path: Path) -> str:
@@ -103,7 +97,7 @@ def _detect_from_tabular_text(path: Path) -> str:
 
 
 def _read_text(path: Path) -> str:
-    return path.read_text(errors="replace")
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def _nonempty_lines(text: str) -> list[str]:

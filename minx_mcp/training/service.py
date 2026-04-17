@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 import json
-import threading
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from sqlite3 import Connection, Row
-from typing import Any, Self
+from typing import Any
 from zoneinfo import ZoneInfo
 
+from minx_mcp.base_service import BaseService
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import emit_event
-from minx_mcp.db import get_connection
 from minx_mcp.preferences import get_preference
-from minx_mcp.time_utils import format_utc_timestamp, normalize_utc_timestamp, utc_now_isoformat
+from minx_mcp.time_utils import format_utc_timestamp, utc_now_isoformat
 from minx_mcp.training.models import (
     TrainingExercise,
     TrainingProgram,
@@ -26,31 +24,7 @@ from minx_mcp.training.progression import adherence_signal_for_window
 EVENT_SOURCE = "training.service"
 
 
-class TrainingService:
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path
-        self._local = threading.local()
-
-    @property
-    def conn(self) -> Connection:
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
-            conn = get_connection(self._db_path)
-            self._local.conn = conn
-        return conn
-
-    def close(self) -> None:
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            conn.close()
-            self._local.conn = None
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.close()
-
+class TrainingService(BaseService):
     def upsert_exercise(
         self,
         *,
@@ -69,7 +43,6 @@ class TrainingService:
             """,
             (normalized,),
         ).fetchone()
-        canonical = normalized
 
         if existing is None:
             resolved_is_compound = bool(is_compound) if is_compound is not None else False
@@ -80,7 +53,7 @@ class TrainingService:
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    canonical,
+                    display_name.strip(),
                     normalized,
                     muscle_group,
                     int(resolved_is_compound),
@@ -92,9 +65,7 @@ class TrainingService:
         else:
             exercise_id = int(existing["id"])
             resolved_is_compound = (
-                bool(int(existing["is_compound"]))
-                if is_compound is None
-                else bool(is_compound)
+                bool(int(existing["is_compound"])) if is_compound is None else bool(is_compound)
             )
             self.conn.execute(
                 """
@@ -108,7 +79,7 @@ class TrainingService:
                 WHERE id = ?
                 """,
                 (
-                    canonical,
+                    display_name.strip(),
                     muscle_group,
                     int(resolved_is_compound),
                     notes,
@@ -187,7 +158,9 @@ class TrainingService:
                     (name.strip(), description, source, program_id),
                 )
 
-            self.conn.execute("DELETE FROM training_program_days WHERE program_id = ?", (program_id,))
+            self.conn.execute(
+                "DELETE FROM training_program_days WHERE program_id = ?", (program_id,)
+            )
 
             normalized_days = _normalize_program_days(days)
             for day, day_index in normalized_days:
@@ -213,7 +186,9 @@ class TrainingService:
                         display_name = self.get_exercise(exercise_id).display_name
                     else:
                         display_name = _normalize_name(
-                            _coerce_required_string(exercise.get("display_name"), field_name="display_name")
+                            _coerce_required_string(
+                                exercise.get("display_name"), field_name="display_name"
+                            )
                         )
                     sort_order = _coerce_non_negative_int(
                         exercise.get("sort_order", index),
@@ -248,7 +223,7 @@ class TrainingService:
             _emit_required_event(
                 conn=self.conn,
                 event_type="training.program_updated",
-                occurred_at=_utc_now_sql(),
+                occurred_at=utc_now_isoformat(),
                 entity_ref=f"program-{program.id}",
                 payload={
                     "program_id": program.id,
@@ -320,7 +295,6 @@ class TrainingService:
         savepoint = "training_activate_program"
         self.conn.execute(f"SAVEPOINT {savepoint}")
         try:
-            # Validate existence before mutating global active state.
             self.get_program(program_id)
             self.conn.execute(
                 """
@@ -342,7 +316,7 @@ class TrainingService:
             _emit_required_event(
                 conn=self.conn,
                 event_type="training.program_updated",
-                occurred_at=_utc_now_sql(),
+                occurred_at=utc_now_isoformat(),
                 entity_ref=f"program-{program.id}",
                 payload={
                     "program_id": program.id,
@@ -397,7 +371,9 @@ class TrainingService:
                     )
                 reps = _coerce_optional_int(row.get("reps"))
                 weight_kg = _coerce_optional_float(row.get("weight_kg"))
-                set_index = _coerce_non_negative_int(row.get("set_index", index), field_name="set_index")
+                set_index = _coerce_non_negative_int(
+                    row.get("set_index", index), field_name="set_index"
+                )
 
                 if reps is not None and reps > 0 and weight_kg is not None and weight_kg > 0:
                     total_volume += float(reps) * weight_kg
@@ -482,17 +458,22 @@ class TrainingService:
     ) -> list[TrainingSession]:
         timezone_name = _resolve_timezone_name(self.conn)
         start_utc = (
-            _local_day_utc_bounds(start_date, timezone_name)[0]
-            if start_date is not None
-            else None
+            _local_day_utc_bounds(start_date, timezone_name)[0] if start_date is not None else None
         )
         end_utc = (
-            _local_day_utc_bounds(end_date, timezone_name)[1]
-            if end_date is not None
-            else None
+            _local_day_utc_bounds(end_date, timezone_name)[1] if end_date is not None else None
         )
+        where_clauses: list[str] = []
+        params: list[object] = []
+        if start_utc is not None:
+            where_clauses.append("datetime(s.occurred_at) >= datetime(?)")
+            params.append(start_utc)
+        if end_utc is not None:
+            where_clauses.append("datetime(s.occurred_at) < datetime(?)")
+            params.append(end_utc)
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
         rows = self.conn.execute(
-            """
+            f"""
             SELECT
                 s.id,
                 s.occurred_at,
@@ -503,21 +484,14 @@ class TrainingService:
                 COALESCE(SUM(COALESCE(ss.reps, 0) * COALESCE(ss.weight_kg, 0)), 0.0) AS total_volume_kg
             FROM training_sessions s
             LEFT JOIN training_session_sets ss ON ss.session_id = s.id
+            {where_sql}
             GROUP BY s.id
             ORDER BY s.occurred_at ASC, s.id ASC
-            """
+            LIMIT ?
+            """,
+            [*params, limit],
         ).fetchall()
-        normalized = [
-            (normalize_utc_timestamp(str(row["occurred_at"])), row)
-            for row in rows
-        ]
-        filtered = [
-            row
-            for occurred_at, row in sorted(normalized, key=lambda item: (item[0], int(item[1]["id"])))
-            if (start_utc is None or occurred_at >= start_utc)
-            and (end_utc is None or occurred_at < end_utc)
-        ]
-        return [_session_from_row(row) for row in filtered[:limit]]
+        return [_session_from_row(row) for row in rows]
 
     def get_progress_summary(
         self,
@@ -530,7 +504,9 @@ class TrainingService:
         review_date = as_of or date.today().isoformat()
         timezone_name = _resolve_timezone_name(self.conn)
         end_utc = _local_day_utc_bounds(review_date, timezone_name)[1]
-        start_date = (date.fromisoformat(review_date) - timedelta(days=lookback_days - 1)).isoformat()
+        start_date = (
+            date.fromisoformat(review_date) - timedelta(days=lookback_days - 1)
+        ).isoformat()
         start_utc = _local_day_utc_bounds(start_date, timezone_name)[0]
         rows = self.conn.execute(
             """
@@ -541,19 +517,14 @@ class TrainingService:
                 COALESCE(SUM(COALESCE(ss.reps, 0) * COALESCE(ss.weight_kg, 0)), 0.0) AS total_volume_kg
             FROM training_sessions s
             LEFT JOIN training_session_sets ss ON ss.session_id = s.id
+            WHERE datetime(s.occurred_at) >= datetime(?)
+              AND datetime(s.occurred_at) < datetime(?)
             GROUP BY s.id
             ORDER BY s.occurred_at ASC, s.id ASC
-            """
+            """,
+            (start_utc, end_utc),
         ).fetchall()
-        normalized = [
-            (normalize_utc_timestamp(str(row["occurred_at"])), row)
-            for row in rows
-        ]
-        filtered = [
-            row
-            for occurred_at, row in sorted(normalized, key=lambda item: (item[0], int(item[1]["id"])))
-            if start_utc <= occurred_at < end_utc
-        ]
+        filtered = list(rows)
         sessions_logged = len(filtered)
         return TrainingProgressSummary(
             date=review_date,
@@ -665,19 +636,25 @@ def _coerce_nullable_string(value: object) -> str | None:
     if isinstance(value, str):
         stripped = value.strip()
         return stripped if stripped else None
-    return str(value)
+    raise InvalidInputError(f"expected a string value, got {type(value).__name__!r}")
 
 
 def _coerce_optional_int(value: Any) -> int | None:
     if value is None:
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise InvalidInputError(f"expected an integer value, got {value!r}") from exc
 
 
 def _coerce_optional_float(value: Any) -> float | None:
     if value is None:
         return None
-    return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise InvalidInputError(f"expected a numeric value, got {value!r}") from exc
 
 
 def _coerce_positive_int(value: Any, *, field_name: str) -> int:
@@ -700,11 +677,9 @@ def _coerce_non_negative_int(value: Any, *, field_name: str) -> int:
     return parsed
 
 
-def _utc_now_sql() -> str:
-    return utc_now_isoformat()
-
-
-def _normalize_program_days(days: list[dict[str, object]] | None) -> list[tuple[dict[str, object], int]]:
+def _normalize_program_days(
+    days: list[dict[str, object]] | None,
+) -> list[tuple[dict[str, object], int]]:
     normalized_days = days or []
     seen_day_indexes: set[int] = set()
     ordered_days: list[tuple[dict[str, object], int]] = []

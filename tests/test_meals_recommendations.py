@@ -7,7 +7,6 @@ from minx_mcp.meals.service import MealsService
 def test_classify_make_with_substitutions() -> None:
     result = classify_recipe(
         required_names=["pasta", "chickpea"],
-        optional_names=["parmesan"],
         pantry_names={"pasta", "white bean"},
         substitution_map={"chickpea": ["white bean"]},
     )
@@ -21,7 +20,9 @@ def test_recommend_recipes_default_filters_needs_shopping(db_conn, meals_seeder)
     pasta = meals_seeder.recipe(vault_path="Recipes/Pasta.md", title="Simple Pasta")
     meals_seeder.recipe_ingredient(recipe_id=pasta, display_text="pasta", normalized_name="pasta")
     salmon = meals_seeder.recipe(vault_path="Recipes/Salmon.md", title="Grilled Salmon")
-    meals_seeder.recipe_ingredient(recipe_id=salmon, display_text="salmon fillet", normalized_name="salmon")
+    meals_seeder.recipe_ingredient(
+        recipe_id=salmon, display_text="salmon fillet", normalized_name="salmon"
+    )
     meals_seeder.pantry_item(display_name="Pasta", quantity=500, unit="g")
 
     result = recommend_recipes(db_conn)
@@ -32,7 +33,6 @@ def test_recommend_recipes_default_filters_needs_shopping(db_conn, meals_seeder)
         "Simple Pasta",
         "Grilled Salmon",
     ]
-    assert expanded.shopping_lists_generated == []
 
 
 def test_recommend_recipes_uses_nutrition_targets_for_ranking_and_filtering(db_path) -> None:
@@ -43,7 +43,13 @@ def test_recommend_recipes_uses_nutrition_targets_for_ranking_and_filtering(db_p
                 vault_path, title, normalized_title, tags_json, nutrition_summary_json, content_hash
             ) VALUES (?, ?, ?, '[]', ?, ?)
             """,
-            ("Recipes/Light Bowl.md", "Light Bowl", "light bowl", '{"calories": 520, "protein_grams": 48}', "h1"),
+            (
+                "Recipes/Light Bowl.md",
+                "Light Bowl",
+                "light bowl",
+                '{"calories": 520, "protein_grams": 48}',
+                "h1",
+            ),
         ).lastrowid
         svc.conn.execute(
             """
@@ -59,7 +65,13 @@ def test_recommend_recipes_uses_nutrition_targets_for_ranking_and_filtering(db_p
                 vault_path, title, normalized_title, tags_json, nutrition_summary_json, content_hash
             ) VALUES (?, ?, ?, '[]', ?, ?)
             """,
-            ("Recipes/Heavy Pasta.md", "Heavy Pasta", "heavy pasta", '{"calories": 920, "protein_grams": 26}', "h2"),
+            (
+                "Recipes/Heavy Pasta.md",
+                "Heavy Pasta",
+                "heavy pasta",
+                '{"calories": 920, "protein_grams": 26}',
+                "h2",
+            ),
         ).lastrowid
         svc.conn.execute(
             """

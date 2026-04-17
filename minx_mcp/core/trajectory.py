@@ -5,9 +5,9 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from minx_mcp.contracts import InvalidInputError
-from minx_mcp.core.goal_progress import _period_window, _progress_for_goal
+from minx_mcp.core.goal_progress import _period_window, _progress_for_goal, get_metric_value
 from minx_mcp.core.goals import GoalService
-from minx_mcp.db import get_connection
+from minx_mcp.db import scoped_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
 
 
@@ -26,8 +26,7 @@ def get_goal_trajectory(
     except ValueError as exc:
         raise InvalidInputError("as_of_date must be a valid ISO date") from exc
 
-    conn = get_connection(Path(db_path))
-    try:
+    with scoped_connection(Path(db_path)) as conn:
         goal = GoalService(conn).get_goal(goal_id)
         finance_api = FinanceReadAPI(conn)
         periods_data = _build_completed_periods(goal, as_of, periods)
@@ -39,7 +38,7 @@ def get_goal_trajectory(
                 continue
             if goal.ends_on is not None and period_end > date.fromisoformat(goal.ends_on):
                 continue
-            actual = _read_value(
+            actual = get_metric_value(
                 finance_api,
                 goal.metric_type,
                 period_start.isoformat(),
@@ -66,8 +65,6 @@ def get_goal_trajectory(
             )
             status_counter[progress.status] += 1
             scores.append(_trend_score(goal.metric_type, actual))
-    finally:
-        conn.close()
 
     return {
         "goal": {
@@ -123,7 +120,9 @@ def _latest_completed_end(period: str, as_of: date) -> date:
         return as_of - timedelta(days=days_since_sunday)
     if period == "monthly":
         first_of_month = as_of.replace(day=1)
-        current_month_end = (first_of_month.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        current_month_end = (first_of_month.replace(day=28) + timedelta(days=4)).replace(
+            day=1
+        ) - timedelta(days=1)
         if as_of == current_month_end:
             return as_of
         return first_of_month - timedelta(days=1)
@@ -132,32 +131,6 @@ def _latest_completed_end(period: str, as_of: date) -> date:
         return as_of - timedelta(days=days_since_sunday)
     start, end = _period_window(period, as_of.isoformat())
     return date.fromisoformat(end)
-
-
-def _read_value(
-    finance_api: FinanceReadAPI,
-    metric_type: str,
-    start_date: str,
-    end_date: str,
-    category_names: list[str],
-    merchant_names: list[str],
-    account_names: list[str],
-) -> int:
-    if metric_type.startswith("sum_"):
-        return finance_api.get_filtered_spending_total(
-            start_date,
-            end_date,
-            category_names=category_names or None,
-            merchant_names=merchant_names or None,
-            account_names=account_names or None,
-        )
-    return finance_api.get_filtered_transaction_count(
-        start_date,
-        end_date,
-        category_names=category_names or None,
-        merchant_names=merchant_names or None,
-        account_names=account_names or None,
-    )
 
 
 def _trend_score(metric_type: str, actual: int) -> float:

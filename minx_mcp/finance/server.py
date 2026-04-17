@@ -1,17 +1,36 @@
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
-from typing import Any, Protocol, Self
+from typing import Protocol, Self
 
 from mcp.server.fastmcp import FastMCP
 
-from minx_mcp.contracts import InvalidInputError, NotFoundError, wrap_async_tool_call, wrap_tool_call
+from minx_mcp.contracts import (
+    InvalidInputError,
+    NotFoundError,
+    ToolResponse,
+    wrap_async_tool_call,
+    wrap_tool_call,
+)
 from minx_mcp.core.interpretation.finance_query import interpret_finance_query
 from minx_mcp.core.llm import create_llm
-from minx_mcp.money import cents_to_dollars
+from minx_mcp.core.models import JSONLLMInterface
 from minx_mcp.finance.importers import SUPPORTED_SOURCE_KINDS
-
+from minx_mcp.money import cents_to_display_dollars
+from minx_mcp.validation import (
+    require_non_empty as _require_non_empty,
+)
+from minx_mcp.validation import (
+    require_payload_object,
+    require_str,
+    resolve_date_or_today,
+)
+from minx_mcp.validation import (
+    validate_date_window as _validate_date_window,
+)
+from minx_mcp.validation import (
+    validate_optional_date_range as _validate_date_range,
+)
 
 SAFE_TOOLS = [
     "safe_finance_summary",
@@ -100,15 +119,18 @@ class FinanceServiceLike(Protocol):
     ) -> int: ...
 
 
-def create_finance_server(service: FinanceServiceLike, llm: object | None = None) -> FastMCP:
+def create_finance_server(
+    service: FinanceServiceLike,
+    llm: JSONLLMInterface | None = None,
+) -> FastMCP:
     mcp = FastMCP("minx-finance", stateless_http=True, json_response=True)
 
     @mcp.tool(name="safe_finance_summary")
-    def safe_finance_summary() -> dict[str, object]:
+    def safe_finance_summary() -> ToolResponse:
         return wrap_tool_call(lambda: _safe_finance_summary(service))
 
     @mcp.tool(name="safe_finance_accounts")
-    def safe_finance_accounts() -> dict[str, object]:
+    def safe_finance_accounts() -> ToolResponse:
         return wrap_tool_call(lambda: _safe_finance_accounts(service))
 
     @mcp.tool(name="finance_import")
@@ -116,7 +138,7 @@ def create_finance_server(service: FinanceServiceLike, llm: object | None = None
         source_ref: str,
         account_name: str,
         source_kind: str | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: _finance_import(service, source_ref, account_name, source_kind)
         )
@@ -126,47 +148,45 @@ def create_finance_server(service: FinanceServiceLike, llm: object | None = None
         source_ref: str,
         account_name: str,
         source_kind: str | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: _finance_import_preview(service, source_ref, account_name, source_kind)
         )
 
     @mcp.tool(name="finance_categorize")
-    def finance_categorize(transaction_ids: list[int], category_name: str) -> dict[str, object]:
-        return wrap_tool_call(
-            lambda: _finance_categorize(service, transaction_ids, category_name)
-        )
+    def finance_categorize(transaction_ids: list[int], category_name: str) -> ToolResponse:
+        return wrap_tool_call(lambda: _finance_categorize(service, transaction_ids, category_name))
 
     @mcp.tool(name="finance_add_category_rule")
     def finance_add_category_rule(
         category_name: str,
         match_kind: str,
         pattern: str,
-    ) -> dict[str, str]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: _finance_add_category_rule(service, category_name, match_kind, pattern)
         )
 
     @mcp.tool(name="finance_anomalies")
-    def finance_anomalies() -> dict[str, object]:
+    def finance_anomalies() -> ToolResponse:
         return wrap_tool_call(lambda: _finance_anomalies(service))
 
     @mcp.tool(name="finance_monitoring")
-    def finance_monitoring(period_start: str, period_end: str) -> dict[str, object]:
+    def finance_monitoring(period_start: str, period_end: str) -> ToolResponse:
         return wrap_tool_call(lambda: _finance_monitoring(service, period_start, period_end))
 
     @mcp.tool(name="finance_job_status")
-    def finance_job_status(job_id: str) -> dict[str, object]:
+    def finance_job_status(job_id: str) -> ToolResponse:
         return wrap_tool_call(lambda: _finance_job_status(service, job_id))
 
     @mcp.tool(name="finance_generate_weekly_report")
-    def finance_generate_weekly_report(period_start: str, period_end: str) -> dict[str, object]:
+    def finance_generate_weekly_report(period_start: str, period_end: str) -> ToolResponse:
         return wrap_tool_call(
             lambda: _finance_generate_weekly_report(service, period_start, period_end)
         )
 
     @mcp.tool(name="finance_generate_monthly_report")
-    def finance_generate_monthly_report(period_start: str, period_end: str) -> dict[str, object]:
+    def finance_generate_monthly_report(period_start: str, period_end: str) -> ToolResponse:
         return wrap_tool_call(
             lambda: _finance_generate_monthly_report(service, period_start, period_end)
         )
@@ -182,7 +202,7 @@ def create_finance_server(service: FinanceServiceLike, llm: object | None = None
         merchant: str | None = None,
         account_name: str | None = None,
         description_contains: str | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return wrap_tool_call(
             lambda: _sensitive_finance_query(
                 service,
@@ -197,6 +217,12 @@ def create_finance_server(service: FinanceServiceLike, llm: object | None = None
             )
         )
 
+    @mcp.resource("health://status")
+    def health_status() -> str:
+        import json
+
+        return json.dumps({"status": "ok", "server": "minx-finance"})
+
     @mcp.tool(name="finance_query")
     async def finance_query(
         message: str | None = None,
@@ -205,9 +231,9 @@ def create_finance_server(service: FinanceServiceLike, llm: object | None = None
         limit: int = 50,
         *,
         intent: str | None = None,
-        filters: dict[str, Any] | None = None,
+        filters: dict[str, object] | None = None,
         natural_query: str | None = None,
-    ) -> dict[str, object]:
+    ) -> ToolResponse:
         return await wrap_async_tool_call(
             lambda: _finance_query(
                 service,
@@ -380,13 +406,13 @@ async def _finance_query(
     service: FinanceServiceLike,
     *,
     intent: str | None,
-    filters: dict[str, Any] | None,
+    filters: dict[str, object] | None,
     natural_query: str | None,
     message: str | None,
     review_date: str | None,
     session_ref: str | None,
     limit: int,
-    llm: object | None,
+    llm: JSONLLMInterface | None,
 ) -> dict[str, object]:
     if limit < 1 or limit > MAX_SENSITIVE_QUERY_LIMIT:
         raise InvalidInputError(f"limit must be between 1 and {MAX_SENSITIVE_QUERY_LIMIT}")
@@ -414,8 +440,7 @@ async def _finance_query(
 
     assert effective_message is not None
     _require_non_empty("message" if message is not None else "natural_query", effective_message)
-    effective_review_date = review_date or date.today().isoformat()
-    _validate_iso_date(effective_review_date, field_name="review_date")
+    effective_review_date = resolve_date_or_today(review_date, field_name="review_date")
     resolved_llm = _resolve_finance_query_llm(service, llm)
 
     # Interpret with LLM outside the connection context — the LLM call
@@ -458,7 +483,7 @@ async def _finance_query(
 
 def _validate_structured_finance_filters(
     service: FinanceServiceLike,
-    filters: dict[str, Any] | None,
+    filters: dict[str, object] | None,
 ) -> dict[str, str]:
     allowed_keys = {
         "start_date",
@@ -470,16 +495,14 @@ def _validate_structured_finance_filters(
     }
     if filters is None:
         return {}
-    if not isinstance(filters, dict):
-        raise InvalidInputError("filters must be an object")
+    filters = require_payload_object(filters, field_name="filters")
     unknown_keys = set(filters) - allowed_keys
     if unknown_keys:
         unknown_list = ", ".join(sorted(unknown_keys))
         raise InvalidInputError(f"Unknown finance_query filter keys: {unknown_list}")
     normalized: dict[str, str] = {}
-    for key, value in filters.items():
-        if not isinstance(value, str):
-            raise InvalidInputError(f"{key} must be a string")
+    for key in filters:
+        value = require_str(filters, key)
         if not value.strip():
             raise InvalidInputError(f"{key} must not be blank")
         normalized[key] = value
@@ -544,7 +567,7 @@ def _execute_finance_query_plan(
             "intent": intent,
             "filters": filters,
             "confidence": confidence,
-            "total_spent": cents_to_dollars(total_cents),
+            "total_spent": cents_to_display_dollars(total_cents),
         }
     if intent == "count_transactions":
         total_count = service.get_filtered_transaction_count(
@@ -561,62 +584,25 @@ def _execute_finance_query_plan(
     raise InvalidInputError(f"Unsupported finance query intent: {intent}")
 
 
-def _resolve_finance_query_llm(service: FinanceServiceLike, llm: object | None) -> object:
+def _resolve_finance_query_llm(
+    service: FinanceServiceLike,
+    llm: JSONLLMInterface | None,
+) -> JSONLLMInterface:
     if llm is not None:
-        if not callable(getattr(llm, "run_json_prompt", None)):
+        if not isinstance(llm, JSONLLMInterface):
             raise InvalidInputError("finance_query requires a configured JSON-capable LLM")
         return llm
 
     configured = create_llm(db_path=service.db_path)
-    if configured is None or not callable(getattr(configured, "run_json_prompt", None)):
+    if not isinstance(configured, JSONLLMInterface):
         raise InvalidInputError("finance_query requires a configured JSON-capable LLM")
     return configured
-
-
-def _require_non_empty(name: str, value: str) -> None:
-    if not value.strip():
-        raise InvalidInputError(f"{name} must not be empty")
 
 
 def _validate_source_ref(source_ref: str) -> None:
     path = Path(source_ref)
     if not path.is_file():
         raise InvalidInputError("source_ref must point to an existing file")
-
-
-def _validate_iso_date(value: str, *, field_name: str) -> None:
-    try:
-        date.fromisoformat(value)
-    except ValueError as exc:
-        raise InvalidInputError(f"{field_name} must be a valid ISO date") from exc
-
-
-def _validate_date_window(period_start: str, period_end: str) -> None:
-    try:
-        start = date.fromisoformat(period_start)
-        end = date.fromisoformat(period_end)
-    except ValueError as exc:
-        raise InvalidInputError("Invalid ISO date") from exc
-    if start > end:
-        raise InvalidInputError("period_start must be on or before period_end")
-
-
-def _validate_date_range(start_date: str | None, end_date: str | None) -> None:
-    start = None
-    end = None
-    if start_date is not None:
-        try:
-            start = date.fromisoformat(start_date)
-        except ValueError as exc:
-            raise InvalidInputError("Invalid ISO date") from exc
-    if end_date is not None:
-        try:
-            end = date.fromisoformat(end_date)
-        except ValueError as exc:
-            raise InvalidInputError("Invalid ISO date") from exc
-    if start is not None and end is not None:
-        if start > end:
-            raise InvalidInputError("start_date must be on or before end_date")
 
 
 def _validate_optional_text_filters(

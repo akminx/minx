@@ -15,8 +15,8 @@ from minx_mcp.core.models import (
     OpenLoopsSnapshot,
     ReadModels,
     SpendingSnapshot,
-    TrainingReadInterface,
     TimelineEntry,
+    TrainingReadInterface,
 )
 from minx_mcp.finance.read_api import FinanceReadAPI
 from minx_mcp.money import format_cents
@@ -79,12 +79,8 @@ def build_spending_snapshot(
     return SpendingSnapshot(
         date=review_date,
         total_spent_cents=summary.total_spent_cents,
-        by_category={
-            item.category_name: item.total_spent_cents for item in summary.by_category
-        },
-        top_merchants=[
-            (item.merchant, item.total_spent_cents) for item in summary.top_merchants
-        ],
+        by_category={item.category_name: item.total_spent_cents for item in summary.by_category},
+        top_merchants=[(item.merchant, item.total_spent_cents) for item in summary.top_merchants],
         vs_prior_week_pct=vs_prior_week_pct,
         uncategorized_count=uncategorized.transaction_count,
         uncategorized_total_cents=uncategorized.total_spent_cents,
@@ -159,10 +155,16 @@ def build_read_models(
     return ReadModels(
         timeline=build_daily_timeline(conn, review_date),
         spending=build_spending_snapshot(
-            conn, review_date, finance_api=finance_api, uncategorized=uncategorized,
+            conn,
+            review_date,
+            finance_api=finance_api,
+            uncategorized=uncategorized,
         ),
         open_loops=build_open_loops_snapshot(
-            conn, review_date, finance_api=finance_api, uncategorized=uncategorized,
+            conn,
+            review_date,
+            finance_api=finance_api,
+            uncategorized=uncategorized,
         ),
         goal_progress=build_goal_progress(review_date, goals, finance_api),
         nutrition=meals_api.get_nutrition_summary(review_date),
@@ -206,8 +208,7 @@ def _summarize_event(event: Event) -> str:
         )
     if event.event_type == "finance.anomalies_detected":
         return (
-            f"Detected {payload['count']} anomalies totaling "
-            f"{format_cents(payload['total_cents'])}"
+            f"Detected {payload['count']} anomalies totaling {format_cents(payload['total_cents'])}"
         )
     if event.event_type == "meal.logged":
         calories = payload.get("calories")

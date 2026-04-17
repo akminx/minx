@@ -92,7 +92,9 @@ async def test_build_daily_snapshot_returns_persistence_warning_when_detector_wr
 
 
 @pytest.mark.asyncio
-async def test_build_daily_snapshot_refreshes_existing_detector_rows_on_rerun(tmp_path, monkeypatch):
+async def test_build_daily_snapshot_refreshes_existing_detector_rows_on_rerun(
+    tmp_path, monkeypatch
+):
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
 
@@ -172,14 +174,14 @@ def _seed_goal(conn) -> None:
     )
 
 
-def _seed_transaction(conn, *, posted_at: str, merchant: str, amount_cents: int, category_name: str) -> None:
+def _seed_transaction(
+    conn, *, posted_at: str, merchant: str, amount_cents: int, category_name: str
+) -> None:
     category_id = conn.execute(
         "SELECT id FROM finance_categories WHERE name = ?",
         (category_name,),
     ).fetchone()["id"]
-    account_id = conn.execute(
-        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
-    ).fetchone()["id"]
+    account_id = conn.execute("SELECT id FROM finance_accounts WHERE name = 'DCU'").fetchone()["id"]
     conn.execute(
         """
         INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)

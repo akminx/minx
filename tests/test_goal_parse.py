@@ -1,54 +1,12 @@
 from __future__ import annotations
 
-import asyncio
-import inspect
-
 import pytest
 
-from minx_mcp.core.models import GoalCaptureResult, GoalRecord
+from minx_mcp.core.models import GoalCaptureResult
 from minx_mcp.core.server import create_core_server
 from minx_mcp.db import get_connection
-
-
-class _StubFinanceRead:
-    def list_goal_category_names(self) -> list[str]:
-        return ["Cafe", "Dining Out", "Groceries"]
-
-    def list_spending_merchant_names(self) -> list[str]:
-        return ["Amazon", "Cafe", "Netflix"]
-
-    def list_account_names(self) -> list[str]:
-        return ["DCU"]
-
-
-def _call_tool_sync(fn, *args, **kwargs):
-    result = fn(*args, **kwargs)
-    if inspect.isawaitable(result):
-        return asyncio.run(result)
-    return result
-
-
-def _goal_record(**overrides: object) -> GoalRecord:
-    defaults = dict(
-        id=7,
-        goal_type="spending_cap",
-        title="Dining Out Spending Cap",
-        status="active",
-        metric_type="sum_below",
-        target_value=25_000,
-        period="monthly",
-        domain="finance",
-        category_names=["Dining Out"],
-        merchant_names=[],
-        account_names=[],
-        starts_on="2026-03-01",
-        ends_on=None,
-        notes=None,
-        created_at="2026-03-01 00:00:00",
-        updated_at="2026-03-01 00:00:00",
-    )
-    defaults.update(overrides)
-    return GoalRecord(**defaults)
+from tests.helpers import MinxTestConfig, get_tool
+from tests.helpers import call_tool_sync as _call_tool_sync
 
 
 def test_goal_capture_result_requires_top_level_goal_id_for_updates() -> None:
@@ -65,7 +23,7 @@ def test_goal_parse_tool_supports_structured_create_input(tmp_path) -> None:
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+    goal_parse = get_tool(server, "goal_parse").fn
 
     result = _call_tool_sync(
         goal_parse,
@@ -98,7 +56,7 @@ def test_goal_parse_tool_rejects_noncanonical_structured_create_input(tmp_path) 
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+    goal_parse = get_tool(server, "goal_parse").fn
 
     result = _call_tool_sync(
         goal_parse,
@@ -144,7 +102,7 @@ def test_goal_parse_tool_supports_structured_update_input(tmp_path) -> None:
     conn.commit()
     conn.close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+    goal_parse = get_tool(server, "goal_parse").fn
 
     result = _call_tool_sync(
         goal_parse,
@@ -165,7 +123,7 @@ def test_goal_parse_tool_rejects_non_object_structured_input(tmp_path) -> None:
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+    goal_parse = get_tool(server, "goal_parse").fn
 
     result = _call_tool_sync(
         goal_parse,
@@ -181,7 +139,7 @@ def test_goal_parse_tool_rejects_structured_create_with_invalid_value_types(tmp_
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+    goal_parse = get_tool(server, "goal_parse").fn
 
     result = _call_tool_sync(
         goal_parse,
@@ -227,7 +185,7 @@ def test_goal_parse_tool_rejects_structured_update_with_invalid_value_types(tmp_
     conn.commit()
     conn.close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+    goal_parse = get_tool(server, "goal_parse").fn
 
     result = _call_tool_sync(
         goal_parse,
@@ -243,11 +201,13 @@ def test_goal_parse_tool_rejects_structured_update_with_invalid_value_types(tmp_
     assert result["error_code"] == "INVALID_INPUT"
 
 
-def test_goal_parse_tool_returns_no_match_for_unsupported_structured_create_family(tmp_path) -> None:
+def test_goal_parse_tool_returns_no_match_for_unsupported_structured_create_family(
+    tmp_path,
+) -> None:
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+    goal_parse = get_tool(server, "goal_parse").fn
 
     result = _call_tool_sync(
         goal_parse,
@@ -292,7 +252,7 @@ def test_goal_parse_tool_accepts_merchant_alias_that_normalizes_to_canonical(tmp
     conn.commit()
     conn.close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+    goal_parse = get_tool(server, "goal_parse").fn
 
     result = _call_tool_sync(
         goal_parse,
@@ -337,7 +297,7 @@ def test_goal_parse_tool_rejects_completely_unknown_merchant(tmp_path) -> None:
     conn.commit()
     conn.close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+    goal_parse = get_tool(server, "goal_parse").fn
 
     result = _call_tool_sync(
         goal_parse,
@@ -383,7 +343,7 @@ def test_goal_parse_tool_accepts_exact_canonical_merchant_name(tmp_path) -> None
     conn.commit()
     conn.close()
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    goal_parse = server._tool_manager.get_tool("goal_parse").fn
+    goal_parse = get_tool(server, "goal_parse").fn
 
     result = _call_tool_sync(
         goal_parse,
@@ -411,7 +371,4 @@ def test_goal_parse_tool_accepts_exact_canonical_merchant_name(tmp_path) -> None
     assert result["data"]["result_type"] == "create"
 
 
-class _TestConfig:
-    def __init__(self, db_path, vault_path) -> None:
-        self.db_path = db_path
-        self.vault_path = vault_path
+_TestConfig = MinxTestConfig

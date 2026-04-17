@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from minx_mcp.core.models import TrainingSnapshot
 from minx_mcp.preferences import get_preference
-from minx_mcp.time_utils import format_utc_timestamp, normalize_utc_timestamp
+from minx_mcp.time_utils import format_utc_timestamp
 from minx_mcp.training.progression import adherence_signal_for_window
 
 
@@ -17,13 +17,11 @@ class TrainingReadAPI:
 
     def get_training_summary(self, date: str) -> TrainingSnapshot:
         lookback_days = 7
-        start_date = (
-            date_cls.fromisoformat(date) - timedelta(days=lookback_days - 1)
-        ).isoformat()
+        start_date = (date_cls.fromisoformat(date) - timedelta(days=lookback_days - 1)).isoformat()
         timezone_name = _resolve_timezone_name(self._db)
         start_utc, _ = _local_day_utc_bounds(start_date, timezone_name)
         _, end_utc = _local_day_utc_bounds(date, timezone_name)
-        rows = self._db.execute(
+        windowed_rows = self._db.execute(
             """
             SELECT
                 s.id,
@@ -32,19 +30,13 @@ class TrainingReadAPI:
                 COALESCE(SUM(COALESCE(ss.reps, 0) * COALESCE(ss.weight_kg, 0)), 0.0) AS total_volume_kg
             FROM training_sessions s
             LEFT JOIN training_session_sets ss ON ss.session_id = s.id
+            WHERE datetime(s.occurred_at) >= datetime(?)
+              AND datetime(s.occurred_at) < datetime(?)
             GROUP BY s.id
             ORDER BY s.occurred_at ASC, s.id ASC
-            """
+            """,
+            (start_utc, end_utc),
         ).fetchall()
-        normalized_rows = [
-            (normalize_utc_timestamp(str(row["occurred_at"])), row)
-            for row in rows
-        ]
-        windowed_rows = [
-            row
-            for occurred_at, row in sorted(normalized_rows, key=lambda item: (item[0], int(item[1]["id"])))
-            if start_utc <= occurred_at < end_utc
-        ]
         sessions_logged = len(windowed_rows)
         return TrainingSnapshot(
             date=date,

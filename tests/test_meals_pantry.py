@@ -32,4 +32,3 @@ def test_match_pantry_signals(db_conn, meals_seeder) -> None:
     assert "pasta" in match_pantry(db_conn, ["pasta", "salmon"])
     assert [item.display_name for item in get_expiring_items(db_conn, "2026-04-12")] == ["Spinach"]
     assert [item.display_name for item in get_low_stock_items(db_conn)] == ["Eggs"]
-

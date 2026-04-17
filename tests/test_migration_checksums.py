@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Tests for SHA-256 checksum verification in the migration system."""
+
+from __future__ import annotations
 
 import hashlib
 import sqlite3
@@ -10,7 +10,6 @@ import pytest
 
 from minx_mcp import db as db_module
 from minx_mcp.db import apply_migrations, migration_dir
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -217,10 +216,7 @@ def test_new_migration_applied_after_initial_run(tmp_path, monkeypatch):
     assert stored["002_extra.sql"] == _file_checksum(m2)
 
     # The new table should actually exist
-    names = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
+    names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "extra_table" in names
 
 
@@ -260,10 +256,7 @@ def test_new_migration_only_new_table_created(tmp_path, monkeypatch):
     m2.write_text("CREATE TABLE new_table (id INTEGER PRIMARY KEY);")
     apply_migrations(conn)
 
-    names = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
+    names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "base_table" in names
     assert "new_table" in names
 
@@ -278,10 +271,7 @@ def test_009_cleanup_view_does_not_exist(tmp_path):
     from minx_mcp.db import get_connection
 
     conn = get_connection(tmp_path / "minx.db")
-    views = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='view'")
-    }
+    views = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='view'")}
     assert "v_finance_monthly_spend" not in views
 
 
@@ -290,10 +280,7 @@ def test_009_cleanup_index_exists(tmp_path):
     from minx_mcp.db import get_connection
 
     conn = get_connection(tmp_path / "minx.db")
-    indexes = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
-    }
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     assert "idx_events_occurred_sensitivity" in indexes
 
 
@@ -305,9 +292,7 @@ def test_009_cleanup_index_covers_correct_columns(tmp_path):
     # PRAGMA index_info returns rows with seqno, cid, name for each column
     index_cols = [
         row[2]
-        for row in conn.execute(
-            "PRAGMA index_info(idx_events_occurred_sensitivity)"
-        ).fetchall()
+        for row in conn.execute("PRAGMA index_info(idx_events_occurred_sensitivity)").fetchall()
     ]
     assert index_cols == ["occurred_at", "sensitivity"]
 
@@ -317,9 +302,7 @@ def test_009_migration_has_stored_checksum(tmp_path):
     from minx_mcp.db import get_connection
 
     conn = get_connection(tmp_path / "minx.db")
-    row = conn.execute(
-        "SELECT checksum FROM _migrations WHERE name = '009_cleanup.sql'"
-    ).fetchone()
+    row = conn.execute("SELECT checksum FROM _migrations WHERE name = '009_cleanup.sql'").fetchone()
     assert row is not None, "009_cleanup.sql not found in _migrations"
     assert row[0] is not None, "checksum is NULL for 009_cleanup.sql"
 
@@ -333,8 +316,7 @@ def test_latest_migration_recorded_in_order(tmp_path):
 
     conn = get_connection(tmp_path / "minx.db")
     names = [
-        row[0]
-        for row in conn.execute("SELECT name FROM _migrations ORDER BY name").fetchall()
+        row[0] for row in conn.execute("SELECT name FROM _migrations ORDER BY name").fetchall()
     ]
     latest = sorted(path.name for path in migration_dir().glob("*.sql"))[-1]
     assert names[-1] == latest

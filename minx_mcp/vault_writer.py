@@ -19,7 +19,7 @@ class VaultWriter:
 
     def replace_section(self, relative_path: str, heading: str, body: str) -> Path:
         path = self._resolve(relative_path)
-        text = path.read_text() if path.exists() else ""
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
         marker = f"## {heading}"
         replacement = f"{marker}\n\n{body.strip()}\n"
         lines = text.splitlines()
@@ -48,7 +48,7 @@ class VaultWriter:
                 handle.write(content)
                 temp_path = Path(handle.name)
             temp_path.replace(path)
-        except Exception:
+        except Exception:  # Broad except is intentional: must clean up temp file for any failure type before re-raising
             if temp_path is not None and temp_path.exists():
                 temp_path.unlink()
             raise

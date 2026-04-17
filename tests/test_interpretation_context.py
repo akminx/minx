@@ -32,6 +32,7 @@ def _goal_record(goal_id: int) -> GoalRecord:
 # build_goal_capture_context
 # ---------------------------------------------------------------------------
 
+
 def test_build_goal_capture_context_caps_goals_at_10():
     goals = [_goal_record(i) for i in range(1, 12)]
 
@@ -81,6 +82,7 @@ def test_build_goal_capture_context_fewer_than_limits_passes_through():
 # ---------------------------------------------------------------------------
 # build_finance_query_context
 # ---------------------------------------------------------------------------
+
 
 def test_build_finance_query_context_caps_categories_at_100():
     categories = [f"Cat {i}" for i in range(101)]

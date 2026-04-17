@@ -12,4 +12,3 @@ def test_adherence_signal_for_window_thresholds() -> None:
 
 def test_adherence_signal_for_window_invalid_window() -> None:
     assert adherence_signal_for_window(sessions_logged=2, lookback_days=0) == "unknown"
-

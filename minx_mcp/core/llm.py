@@ -4,7 +4,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -58,10 +58,6 @@ class _LLMReviewPayload(BaseModel):
     additional_insights: list[_InsightCandidatePayload]
     narrative: str
     next_day_focus: list[str]
-
-
-class JSONPromptLLM(Protocol):
-    async def run_json_prompt(self, prompt: str) -> str: ...
 
 
 class JSONBackedLLM:
@@ -210,13 +206,20 @@ def extract_openai_message_content(payload: Any) -> str:
 
 
 def _load_default_config(db_path: str | Path | None = None) -> dict[str, Any] | None:
+    import sqlite3 as _sqlite3
+
     resolved_db_path = Path(db_path) if db_path is not None else get_settings().db_path
     conn = get_connection(resolved_db_path)
     try:
         config = get_preference(conn, "core", "llm_config", None)
         return config if isinstance(config, dict) else None
+    except _sqlite3.OperationalError as exc:
+        # Expected when the preferences table doesn't exist yet (fresh DB or missing migration).
+        logger.debug("core/llm_config preference table not available: %s", exc)
+        return None
     except Exception as exc:
-        logger.warning("Unable to load core/llm_config preference: %s", exc)
+        # Unexpected: DB corruption or programming error — log at WARNING so it surfaces.
+        logger.warning("Unable to load core/llm_config preference (unexpected error): %s", exc)
         return None
     finally:
         conn.close()
@@ -231,20 +234,20 @@ def _render_review_prompt(
     goal_progress: list[GoalProgress] | None = None,
 ) -> str:
     timeline_lines = [
-        f"- {entry.occurred_at} | {entry.domain} | {entry.summary}"
-        for entry in timeline.entries
+        f"- {entry.occurred_at} | {entry.domain} | {entry.summary}" for entry in timeline.entries
     ] or ["- No timeline events."]
     open_loop_lines = [
-        f"- {loop.loop_type} | {loop.severity} | {loop.description}"
-        for loop in open_loops.loops
+        f"- {loop.loop_type} | {loop.severity} | {loop.description}" for loop in open_loops.loops
     ] or ["- No open loops."]
     detector_lines = [
-        f"- {insight.severity} | {insight.summary}"
-        for insight in detector_insights
+        f"- {insight.severity} | {insight.summary}" for insight in detector_insights
     ] or ["- No detector insights."]
 
     goal_lines = [
-        f"- {goal.title} | status={goal.status} | actual={goal.actual_value} | target={goal.target_value} | summary={goal.summary}"
+        (
+            f"- {goal.title} | status={goal.status} | actual={goal.actual_value} | "
+            f"target={goal.target_value} | summary={goal.summary}"
+        )
         for goal in (goal_progress or [])
     ] or ["- No active goals."]
 

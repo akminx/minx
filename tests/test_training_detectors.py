@@ -95,4 +95,3 @@ def test_training_adherence_drop_and_recovery_risk() -> None:
     assert adherence[0].insight_type == "training.adherence_drop"
     assert recovery
     assert recovery[0].insight_type == "training.recovery_risk"
-

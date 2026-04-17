@@ -1,4 +1,3 @@
-import importlib.metadata
 import shutil
 import sqlite3
 import subprocess
@@ -10,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from minx_mcp import db as db_module
-from minx_mcp.db import get_connection, migration_dir
+from minx_mcp.db import add_column_if_missing, get_connection, migration_dir
 
 
 def test_migration_dir_points_at_packaged_minx_mcp_schema_migrations() -> None:
@@ -49,8 +48,7 @@ def test_database_bootstrap_creates_platform_and_finance_tables(tmp_path):
 def test_database_bootstrap_creates_meals_nutrition_tables(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     names = {
-        row["name"]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
     assert "meals_nutrition_profiles" in names
     assert "meals_nutrition_targets" in names
@@ -59,8 +57,7 @@ def test_database_bootstrap_creates_meals_nutrition_tables(tmp_path):
 def test_database_bootstrap_creates_training_tables(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     names = {
-        row["name"]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
     assert "training_exercises" in names
     assert "training_programs" in names
@@ -74,8 +71,7 @@ def test_database_bootstrap_creates_training_tables(tmp_path):
 def test_database_bootstrap_creates_core_indexes(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     indexes = {
-        row["name"]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
     }
 
     assert "idx_events_domain_type" in indexes
@@ -93,8 +89,7 @@ def test_database_bootstrap_creates_finance_report_lifecycle_columns(tmp_path):
         for row in conn.execute("PRAGMA table_info(finance_report_runs)").fetchall()
     }
     indexes = {
-        row["name"]
-        for row in conn.execute("PRAGMA index_list(finance_report_runs)").fetchall()
+        row["name"] for row in conn.execute("PRAGMA index_list(finance_report_runs)").fetchall()
     }
 
     assert "status" in columns
@@ -115,12 +110,10 @@ def test_migrations_are_idempotent(tmp_path):
 def test_finance_seed_rows_exist(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     accounts = {
-        row["name"]
-        for row in conn.execute("SELECT name FROM finance_accounts ORDER BY name")
+        row["name"] for row in conn.execute("SELECT name FROM finance_accounts ORDER BY name")
     }
     categories = {
-        row["name"]
-        for row in conn.execute("SELECT name FROM finance_categories ORDER BY name")
+        row["name"] for row in conn.execute("SELECT name FROM finance_categories ORDER BY name")
     }
     assert {"DCU", "Discover", "Robinhood Gold"} <= accounts
     assert {"Groceries", "Dining Out", "Income", "Uncategorized"} <= categories
@@ -149,14 +142,66 @@ def test_apply_migrations_handles_plain_sqlite_connections(tmp_path):
     assert conn.row_factory is original_row_factory
 
 
+def test_add_column_if_missing_is_idempotent_for_repeated_calls(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "idempotent.db"))
+    conn.execute("CREATE TABLE sample_table (id INTEGER PRIMARY KEY)")
+
+    first = add_column_if_missing(
+        conn,
+        table_name="sample_table",
+        column_name="notes",
+        column_sql="TEXT",
+    )
+    second = add_column_if_missing(
+        conn,
+        table_name="sample_table",
+        column_name="notes",
+        column_sql="TEXT",
+    )
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(sample_table)").fetchall()]
+
+    assert first is True
+    assert second is False
+    assert columns.count("notes") == 1
+
+
+def test_add_column_if_missing_rejects_invalid_identifiers(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "invalid_identifier.db"))
+    conn.execute("CREATE TABLE sample_table (id INTEGER PRIMARY KEY)")
+
+    with pytest.raises(ValueError, match="Invalid SQLite identifier"):
+        add_column_if_missing(
+            conn,
+            table_name="sample-table",
+            column_name="notes",
+            column_sql="TEXT",
+        )
+
+
+def test_add_column_if_missing_raises_for_unknown_table(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "missing_table.db"))
+
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        add_column_if_missing(
+            conn,
+            table_name="missing_table",
+            column_name="notes",
+            column_sql="TEXT",
+        )
+
+
 def test_report_lifecycle_migration_dedupes_existing_report_runs(tmp_path):
     project_root = Path(__file__).resolve().parent.parent
     db_path = tmp_path / "legacy.db"
     conn = sqlite3.connect(str(db_path))
     conn.executescript((project_root / "schema" / "migrations" / "001_platform.sql").read_text())
     conn.executescript((project_root / "schema" / "migrations" / "002_finance.sql").read_text())
-    conn.executescript((project_root / "schema" / "migrations" / "003_finance_views.sql").read_text())
-    conn.executescript((project_root / "schema" / "migrations" / "004_finance_amount_cents.sql").read_text())
+    conn.executescript(
+        (project_root / "schema" / "migrations" / "003_finance_views.sql").read_text()
+    )
+    conn.executescript(
+        (project_root / "schema" / "migrations" / "004_finance_amount_cents.sql").read_text()
+    )
     conn.executescript((project_root / "schema" / "migrations" / "005_core.sql").read_text())
     conn.execute(
         """
@@ -210,7 +255,9 @@ def test_amount_cents_migration_backfills_existing_rows(tmp_path):
     conn = sqlite3.connect(str(db_path))
     conn.executescript((project_root / "schema" / "migrations" / "001_platform.sql").read_text())
     conn.executescript((project_root / "schema" / "migrations" / "002_finance.sql").read_text())
-    conn.executescript((project_root / "schema" / "migrations" / "003_finance_views.sql").read_text())
+    conn.executescript(
+        (project_root / "schema" / "migrations" / "003_finance_views.sql").read_text()
+    )
     conn.execute(
         """
         CREATE TABLE _migrations (
@@ -246,8 +293,7 @@ def test_amount_cents_migration_backfills_existing_rows(tmp_path):
     assert row["amount_cents"] == -1235
 
     views = {
-        row[0]
-        for row in migrated.execute("SELECT name FROM sqlite_master WHERE type = 'view'")
+        row[0] for row in migrated.execute("SELECT name FROM sqlite_master WHERE type = 'view'")
     }
     assert "v_finance_monthly_spend" not in views
 
@@ -259,8 +305,7 @@ def test_failed_migration_rolls_back_partial_changes(tmp_path, monkeypatch):
         "CREATE TABLE seeded_table (id INTEGER PRIMARY KEY);"
     )
     (migration_root / "002_bad.sql").write_text(
-        "CREATE TABLE half_done (id INTEGER PRIMARY KEY);\n"
-        "THIS IS NOT VALID SQL;"
+        "CREATE TABLE half_done (id INTEGER PRIMARY KEY);\nTHIS IS NOT VALID SQL;"
     )
 
     monkeypatch.setattr(db_module, "migration_dir", lambda: migration_root)
@@ -269,10 +314,7 @@ def test_failed_migration_rolls_back_partial_changes(tmp_path, monkeypatch):
     with pytest.raises(sqlite3.DatabaseError):
         db_module.apply_migrations(conn)
 
-    names = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-    }
+    names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 
     assert "half_done" not in names
     assert "seeded_table" not in names
@@ -380,10 +422,7 @@ def test_partial_migration_set_fails_closed(tmp_path, monkeypatch):
     with pytest.raises(FileNotFoundError):
         db_module.apply_migrations(conn)
 
-    names = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-    }
+    names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert "one_table" not in names
     assert "three_table" not in names
     assert "_migrations" not in names
@@ -409,10 +448,7 @@ def test_unreadable_migration_rolls_back_and_restores_connection(tmp_path, monke
     with pytest.raises(OSError):
         db_module.apply_migrations(conn)
 
-    names = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-    }
+    names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert "should_not_exist" not in names
     assert "_migrations" not in names
     assert conn.row_factory is original_row_factory
@@ -431,4 +467,6 @@ def test_source_and_packaged_migrations_match():
     assert source_files == packaged_files
 
     for filename in source_files:
-        assert (source_root / filename).read_text().strip() == (packaged_root / filename).read_text().strip()
+        assert (source_root / filename).read_text().strip() == (
+            packaged_root / filename
+        ).read_text().strip()

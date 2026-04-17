@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, date, datetime, timedelta
+from sqlite3 import Connection
+from zoneinfo import ZoneInfo
+
+from minx_mcp.preferences import get_preference
 
 
 def utc_now_isoformat(*, timespec: str = "microseconds") -> str:
-    return format_utc_timestamp(datetime.now(timezone.utc), timespec=timespec)
+    return format_utc_timestamp(datetime.now(UTC), timespec=timespec)
 
 
 def format_utc_timestamp(value: datetime, *, timespec: str = "microseconds") -> str:
-    return (
-        value.astimezone(timezone.utc)
-        .isoformat(timespec=timespec)
-        .replace("+00:00", "Z")
-    )
+    return value.astimezone(UTC).isoformat(timespec=timespec).replace("+00:00", "Z")
 
 
 def normalize_utc_timestamp(value: str) -> str:
@@ -20,3 +20,24 @@ def normalize_utc_timestamp(value: str) -> str:
     if parsed.tzinfo is None:
         raise ValueError("UTC timestamp must include timezone information")
     return format_utc_timestamp(parsed)
+
+
+def _resolve_timezone_name(conn: Connection) -> str:
+    configured = get_preference(conn, "core", "timezone", None)
+    if isinstance(configured, str) and configured:
+        return configured
+    tzinfo = datetime.now().astimezone().tzinfo
+    key = getattr(tzinfo, "key", None)
+    return key if isinstance(key, str) and key else "UTC"
+
+
+def _local_day_utc_bounds(review_date: str, timezone_name: str) -> tuple[str, str]:
+    zone = ZoneInfo(timezone_name)
+    local_day = date.fromisoformat(review_date)
+    local_start = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
+    local_end = local_start + timedelta(days=1)
+    return format_utc_timestamp(local_start), format_utc_timestamp(local_end)
+
+
+def next_day(value: str) -> str:
+    return (date.fromisoformat(value) + timedelta(days=1)).isoformat()

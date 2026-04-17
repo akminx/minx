@@ -1,14 +1,14 @@
 import argparse
-import asyncio
-import inspect
+import json
 
 import pytest
-
 from mcp.server.fastmcp import FastMCP
 
 from minx_mcp.finance import __main__ as finance_main
 from minx_mcp.finance.server import SAFE_TOOLS, SENSITIVE_TOOLS, create_finance_server
 from minx_mcp.finance.service import FinanceService
+from tests.helpers import call_tool_sync as _call_tool_sync
+from tests.helpers import get_tool
 
 
 class _StubFinanceQueryLLM:
@@ -18,13 +18,6 @@ class _StubFinanceQueryLLM:
     async def run_json_prompt(self, prompt: str) -> str:
         assert "Whole Foods" in prompt
         return self.payload
-
-
-def _call_tool_sync(fn, *args, **kwargs):
-    result = fn(*args, **kwargs)
-    if inspect.isawaitable(result):
-        return asyncio.run(result)
-    return result
 
 
 def test_finance_server_registers_expected_tool_names(tmp_path):
@@ -50,9 +43,8 @@ def test_finance_server_registers_expected_tool_names(tmp_path):
 def test_finance_server_registers_phase2_safe_tool_names(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-
-    assert server._tool_manager.get_tool("finance_import_preview").name == "finance_import_preview"
-    assert server._tool_manager.get_tool("finance_monitoring").name == "finance_monitoring"
+    tool_names = sorted(tool.name for tool in _call_tool_sync(server.list_tools))
+    assert tool_names == sorted(SAFE_TOOLS + SENSITIVE_TOOLS)
 
 
 def test_streamable_http_app_is_available(tmp_path):
@@ -123,7 +115,7 @@ def test_main_wires_cli_and_settings_into_run_server(monkeypatch, tmp_path):
 def test_finance_import_tool_rejects_missing_source_file(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path)
     server = create_finance_server(service)
-    finance_import = server._tool_manager.get_tool("finance_import").fn
+    finance_import = get_tool(server, "finance_import").fn
 
     result = finance_import(str(tmp_path / "missing.csv"), "DCU")
 
@@ -135,13 +127,14 @@ def test_finance_import_tool_rejects_missing_source_file(tmp_path):
     }
 
 
-
 def test_finance_import_tool_rejects_unknown_source_kind(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path)
     source = tmp_path / "free checking transactions.csv"
-    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
     server = create_finance_server(service)
-    finance_import = server._tool_manager.get_tool("finance_import").fn
+    finance_import = get_tool(server, "finance_import").fn
 
     result = finance_import(str(source), "DCU", source_kind="weird_kind")
 
@@ -158,11 +151,12 @@ def test_finance_import_tool_rejects_unsupported_file_before_reading_contents(tm
     source = tmp_path / "notes.txt"
     source.write_text("not a finance file")
     server = create_finance_server(service)
-    finance_import = server._tool_manager.get_tool("finance_import").fn
+    finance_import = get_tool(server, "finance_import").fn
 
     result = finance_import(str(source), "DCU")
 
     assert result["success"] is False
+    assert result["data"] is None
     assert result["error_code"] == "INVALID_INPUT"
     assert "Could not detect finance source" in result["error"]
 
@@ -170,24 +164,26 @@ def test_finance_import_tool_rejects_unsupported_file_before_reading_contents(tm
 def test_finance_import_tool_loads_saved_mapping_for_generic_csv(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path)
     source = tmp_path / "transactions.csv"
-    source.write_text(
-        "posted,description,amount\n"
-        "03/02/2026,Coffee,-12.50\n"
-    )
+    source.write_text("posted,description,amount\n03/02/2026,Coffee,-12.50\n")
     service.conn.execute(
         """
         INSERT INTO preferences (domain, key, value_json, updated_at)
-        VALUES (
-            'finance.csv_mapping',
-            'DCU',
-            '{\"date_column\": \"posted\", \"date_format\": \"%m/%d/%Y\", \"description_column\": \"description\", \"amount_column\": \"amount\"}',
-            datetime('now')
-        )
-        """
+        VALUES ('finance.csv_mapping', 'DCU', ?, datetime('now'))
+        """,
+        (
+            json.dumps(
+                {
+                    "date_column": "posted",
+                    "date_format": "%m/%d/%Y",
+                    "description_column": "description",
+                    "amount_column": "amount",
+                }
+            ),
+        ),
     )
     service.conn.commit()
     server = create_finance_server(service)
-    finance_import = server._tool_manager.get_tool("finance_import").fn
+    finance_import = get_tool(server, "finance_import").fn
 
     result = finance_import(str(source), "DCU", source_kind="generic_csv")
 
@@ -198,24 +194,26 @@ def test_finance_import_tool_loads_saved_mapping_for_generic_csv(tmp_path):
 def test_finance_import_tool_loads_saved_mapping_by_account_import_profile(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path)
     source = tmp_path / "transactions.csv"
-    source.write_text(
-        "posted,description,amount\n"
-        "03/02/2026,Coffee,-12.50\n"
-    )
+    source.write_text("posted,description,amount\n03/02/2026,Coffee,-12.50\n")
     service.conn.execute(
         """
         INSERT INTO preferences (domain, key, value_json, updated_at)
-        VALUES (
-            'finance.csv_mapping',
-            'dcu',
-            '{\"date_column\": \"posted\", \"date_format\": \"%m/%d/%Y\", \"description_column\": \"description\", \"amount_column\": \"amount\"}',
-            datetime('now')
-        )
-        """
+        VALUES ('finance.csv_mapping', 'dcu', ?, datetime('now'))
+        """,
+        (
+            json.dumps(
+                {
+                    "date_column": "posted",
+                    "date_format": "%m/%d/%Y",
+                    "description_column": "description",
+                    "amount_column": "amount",
+                }
+            ),
+        ),
     )
     service.conn.commit()
     server = create_finance_server(service)
-    finance_import = server._tool_manager.get_tool("finance_import").fn
+    finance_import = get_tool(server, "finance_import").fn
 
     result = finance_import(str(source), "DCU", source_kind="generic_csv")
 
@@ -226,7 +224,7 @@ def test_finance_import_tool_loads_saved_mapping_by_account_import_profile(tmp_p
 def test_finance_categorize_tool_rejects_empty_transaction_ids(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    finance_categorize = server._tool_manager.get_tool("finance_categorize").fn
+    finance_categorize = get_tool(server, "finance_categorize").fn
 
     result = finance_categorize([], "Groceries")
 
@@ -238,11 +236,10 @@ def test_finance_categorize_tool_rejects_empty_transaction_ids(tmp_path):
     }
 
 
-
 def test_finance_categorize_tool_rejects_unknown_transaction_ids(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    finance_categorize = server._tool_manager.get_tool("finance_categorize").fn
+    finance_categorize = get_tool(server, "finance_categorize").fn
 
     result = finance_categorize([999], "Groceries")
 
@@ -257,11 +254,13 @@ def test_finance_categorize_tool_rejects_unknown_transaction_ids(tmp_path):
 def test_finance_categorize_tool_rejects_unknown_category(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     source = tmp_path / "free checking transactions.csv"
-    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
     service.finance_import(str(source), account_name="DCU")
     tx_id = service.sensitive_finance_query(limit=1)["transactions"][0]["id"]
     server = create_finance_server(service)
-    finance_categorize = server._tool_manager.get_tool("finance_categorize").fn
+    finance_categorize = get_tool(server, "finance_categorize").fn
 
     result = finance_categorize([tx_id], "Missing Category")
 
@@ -276,11 +275,13 @@ def test_finance_categorize_tool_rejects_unknown_category(tmp_path):
 def test_finance_categorize_tool_reports_actual_rows_updated(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     source = tmp_path / "free checking transactions.csv"
-    source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
     service.finance_import(str(source), account_name="DCU")
     tx_id = service.sensitive_finance_query(limit=1)["transactions"][0]["id"]
     server = create_finance_server(service)
-    finance_categorize = server._tool_manager.get_tool("finance_categorize").fn
+    finance_categorize = get_tool(server, "finance_categorize").fn
 
     result = finance_categorize([tx_id, tx_id], "Groceries")
 
@@ -317,7 +318,7 @@ def test_sensitive_finance_query_tool_accepts_filters(tmp_path):
     )
     service.conn.commit()
     server = create_finance_server(service)
-    sensitive_finance_query = server._tool_manager.get_tool("sensitive_finance_query").fn
+    sensitive_finance_query = get_tool(server, "sensitive_finance_query").fn
 
     result = sensitive_finance_query(
         limit=5,
@@ -377,14 +378,12 @@ def test_finance_query_tool_executes_validated_query_plan(tmp_path):
     server = create_finance_server(
         service,
         llm=_StubFinanceQueryLLM(
-            (
-                '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
-                '"end_date":"2026-03-31","merchant":"Whole Foods"},'
-                '"confidence":0.94,"needs_clarification":false}'
-            )
+            '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
+            '"end_date":"2026-03-31","merchant":"Whole Foods"},'
+            '"confidence":0.94,"needs_clarification":false}'
         ),
     )
-    finance_query = server._tool_manager.get_tool("finance_query").fn
+    finance_query = get_tool(server, "finance_query").fn
 
     result = _call_tool_sync(
         finance_query,
@@ -424,33 +423,46 @@ def test_finance_query_tool_executes_validated_query_plan(tmp_path):
 def test_finance_query_structured_path_rejects_unknown_canonical_filter_values(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    finance_query = server._tool_manager.get_tool("finance_query").fn
+    finance_query = get_tool(server, "finance_query").fn
 
-    for kwargs in (
-        {"intent": "list_transactions", "filters": {"merchant": "Whole Fuds"}},
-        {"intent": "list_transactions", "filters": {"category_name": "Groceriez"}},
-        {"intent": "list_transactions", "filters": {"account_name": "Checkinggg"}},
+    for kwargs, expected_error in (
+        (
+            {"intent": "list_transactions", "filters": {"merchant": "Whole Fuds"}},
+            "merchant must be a known canonical merchant name",
+        ),
+        (
+            {"intent": "list_transactions", "filters": {"category_name": "Groceriez"}},
+            "category_name must be a known canonical category name",
+        ),
+        (
+            {"intent": "list_transactions", "filters": {"account_name": "Checkinggg"}},
+            "account_name must be a known canonical account name",
+        ),
     ):
         result = _call_tool_sync(finance_query, **kwargs)
         assert result["success"] is False
+        assert result["data"] is None
+        assert result["error"] == expected_error
         assert result["error_code"] == "INVALID_INPUT"
 
 
 def test_finance_query_rejects_injected_non_json_capable_llm(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service, llm=object())
-    finance_query = server._tool_manager.get_tool("finance_query").fn
+    finance_query = get_tool(server, "finance_query").fn
 
     result = _call_tool_sync(finance_query, "show me transactions", "2026-03-31")
 
     assert result["success"] is False
+    assert result["data"] is None
+    assert result["error"] == "finance_query requires a configured JSON-capable LLM"
     assert result["error_code"] == "INVALID_INPUT"
 
 
 def test_finance_query_legacy_blank_message_reports_message_field_name(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service, llm=object())
-    finance_query = server._tool_manager.get_tool("finance_query").fn
+    finance_query = get_tool(server, "finance_query").fn
 
     result = _call_tool_sync(finance_query, "   ", "2026-03-31")
 
@@ -539,7 +551,7 @@ def test_finance_query_uses_service_db_path_for_default_llm_resolution(tmp_path,
     monkeypatch.setattr("minx_mcp.finance.server.create_llm", fake_create_llm)
     service = _ProtocolOnlyService(tmp_path / "custom.db")
     server = create_finance_server(service)
-    finance_query = server._tool_manager.get_tool("finance_query").fn
+    finance_query = get_tool(server, "finance_query").fn
 
     result = _call_tool_sync(finance_query, "show me Whole Foods transactions", "2026-03-31")
 
@@ -588,14 +600,12 @@ async def test_finance_query_tool_is_async_safe_inside_running_loop(tmp_path):
     server = create_finance_server(
         service,
         llm=_StubFinanceQueryLLM(
-            (
-                '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
-                '"end_date":"2026-03-31","merchant":"Whole Foods"},'
-                '"confidence":0.94,"needs_clarification":false}'
-            )
+            '{"intent":"list_transactions","filters":{"start_date":"2026-03-01",'
+            '"end_date":"2026-03-31","merchant":"Whole Foods"},'
+            '"confidence":0.94,"needs_clarification":false}'
         ),
     )
-    finance_query = server._tool_manager.get_tool("finance_query").fn
+    finance_query = get_tool(server, "finance_query").fn
 
     result = await finance_query("show me everything at Whole Foods last month", "2026-03-31")
 
@@ -607,7 +617,7 @@ async def test_finance_query_tool_is_async_safe_inside_running_loop(tmp_path):
 def test_finance_job_status_returns_not_found_envelope_for_missing_job(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    finance_job_status = server._tool_manager.get_tool("finance_job_status").fn
+    finance_job_status = get_tool(server, "finance_job_status").fn
 
     result = finance_job_status("missing-job")
 
@@ -622,7 +632,7 @@ def test_finance_job_status_returns_not_found_envelope_for_missing_job(tmp_path)
 def test_finance_add_category_rule_tool_rejects_empty_pattern(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    finance_add_rule = server._tool_manager.get_tool("finance_add_category_rule").fn
+    finance_add_rule = get_tool(server, "finance_add_category_rule").fn
 
     result = finance_add_rule("Groceries", "merchant_contains", "   ")
 
@@ -637,7 +647,7 @@ def test_finance_add_category_rule_tool_rejects_empty_pattern(tmp_path):
 def test_finance_add_category_rule_tool_rejects_unknown_category(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    finance_add_rule = server._tool_manager.get_tool("finance_add_category_rule").fn
+    finance_add_rule = get_tool(server, "finance_add_category_rule").fn
 
     result = finance_add_rule("Missing Category", "merchant_contains", "H-E-B")
 
@@ -652,8 +662,8 @@ def test_finance_add_category_rule_tool_rejects_unknown_category(tmp_path):
 def test_report_tools_reject_invalid_date_windows(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    weekly = server._tool_manager.get_tool("finance_generate_weekly_report").fn
-    monthly = server._tool_manager.get_tool("finance_generate_monthly_report").fn
+    weekly = get_tool(server, "finance_generate_weekly_report").fn
+    monthly = get_tool(server, "finance_generate_monthly_report").fn
 
     assert weekly("2026-03-10", "2026-03-01") == {
         "success": False,
@@ -687,18 +697,20 @@ def test_report_tools_reject_invalid_date_windows(tmp_path):
 def test_report_tools_return_invalid_input_envelope_for_bad_date_window(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    weekly = server._tool_manager.get_tool("finance_generate_weekly_report").fn
+    weekly = get_tool(server, "finance_generate_weekly_report").fn
 
     result = weekly("2026-03-10", "2026-03-01")
 
     assert result["success"] is False
+    assert result["data"] is None
+    assert result["error"] == "period_start must be on or before period_end"
     assert result["error_code"] == "INVALID_INPUT"
 
 
 def test_sensitive_query_tool_rejects_large_limit(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+    sensitive = get_tool(server, "sensitive_finance_query").fn
 
     assert sensitive(limit=0) == {
         "success": False,
@@ -718,7 +730,7 @@ def test_sensitive_query_tool_rejects_large_limit(tmp_path):
 def test_tool_calls_close_thread_local_connection_after_use(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    safe_accounts = server._tool_manager.get_tool("safe_finance_accounts").fn
+    safe_accounts = get_tool(server, "safe_finance_accounts").fn
 
     safe_accounts()
 
@@ -729,10 +741,12 @@ def test_finance_import_tool_rejects_paths_outside_allowed_import_root(tmp_path)
     import_root = tmp_path / "staging"
     import_root.mkdir()
     outside_source = tmp_path / "free checking transactions.csv"
-    outside_source.write_text("Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n")
+    outside_source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=import_root)
     server = create_finance_server(service)
-    finance_import = server._tool_manager.get_tool("finance_import").fn
+    finance_import = get_tool(server, "finance_import").fn
 
     result = finance_import(str(outside_source), "DCU")
 
@@ -747,7 +761,7 @@ def test_finance_import_tool_rejects_paths_outside_allowed_import_root(tmp_path)
 def test_sensitive_finance_query_rejects_reversed_date_range(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+    sensitive = get_tool(server, "sensitive_finance_query").fn
 
     result = sensitive(start_date="2026-03-31", end_date="2026-03-01")
 
@@ -762,7 +776,7 @@ def test_sensitive_finance_query_rejects_reversed_date_range(tmp_path):
 def test_sensitive_finance_query_rejects_blank_description_contains(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+    sensitive = get_tool(server, "sensitive_finance_query").fn
 
     result = sensitive(description_contains="   ")
 
@@ -777,37 +791,43 @@ def test_sensitive_finance_query_rejects_blank_description_contains(tmp_path):
 def test_sensitive_finance_query_rejects_invalid_start_date_without_end_date(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+    sensitive = get_tool(server, "sensitive_finance_query").fn
 
     result = sensitive(start_date="2026-99-99")
 
     assert result["success"] is False
+    assert result["data"] is None
+    assert result["error"] == "Invalid ISO date"
     assert result["error_code"] == "INVALID_INPUT"
 
 
 def test_sensitive_finance_query_rejects_invalid_end_date_without_start_date(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+    sensitive = get_tool(server, "sensitive_finance_query").fn
 
     result = sensitive(end_date="2026-99-99")
 
     assert result["success"] is False
+    assert result["data"] is None
+    assert result["error"] == "Invalid ISO date"
     assert result["error_code"] == "INVALID_INPUT"
 
 
 def test_sensitive_finance_query_rejects_blank_scalar_filters(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    sensitive = server._tool_manager.get_tool("sensitive_finance_query").fn
+    sensitive = get_tool(server, "sensitive_finance_query").fn
 
-    for kwargs in (
-        {"category_name": "   "},
-        {"merchant": "   "},
-        {"account_name": "   "},
+    for kwargs, expected_error in (
+        ({"category_name": "   "}, "category_name must not be blank"),
+        ({"merchant": "   "}, "merchant must not be blank"),
+        ({"account_name": "   "}, "account_name must not be blank"),
     ):
         result = sensitive(**kwargs)
         assert result["success"] is False
+        assert result["data"] is None
+        assert result["error"] == expected_error
         assert result["error_code"] == "INVALID_INPUT"
 
 
@@ -823,7 +843,7 @@ def test_finance_query_tool_writes_audit_log_for_sum_spending(tmp_path):
             )
 
     server = create_finance_server(service, llm=_SumLLM())
-    finance_query = server._tool_manager.get_tool("finance_query").fn
+    finance_query = get_tool(server, "finance_query").fn
 
     _call_tool_sync(finance_query, "how much did I spend in March", "2026-03-31")
 
@@ -847,7 +867,7 @@ def test_finance_query_tool_writes_audit_log_for_count_transactions(tmp_path):
             )
 
     server = create_finance_server(service, llm=_CountLLM())
-    finance_query = server._tool_manager.get_tool("finance_query").fn
+    finance_query = get_tool(server, "finance_query").fn
 
     _call_tool_sync(finance_query, "how many transactions in March", "2026-03-31")
 
@@ -871,7 +891,7 @@ def test_finance_query_tool_writes_audit_log_for_list_transactions(tmp_path):
             )
 
     server = create_finance_server(service, llm=_ListLLM())
-    finance_query = server._tool_manager.get_tool("finance_query").fn
+    finance_query = get_tool(server, "finance_query").fn
 
     _call_tool_sync(finance_query, "show me march transactions", "2026-03-31", session_ref="s1")
 
@@ -886,7 +906,7 @@ def test_safe_finance_summary_returns_internal_error_envelope_for_unexpected_exc
 ):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    safe_summary = server._tool_manager.get_tool("safe_finance_summary").fn
+    safe_summary = get_tool(server, "safe_finance_summary").fn
 
     def boom():
         raise RuntimeError("boom")
@@ -917,7 +937,7 @@ def test_finance_query_tool_threads_session_ref_into_sum_spending_audit_log(tmp_
             )
 
     server = create_finance_server(service, llm=_SumLLM())
-    finance_query = server._tool_manager.get_tool("finance_query").fn
+    finance_query = get_tool(server, "finance_query").fn
 
     _call_tool_sync(
         finance_query,
@@ -945,7 +965,7 @@ def test_finance_query_tool_threads_session_ref_into_count_transactions_audit_lo
             )
 
     server = create_finance_server(service, llm=_CountLLM())
-    finance_query = server._tool_manager.get_tool("finance_query").fn
+    finance_query = get_tool(server, "finance_query").fn
 
     _call_tool_sync(
         finance_query,
@@ -973,7 +993,7 @@ def test_finance_query_tool_rejects_llm_reversed_date_range(tmp_path):
             )
 
     server = create_finance_server(service, llm=_ReversedDateLLM())
-    finance_query = server._tool_manager.get_tool("finance_query").fn
+    finance_query = get_tool(server, "finance_query").fn
 
     result = _call_tool_sync(
         finance_query,

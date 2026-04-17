@@ -126,6 +126,4 @@ def parse_source_file(
 def _validate_parsed_transactions(parsed: ParsedImportBatch) -> None:
     for txn in parsed.transactions:
         if not isinstance(txn.amount_cents, int):
-            raise InvalidInputError(
-                "parsed transactions must include integer amount_cents"
-            )
+            raise InvalidInputError("parsed transactions must include integer amount_cents")

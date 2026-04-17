@@ -10,10 +10,10 @@ from minx_mcp.finance.report_models import (
     AccountRollup,
     AnomalyItem,
     CategoryTotal,
+    MoneyTotals,
     MonthlyChange,
     MonthlyReportSummary,
     MonthlyReviewItem,
-    MoneyTotals,
     NewMerchantReviewItem,
     NotableMerchant,
     RecurringChargeHighlight,
@@ -23,7 +23,8 @@ from minx_mcp.finance.report_models import (
     WeeklyCategoryChange,
     WeeklyReportSummary,
 )
-from minx_mcp.money import cents_to_dollars
+from minx_mcp.money import cents_to_display_dollars
+from minx_mcp.time_utils import next_day
 
 
 def build_weekly_report(
@@ -31,9 +32,9 @@ def build_weekly_report(
     period_start: str,
     period_end: str,
 ) -> WeeklyReportSummary:
-    end_exclusive = _next_day(period_end)
+    end_exclusive = next_day(period_end)
     prior_start, prior_end = _previous_window(period_start, period_end)
-    prior_end_exclusive = _next_day(prior_end)
+    prior_end_exclusive = next_day(prior_end)
     totals_row = conn.execute(
         """
         SELECT
@@ -45,13 +46,13 @@ def build_weekly_report(
         (period_start, end_exclusive),
     ).fetchone()
     totals = MoneyTotals(
-        inflow=cents_to_dollars(int(totals_row["inflow_cents"])),
-        outflow=cents_to_dollars(int(totals_row["outflow_cents"])),
+        inflow=cents_to_display_dollars(int(totals_row["inflow_cents"])),
+        outflow=cents_to_display_dollars(int(totals_row["outflow_cents"])),
     )
     top_categories = [
         TopCategory(
             category_name=str(row["category_name"]),
-            total_outflow=cents_to_dollars(int(row["total_outflow_cents"])),
+            total_outflow=cents_to_display_dollars(int(row["total_outflow_cents"])),
         )
         for row in conn.execute(
             """
@@ -71,7 +72,7 @@ def build_weekly_report(
     notable_merchants = [
         NotableMerchant(
             merchant=str(row["merchant"]),
-            total_outflow=cents_to_dollars(int(row["total_outflow_cents"])),
+            total_outflow=cents_to_display_dollars(int(row["total_outflow_cents"])),
             transaction_count=int(row["transaction_count"]),
         )
         for row in conn.execute(
@@ -106,9 +107,7 @@ def build_weekly_report(
         )
         for category_name in sorted(set(current_categories) | set(prior_categories))
     ]
-    category_changes.sort(
-        key=lambda item: (-abs(item.delta_outflow), item.category_name)
-    )
+    category_changes.sort(key=lambda item: (-abs(item.delta_outflow), item.category_name))
 
     return WeeklyReportSummary(
         period_start=period_start,
@@ -129,13 +128,13 @@ def build_monthly_report(
     period_start: str,
     period_end: str,
 ) -> MonthlyReportSummary:
-    end_exclusive = _next_day(period_end)
+    end_exclusive = next_day(period_end)
     prior_start, prior_end = _previous_month_window(period_start)
-    prior_end_exclusive = _next_day(prior_end)
+    prior_end_exclusive = next_day(prior_end)
     account_rollups = [
         AccountRollup(
             account_name=str(row["account_name"]),
-            total_amount=cents_to_dollars(int(row["total_amount_cents"])),
+            total_amount=cents_to_display_dollars(int(row["total_amount_cents"])),
         )
         for row in conn.execute(
             """
@@ -152,7 +151,7 @@ def build_monthly_report(
     category_totals = [
         CategoryTotal(
             category_name=str(row["category_name"]),
-            total_amount=cents_to_dollars(int(row["total_amount_cents"])),
+            total_amount=cents_to_display_dollars(int(row["total_amount_cents"])),
         )
         for row in conn.execute(
             """
@@ -176,8 +175,7 @@ def build_monthly_report(
             current_total=current_accounts.get(account_name, 0.0),
             prior_total=prior_accounts.get(account_name, 0.0),
             delta_total=round(
-                current_accounts.get(account_name, 0.0)
-                - prior_accounts.get(account_name, 0.0),
+                current_accounts.get(account_name, 0.0) - prior_accounts.get(account_name, 0.0),
                 2,
             ),
         )
@@ -205,10 +203,6 @@ def build_monthly_report(
             end_exclusive,
         ),
     )
-
-
-def _next_day(d: str) -> str:
-    return (date.fromisoformat(d) + timedelta(days=1)).isoformat()
 
 
 def _previous_window(period_start: str, period_end: str) -> tuple[str, str]:
@@ -245,7 +239,7 @@ def _category_outflow_map(
         (period_start, end_exclusive),
     ).fetchall()
     return {
-        str(row["category_name"]): cents_to_dollars(int(row["total_outflow_cents"]))
+        str(row["category_name"]): cents_to_display_dollars(int(row["total_outflow_cents"]))
         for row in rows
     }
 
@@ -266,7 +260,7 @@ def _account_total_map(
         (period_start, end_exclusive),
     ).fetchall()
     return {
-        str(row["account_name"]): cents_to_dollars(int(row["total_amount_cents"]))
+        str(row["account_name"]): cents_to_display_dollars(int(row["total_amount_cents"]))
         for row in rows
     }
 
@@ -284,8 +278,8 @@ def _recurring_charge_highlights(
     highlights = [
         RecurringChargeHighlight(
             merchant=merchant,
-            current_outflow=cents_to_dollars(current[merchant][1]),
-            prior_outflow=cents_to_dollars(prior[merchant][1]),
+            current_outflow=cents_to_display_dollars(current[merchant][1]),
+            prior_outflow=cents_to_display_dollars(prior[merchant][1]),
             current_count=current[merchant][0],
             prior_count=prior[merchant][0],
         )
@@ -360,7 +354,7 @@ def _monthly_review_items(
             NewMerchantReviewItem(
                 merchant=str(row["merchant"]),
                 first_seen_at=str(row["first_seen_at"]),
-                total_amount=cents_to_dollars(int(row["total_amount_cents"])),
+                total_amount=cents_to_display_dollars(int(row["total_amount_cents"])),
             )
         )
     return items
@@ -371,9 +365,7 @@ def _anomaly_items(items: list[dict[str, object]]) -> list[AnomalyItem]:
         AnomalyItem(
             kind=str(item["kind"]),
             transaction_id=(
-                _as_int(item["transaction_id"])
-                if item.get("transaction_id") is not None
-                else None
+                _as_int(item["transaction_id"]) if item.get("transaction_id") is not None else None
             ),
             posted_at=str(item["posted_at"]),
             description=str(item["description"]),

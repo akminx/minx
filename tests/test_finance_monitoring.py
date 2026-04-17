@@ -3,9 +3,9 @@ from minx_mcp.finance.service import FinanceService
 
 def test_finance_monitoring_reports_category_rollups_and_recurring_income(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path)
-    dcu_id = service.conn.execute(
-        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
-    ).fetchone()["id"]
+    dcu_id = service.conn.execute("SELECT id FROM finance_accounts WHERE name = 'DCU'").fetchone()[
+        "id"
+    ]
     groceries_id = service.conn.execute(
         "SELECT id FROM finance_categories WHERE name = 'Groceries'"
     ).fetchone()["id"]
@@ -41,9 +41,9 @@ def test_finance_monitoring_reports_category_rollups_and_recurring_income(tmp_pa
 
 def test_finance_monitoring_includes_categories_that_only_exist_in_prior_period(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path)
-    dcu_id = service.conn.execute(
-        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
-    ).fetchone()["id"]
+    dcu_id = service.conn.execute("SELECT id FROM finance_accounts WHERE name = 'DCU'").fetchone()[
+        "id"
+    ]
     groceries_id = service.conn.execute(
         "SELECT id FROM finance_categories WHERE name = 'Groceries'"
     ).fetchone()["id"]
@@ -80,9 +80,9 @@ def test_finance_monitoring_includes_categories_that_only_exist_in_prior_period(
 
 def test_finance_monitoring_includes_transaction_on_period_end_date(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path)
-    dcu_id = service.conn.execute(
-        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
-    ).fetchone()["id"]
+    dcu_id = service.conn.execute("SELECT id FROM finance_accounts WHERE name = 'DCU'").fetchone()[
+        "id"
+    ]
     groceries_id = service.conn.execute(
         "SELECT id FROM finance_categories WHERE name = 'Groceries'"
     ).fetchone()["id"]

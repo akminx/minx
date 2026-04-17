@@ -20,8 +20,7 @@ async def test_full_meals_pipeline(tmp_path) -> None:
         "## Ingredients\n- 400g pasta\n- 2 cups spinach\n"
     )
     (recipes_dir / "Grilled Salmon.md").write_text(
-        "---\ntitle: Grilled Salmon\ntags: [dinner]\n---\n"
-        "## Ingredients\n- 1 salmon fillet\n"
+        "---\ntitle: Grilled Salmon\ntags: [dinner]\n---\n## Ingredients\n- 1 salmon fillet\n"
     )
 
     with MealsService(db_path, vault_root=vault) as svc:
@@ -32,7 +31,9 @@ async def test_full_meals_pipeline(tmp_path) -> None:
             calories=600,
         )
         svc.add_pantry_item(display_name="Pasta", quantity=500, unit="g")
-        svc.add_pantry_item(display_name="Spinach", quantity=200, unit="g", expiration_date="2026-04-14")
+        svc.add_pantry_item(
+            display_name="Spinach", quantity=200, unit="g", expiration_date="2026-04-14"
+        )
         svc.scan_vault_recipes()
 
     conn = get_connection(db_path)
@@ -47,7 +48,6 @@ async def test_full_meals_pipeline(tmp_path) -> None:
         "Quick Pasta",
         "Grilled Salmon",
     ]
-    assert result.shopping_lists_generated == []
     assert snapshot.nutrition is not None
     assert snapshot.nutrition.meal_count == 1
     assert "nutrition.low_protein" in {signal.insight_type for signal in snapshot.signals}

@@ -8,13 +8,13 @@ from minx_mcp.core.events import emit_event
 from minx_mcp.core.server import create_core_server
 from minx_mcp.db import get_connection
 from minx_mcp.finance.service import FinanceService
+from tests.helpers import MinxTestConfig, get_tool
 
 
 def test_import_to_summary_to_report_flow(tmp_path):
     source = tmp_path / "robinhood_transactions.csv"
     source.write_text(
-        "Date,Time,Cardholder,Card,Amount,Description\n"
-        "2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
+        "Date,Time,Cardholder,Card,Amount,Description\n2026-03-01,09:00,Alex,1234,-12.50,COFFEE\n"
     )
     vault = tmp_path / "vault"
     service = FinanceService(tmp_path / "minx.db", vault)
@@ -40,7 +40,9 @@ def test_import_to_summary_to_report_flow(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_goal_parse_to_snapshot_flow_exercises_repo_scoped_core_contracts(tmp_path: Path) -> None:
+async def test_goal_parse_to_snapshot_flow_exercises_repo_scoped_core_contracts(
+    tmp_path: Path,
+) -> None:
     db_path = tmp_path / "minx.db"
     conn = get_connection(db_path)
     conn.execute(
@@ -84,11 +86,11 @@ async def test_goal_parse_to_snapshot_flow_exercises_repo_scoped_core_contracts(
     conn.close()
 
     server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
-    goal_parse = server._tool_manager.get_tool("goal_parse").fn
-    goal_create = server._tool_manager.get_tool("goal_create").fn
-    goal_get = server._tool_manager.get_tool("goal_get").fn
-    goal_update = server._tool_manager.get_tool("goal_update").fn
-    daily_snapshot = server._tool_manager.get_tool("get_daily_snapshot").fn
+    goal_parse = get_tool(server, "goal_parse").fn
+    goal_create = get_tool(server, "goal_create").fn
+    goal_get = get_tool(server, "goal_get").fn
+    goal_update = get_tool(server, "goal_update").fn
+    daily_snapshot = get_tool(server, "get_daily_snapshot").fn
 
     capture_create = await goal_parse(
         message="Make a goal to spend less than $250 on dining out this month",
@@ -123,18 +125,12 @@ async def test_goal_parse_to_snapshot_flow_exercises_repo_scoped_core_contracts(
     assert snapshot["success"] is True
     assert snapshot["data"]["date"] == "2026-03-15"
     assert snapshot["data"]["goal_progress"] == []
-    assert "signals" in snapshot["data"]
+    signals = snapshot["data"]["signals"]
+    assert isinstance(signals, list)
+    for sig in signals:
+        assert "insight_type" in sig
+        assert "summary" in sig
+        assert "severity" in sig
 
 
-class _TestConfig:
-    def __init__(self, db_path: Path, vault_path: Path) -> None:
-        self._db_path = db_path
-        self._vault_path = vault_path
-
-    @property
-    def db_path(self) -> Path:
-        return self._db_path
-
-    @property
-    def vault_path(self) -> Path:
-        return self._vault_path
+_TestConfig = MinxTestConfig

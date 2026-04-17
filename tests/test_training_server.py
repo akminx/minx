@@ -1,19 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 from minx_mcp.training.server import create_training_server
 from minx_mcp.training.service import TrainingService
-
-
-def _call(server, tool_name: str, args: dict[str, object]) -> dict[str, object]:
-    result = asyncio.run(server.call_tool(tool_name, args))
-    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
-        return result[1]
-    if isinstance(result, list) and result and hasattr(result[0], "text"):
-        return json.loads(result[0].text)
-    return result
+from tests.helpers import call_server as _call
 
 
 def test_training_server_registers_expected_tools(db_path) -> None:
