@@ -1,28 +1,33 @@
 from pathlib import Path
 
+import pytest
+
+from minx_mcp.contracts import InvalidInputError
 from minx_mcp.vault_writer import VaultWriter
 
 
 def test_vault_writer_rejects_paths_outside_allowed_dirs(tmp_path):
     writer = VaultWriter(tmp_path, ("Finance",))
 
-    try:
+    with pytest.raises(InvalidInputError) as excinfo:
         writer.write_markdown("../bad.md", "nope")
-    except ValueError as exc:
-        assert "outside allowed vault roots" in str(exc)
-    else:
-        raise AssertionError("expected ValueError")
+    assert "outside allowed vault roots" in str(excinfo.value)
 
 
 def test_vault_writer_rejects_path_traversal_within_allowed_root(tmp_path):
     writer = VaultWriter(tmp_path, ("Finance",))
 
-    try:
+    with pytest.raises(InvalidInputError) as excinfo:
         writer.write_markdown("Finance/../bad.md", "nope")
-    except ValueError as exc:
-        assert "outside allowed vault roots" in str(exc)
-    else:
-        raise AssertionError("expected ValueError")
+    assert "outside allowed vault roots" in str(excinfo.value)
+
+
+def test_vault_writer_rejects_absolute_paths(tmp_path):
+    writer = VaultWriter(tmp_path, ("Finance",))
+
+    with pytest.raises(InvalidInputError) as excinfo:
+        writer.write_markdown("/etc/passwd", "nope")
+    assert "must be relative" in str(excinfo.value)
 
 
 def test_replace_section_updates_named_heading(tmp_path):

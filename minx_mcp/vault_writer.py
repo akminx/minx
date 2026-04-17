@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from minx_mcp.contracts import InvalidInputError
+
 
 class VaultWriter:
     def __init__(self, vault_root: Path, allowed_roots: tuple[str, ...]) -> None:
@@ -86,9 +88,9 @@ class VaultWriter:
     def _resolve(self, relative_path: str) -> Path:
         normalized = Path(relative_path)
         if normalized.is_absolute():
-            raise ValueError("vault paths must be relative")
+            raise InvalidInputError("vault paths must be relative")
         if not normalized.parts or normalized.parts[0] not in self.allowed_roots:
-            raise ValueError("outside allowed vault roots")
+            raise InvalidInputError("outside allowed vault roots")
 
         vault_root = self.vault_root.resolve()
         allowed_root = (vault_root / normalized.parts[0]).resolve()
@@ -96,5 +98,5 @@ class VaultWriter:
         try:
             resolved.relative_to(allowed_root)
         except ValueError as exc:
-            raise ValueError("outside allowed vault roots") from exc
+            raise InvalidInputError("outside allowed vault roots") from exc
         return resolved

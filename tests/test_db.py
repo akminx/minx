@@ -427,6 +427,7 @@ def test_built_wheel_includes_packaged_migrations(tmp_path):
     assert "minx_mcp/schema/migrations/012_training.sql" in names
     assert "minx_mcp/schema/migrations/013_slice6_memory.sql" in names
     assert "minx_mcp/schema/migrations/014_slice6_snapshot_archives.sql" in names
+    assert "minx_mcp/schema/migrations/015_slice6_memories_unique_live.sql" in names
 
 
 def test_missing_migrations_preserve_row_factory(tmp_path, monkeypatch):

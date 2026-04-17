@@ -140,6 +140,39 @@ def test_read_document_rejects_escape_via_dotdot(tmp_path: Path) -> None:
         reader.read_document(rel)
 
 
+def test_read_document_strips_utf8_bom_before_frontmatter(tmp_path: Path) -> None:
+    """Files written by some editors (e.g. Windows Notepad) start with a UTF-8 BOM.
+
+    The decoder must treat a leading ``\\xef\\xbb\\xbf`` transparently, otherwise
+    the frontmatter delimiter ``---`` fails to match on line 1 and the entire
+    file is returned as body with ``frontmatter == {}`` — silently dropping the
+    note's metadata. ``content_hash`` is still computed over the raw bytes so
+    the BOM vs. non-BOM versions of the "same" note remain distinct.
+    """
+    root = tmp_path / "vault"
+    rel = Path("Minx") / "bom.md"
+    frontmatter_and_body = (
+        b"---\ntype: minx-memory\nmemory_key: finance.starbucks\n---\nHello\n"
+    )
+    raw = b"\xef\xbb\xbf" + frontmatter_and_body
+    _write_bytes(root / rel, raw)
+    reader = VaultReader(root, ("Minx",))
+    doc = reader.read_document(rel.as_posix())
+    assert doc.frontmatter == {
+        "type": "minx-memory",
+        "memory_key": "finance.starbucks",
+    }
+    assert doc.body == "Hello"
+    assert doc.content_hash == hashlib.sha256(raw).hexdigest()
+
+    rel2 = Path("Minx") / "no_bom.md"
+    _write_bytes(root / rel2, frontmatter_and_body)
+    doc2 = reader.read_document(rel2.as_posix())
+    assert doc2.frontmatter == doc.frontmatter
+    assert doc2.body == doc.body
+    assert doc2.content_hash != doc.content_hash
+
+
 def test_iter_documents_sorted_and_sub_prefix(tmp_path: Path) -> None:
     root = tmp_path / "vault"
     _write_bytes(root / "Minx" / "z.md", b"z")

@@ -215,10 +215,11 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
     def memory_list_tool(
         status: str | None = None,
         memory_type: str | None = None,
+        scope: str | None = None,
         limit: int = 100,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: _memory_list(config, status, memory_type, limit),
+            lambda: _memory_list(config, status, memory_type, scope, limit),
             tool_name="memory_list",
         )
 
@@ -275,9 +276,12 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         )
 
     @mcp.tool(name="get_pending_memory_candidates")
-    def get_pending_memory_candidates_tool(limit: int = 50) -> ToolResponse:
+    def get_pending_memory_candidates_tool(
+        scope: str | None = None,
+        limit: int = 50,
+    ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: _get_pending_memory_candidates(config, limit),
+            lambda: _get_pending_memory_candidates(config, scope, limit),
             tool_name="get_pending_memory_candidates",
         )
 
@@ -475,20 +479,19 @@ def _memory_list(
     config: CoreServiceConfig,
     status: str | None,
     memory_type: str | None,
+    scope: str | None,
     limit: int,
 ) -> dict[str, object]:
-    effective_status = status.strip() if isinstance(status, str) else None
-    if effective_status == "":
-        effective_status = None
-    effective_type = memory_type.strip() if isinstance(memory_type, str) else None
-    if effective_type == "":
-        effective_type = None
+    effective_status = _normalize_optional_filter(status)
+    effective_type = _normalize_optional_filter(memory_type)
+    effective_scope = _normalize_optional_filter(scope)
     lim = _coerce_limit(limit, maximum=500)
     with scoped_connection(Path(config.db_path)) as conn:
         service = MemoryService(Path(config.db_path), conn=conn)
         rows = service.list_memories(
             status=effective_status,
             memory_type=effective_type,
+            scope=effective_scope,
             limit=lim,
         )
         return {"memories": [memory_record_as_dict(r) for r in rows]}
@@ -557,12 +560,25 @@ def _memory_expire(config: CoreServiceConfig, memory_id: int, reason: str) -> di
         return {"memory": memory_record_as_dict(record)}
 
 
-def _get_pending_memory_candidates(config: CoreServiceConfig, limit: int) -> dict[str, object]:
+def _get_pending_memory_candidates(
+    config: CoreServiceConfig,
+    scope: str | None,
+    limit: int,
+) -> dict[str, object]:
+    effective_scope = _normalize_optional_filter(scope)
     lim = _coerce_limit(limit, maximum=500)
     with scoped_connection(Path(config.db_path)) as conn:
         service = MemoryService(Path(config.db_path), conn=conn)
-        rows = service.list_pending_candidates(limit=lim)
+        rows = service.list_pending_candidates(scope=effective_scope, limit=lim)
         return {"memories": [memory_record_as_dict(r) for r in rows]}
+
+
+def _normalize_optional_filter(value: str | None) -> str | None:
+    """Treat whitespace-only strings as "no filter" for MCP tool ergonomics."""
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 def _list_snapshot_archives(
@@ -678,10 +694,7 @@ def _persist_note(
     overwrite: bool,
 ) -> dict[str, object]:
     writer = VaultWriter(config.vault_path, ("Minx",))
-    try:
-        resolved = writer.resolve_path(relative_path)
-    except ValueError as exc:
-        raise InvalidInputError(str(exc)) from exc
+    resolved = writer.resolve_path(relative_path)
     existed = resolved.exists()
     if existed and not overwrite:
         raise ConflictError("note already exists", data={"path": str(resolved)})

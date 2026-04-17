@@ -71,6 +71,7 @@ class MemoryService(BaseService):
         *,
         status: str | None = None,
         memory_type: str | None = None,
+        scope: str | None = None,
         limit: int = 100,
     ) -> list[MemoryRecord]:
         _validate_limit(limit)
@@ -84,6 +85,9 @@ class MemoryService(BaseService):
         if memory_type is not None:
             clauses.append("memory_type = ?")
             params.append(require_non_empty("memory_type", memory_type))
+        if scope is not None:
+            clauses.append("scope = ?")
+            params.append(require_non_empty("scope", scope))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"SELECT * FROM memories {where} ORDER BY id DESC LIMIT ?"
         params.append(limit)
@@ -236,17 +240,26 @@ class MemoryService(BaseService):
             raise
         return self.get_memory(memory_id)
 
-    def list_pending_candidates(self, *, limit: int = 50) -> list[MemoryRecord]:
+    def list_pending_candidates(
+        self,
+        *,
+        scope: str | None = None,
+        limit: int = 50,
+    ) -> list[MemoryRecord]:
         _validate_limit(limit)
-        rows = self.conn.execute(
-            """
-            SELECT * FROM memories
-            WHERE status = 'candidate'
-            ORDER BY confidence DESC, created_at ASC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+        clauses = ["status = 'candidate'"]
+        params: list[object] = []
+        if scope is not None:
+            clauses.append("scope = ?")
+            params.append(require_non_empty("scope", scope))
+        params.append(limit)
+        sql = (
+            "SELECT * FROM memories "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY confidence DESC, created_at ASC "
+            "LIMIT ?"
+        )
+        rows = self.conn.execute(sql, params).fetchall()
         return [_row_to_record(row) for row in rows]
 
     def ingest_proposals(

@@ -337,9 +337,76 @@ def test_confirm_non_candidate_raises(tmp_path) -> None:
         svc.confirm_memory(rec.id)
 
 
-def test_migration_set_includes_014_snapshot_archives() -> None:
+def test_migration_set_includes_015_memories_unique_live() -> None:
     names = sorted(p.name for p in migration_dir().glob("*.sql"))
-    assert names[-1] == "014_slice6_snapshot_archives.sql"
+    assert "015_slice6_memories_unique_live.sql" in names
+    assert names[-1] == "015_slice6_memories_unique_live.sql"
+
+
+def test_unique_index_rejects_duplicate_live_triple(tmp_path) -> None:
+    import sqlite3
+
+    svc = _fresh_memory_service(tmp_path)
+    svc.create_memory(
+        memory_type="recurring_merchant",
+        scope="finance",
+        subject="starbucks",
+        confidence=0.9,
+        payload={"cadence": "weekly"},
+        source="s",
+        actor="user",
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        svc.conn.execute(
+            """
+            INSERT INTO memories (
+                memory_type, scope, subject, confidence, status,
+                payload_json, source, reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            """,
+            (
+                "recurring_merchant",
+                "finance",
+                "starbucks",
+                0.4,
+                "candidate",
+                "{}",
+                "s",
+                "",
+            ),
+        )
+    svc.conn.rollback()
+
+
+def test_unique_index_allows_rejected_plus_live_after_lifecycle(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="cycled",
+        confidence=0.9,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.expire_memory(rec.id, actor="system")
+    fresh = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="cycled",
+        confidence=0.5,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    assert fresh.id != rec.id
+    statuses = [
+        (int(r["id"]), str(r["status"]))
+        for r in svc.conn.execute(
+            "SELECT id, status FROM memories WHERE subject='cycled' ORDER BY id",
+        ).fetchall()
+    ]
+    assert statuses == [(rec.id, "expired"), (fresh.id, "candidate")]
 
 
 def test_reject_memory_only_accepts_candidate(tmp_path) -> None:
@@ -467,6 +534,82 @@ def test_ingest_proposals_mixed_with_and_without_rejection(tmp_path) -> None:
     ]
     out = svc.ingest_proposals(proposals, actor="detector")
     assert [r.subject for r in out] == ["fresh"]
+
+
+def test_list_pending_candidates_scope_filter(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    svc.create_memory(
+        memory_type="t",
+        scope="finance",
+        subject="fin_a",
+        confidence=0.5,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.create_memory(
+        memory_type="t",
+        scope="meals",
+        subject="meal_a",
+        confidence=0.4,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.create_memory(
+        memory_type="t",
+        scope="finance",
+        subject="fin_b",
+        confidence=0.3,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    all_candidates = svc.list_pending_candidates()
+    assert {c.subject for c in all_candidates} == {"fin_a", "fin_b", "meal_a"}
+    finance_only = svc.list_pending_candidates(scope="finance")
+    assert {c.subject for c in finance_only} == {"fin_a", "fin_b"}
+    meals_only = svc.list_pending_candidates(scope="meals")
+    assert [c.subject for c in meals_only] == ["meal_a"]
+    with pytest.raises(InvalidInputError):
+        svc.list_pending_candidates(scope="  ")
+
+
+def test_list_memories_scope_filter(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    svc.create_memory(
+        memory_type="t",
+        scope="finance",
+        subject="a",
+        confidence=0.9,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.create_memory(
+        memory_type="t",
+        scope="meals",
+        subject="b",
+        confidence=0.9,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.create_memory(
+        memory_type="t",
+        scope="meals",
+        subject="c",
+        confidence=0.3,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    finance = svc.list_memories(scope="finance")
+    assert [m.subject for m in finance] == ["a"]
+    meals_all = svc.list_memories(scope="meals")
+    assert {m.subject for m in meals_all} == {"b", "c"}
+    meals_active = svc.list_memories(scope="meals", status="active")
+    assert [m.subject for m in meals_active] == ["b"]
 
 
 def test_ingest_proposals_after_expired_creates_new_row(tmp_path) -> None:

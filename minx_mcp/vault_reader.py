@@ -8,7 +8,12 @@ changes).
 This module performs pure file I/O and frontmatter parsing only — no database
 writes, no ``vault_index`` scanner persistence (Slice 6c). Markdown bodies use
 ``str.splitlines()`` so standalone ``\\r`` newline markers inside the body are
-normalized to ``\\n``.
+normalized to ``\\n``. Files are decoded with ``utf-8-sig`` so a UTF-8 BOM at
+the start of a file is transparently stripped before frontmatter parsing —
+some editors (notably Windows Notepad) emit a BOM that would otherwise prevent
+``---`` from matching on line 1. ``content_hash`` is still computed over the
+on-disk bytes, so BOM-prefixed and non-BOM versions of otherwise identical
+content hash differently (intentional; the scanner treats them as distinct).
 """
 
 from __future__ import annotations
@@ -52,7 +57,7 @@ class VaultReader:
         raw = resolved.read_bytes()
         content_hash = hashlib.sha256(raw).hexdigest()
         try:
-            text = raw.decode("utf-8")
+            text = raw.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
             raise InvalidInputError(f"Vault file is not valid UTF-8: {resolved}") from exc
         rel = resolved.relative_to(self._vault_root.resolve()).as_posix()
