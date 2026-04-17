@@ -178,6 +178,27 @@ def test_detect_open_loops_returns_empty_when_none_exist():
     assert detect_open_loops(read_models).insights == ()
 
 
+def test_finance_open_loop_detector_key_matches_insight_type():
+    from minx_mcp.core.detectors import DETECTORS, detect_open_loops
+
+    detector = next(d for d in DETECTORS if d.fn is detect_open_loops)
+    read_models = _build_read_models(
+        open_loops=[
+            OpenLoop(
+                domain="finance",
+                loop_type="uncategorized_transactions",
+                description="One uncategorized row",
+                count=1,
+                severity="info",
+            ),
+        ]
+    )
+    result = detect_open_loops(read_models)
+    assert result.insights
+    for insight in result.insights:
+        assert insight.insight_type == detector.key
+
+
 def test_detector_dedupe_keys_remain_stable_when_summary_wording_changes():
     from minx_mcp.core.detectors import detect_open_loops, detect_spending_spike
 

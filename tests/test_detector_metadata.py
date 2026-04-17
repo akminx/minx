@@ -83,7 +83,7 @@ class TestDetectorDataclass:
         keys = {d.key for d in DETECTORS}
         expected = {
             "finance.spending_spike",
-            "finance.open_loops",
+            "finance.open_loop",
             "nutrition.low_protein",
             "nutrition.skipped_meals",
             "training.adherence_drop",

@@ -237,7 +237,7 @@ def detect_training_with_low_protein(read_models: ReadModels) -> DetectorResult:
 
 DETECTORS: list[Detector] = [
     Detector(key="finance.spending_spike", fn=detect_spending_spike, tags=frozenset({"finance"})),
-    Detector(key="finance.open_loops", fn=detect_open_loops, tags=frozenset({"finance"})),
+    Detector(key="finance.open_loop", fn=detect_open_loops, tags=frozenset({"finance"})),
     Detector(key="nutrition.low_protein", fn=detect_low_protein, tags=frozenset({"nutrition"})),
     Detector(key="nutrition.skipped_meals", fn=detect_skipped_meals, tags=frozenset({"nutrition"})),
     Detector(
