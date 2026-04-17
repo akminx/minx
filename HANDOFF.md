@@ -9,7 +9,7 @@ Hermes cutover snapshot (2026-04-14):
 
 ## Repo And Branch
 
-- Repo: `/Users/akmini/Documents/minx-mcp`
+- Remote: `github.com/akminx/minx`
 - Branch: `main`
 - Stack: Python 3.12, FastMCP, SQLite, Pydantic, pytest, mypy
 - Current health: test suite passing and mypy clean (verify via commands below)

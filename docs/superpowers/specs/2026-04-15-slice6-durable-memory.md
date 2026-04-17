@@ -31,7 +31,7 @@ Give Minx persistent memory across sessions so that context, preferences, and le
 
 ### Tier 1 — Factual Memory (SQLite)
 
-Structured facts Minx "knows." Directly injected into every snapshot context.
+Structured facts Minx "knows." As of phase 6a these are persisted and queryable via MCP tools; phase 6d will expose them on `DailySnapshot.memory_context` so every snapshot carries the live memory corpus without a second round-trip.
 
 Types:
 

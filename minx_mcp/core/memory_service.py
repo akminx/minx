@@ -310,6 +310,20 @@ class MemoryService(BaseService):
         Returns the records that were created or updated, in input order. Suppressed
         (rejected-prior) proposals are excluded; callers that need to observe which
         inputs were dropped can diff by ``(memory_type, scope, subject)``.
+
+        Concurrency note
+        ----------------
+        The per-proposal "latest row" ``SELECT`` runs **before** the write's
+        ``BEGIN IMMEDIATE``. That is safe for the single-user / single-writer
+        SQLite model this codebase targets: detector runs are orchestrated
+        serially inside ``build_daily_snapshot`` on one connection, and writer
+        contention from a second connection would be bounded by SQLite's
+        single-writer lock. If a future design runs detectors concurrently
+        across multiple connections, the read would need to be pulled inside
+        the same ``BEGIN IMMEDIATE`` (or the UPDATE guarded with
+        ``WHERE status = ?``) to avoid a TOCTOU on ``prior_status``. Migration
+        015's partial unique index provides a safety net for duplicate live
+        inserts regardless.
         """
         _validate_actor(actor)
         out: list[MemoryRecord] = []
@@ -440,24 +454,29 @@ class MemoryService(BaseService):
                 self.conn.rollback()
             # Migration 015's partial unique index enforces at most one live
             # (candidate/active) row per (memory_type, scope, subject). Translate
-            # that specific violation into a CONFLICT error code so MCP clients
-            # can distinguish "duplicate live memory" from a generic internal
-            # failure. Other IntegrityErrors (check constraints, null, etc.)
-            # remain unmapped and surface as INTERNAL_ERROR — they indicate
-            # programmer bugs, not caller-addressable conflicts.
+            # that specific violation into a CONFLICT error so MCP clients can
+            # distinguish "duplicate live memory" from a generic internal
+            # failure. Other IntegrityErrors (CHECK / NOT NULL / unrelated
+            # UNIQUE) remain unmapped and surface as INTERNAL_ERROR — they
+            # indicate programmer bugs, not caller-addressable conflicts.
             #
-            # SQLite's IntegrityError message for partial unique indexes names
-            # the columns, not the index (e.g. "UNIQUE constraint failed:
-            # memories.memory_type, memories.scope, memories.subject"). We
-            # detect that exact column tuple — no other constraint on the
-            # ``memories`` table covers the same combination.
-            msg = str(exc)
-            triple_signature = (
-                "memories.memory_type" in msg
-                and "memories.scope" in msg
-                and "memories.subject" in msg
-            )
-            if triple_signature:
+            # Detection strategy: do NOT parse SQLite's error message, which
+            # names columns (not indexes) and would be fragile to future
+            # schema evolution. Instead, verify against actual state — if
+            # there is a live row for the proposed triple, the IntegrityError
+            # is necessarily the live-triple index. This is self-verifying
+            # and immune to future UNIQUE constraints that happen to share
+            # column names.
+            live = self.conn.execute(
+                """
+                SELECT 1 FROM memories
+                WHERE memory_type = ? AND scope = ? AND subject = ?
+                  AND status IN ('candidate', 'active')
+                LIMIT 1
+                """,
+                (memory_type, scope, subject),
+            ).fetchone()
+            if live is not None:
                 raise ConflictError(
                     "A live memory already exists for this (memory_type, scope, subject)",
                     data={

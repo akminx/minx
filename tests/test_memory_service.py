@@ -755,6 +755,45 @@ def test_create_memory_duplicate_live_triple_raises_conflict(tmp_path) -> None:
     }
 
 
+def test_create_memory_conflict_detection_ignores_unrelated_integrity_errors(tmp_path) -> None:
+    """Non-live IntegrityErrors must NOT be remapped as CONFLICT.
+
+    The detection strategy is state-based (look for a live row for the
+    proposed triple) rather than parsing SQLite's error message. That makes
+    the mapping robust to future DDL that might add other UNIQUE or CHECK
+    constraints whose failure messages could superficially resemble the
+    live-triple index. Simulate such a case with a trigger that raises
+    IntegrityError for a marker subject — no live row exists for that
+    triple, so the error must propagate unchanged, not be dressed up as a
+    user-addressable CONFLICT.
+    """
+    from sqlite3 import IntegrityError
+
+    svc = _fresh_memory_service(tmp_path)
+    svc.conn.execute(
+        """
+        CREATE TRIGGER _force_integrity_error_for_test
+        BEFORE INSERT ON memories
+        WHEN NEW.subject = 'trigger-tripwire'
+        BEGIN
+            SELECT RAISE(ABORT, 'synthetic integrity error for testing');
+        END
+        """
+    )
+    svc.conn.commit()
+
+    with pytest.raises(IntegrityError, match="synthetic integrity error"):
+        svc.create_memory(
+            memory_type="preference",
+            scope="core",
+            subject="trigger-tripwire",
+            confidence=0.9,
+            payload={},
+            source="user",
+            actor="user",
+        )
+
+
 def test_list_memories_rejects_unknown_status(tmp_path) -> None:
     svc = _fresh_memory_service(tmp_path)
     with pytest.raises(InvalidInputError, match="status must be one of"):
