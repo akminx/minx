@@ -32,7 +32,7 @@ def test_memory_tools_round_trip(tmp_path: Path) -> None:
         "core",
         "timezone_pref",
         0.5,
-        {"tz": "UTC"},
+        {"category": "timezone", "value": "UTC"},
         "user:vault",
         "stated in chat",
     )
@@ -79,7 +79,7 @@ def test_memory_expire_tool_uses_system_actor_by_default(tmp_path: Path) -> None
         "core",
         "actor_test_subject",
         0.9,
-        {"k": "v"},
+        {"category": "k", "value": "v"},
         "user",
         "",
     )
@@ -112,7 +112,7 @@ def test_memory_create_duplicate_live_triple_returns_conflict(tmp_path: Path) ->
         "core",
         "tz",
         0.9,
-        {"tz": "UTC"},
+        {"category": "timezone", "value": "UTC"},
         "user",
         "",
     )
@@ -123,7 +123,7 @@ def test_memory_create_duplicate_live_triple_returns_conflict(tmp_path: Path) ->
         "core",
         "tz",
         0.4,
-        {"tz": "America/Los_Angeles"},
+        {"category": "timezone", "value": "America/Los_Angeles"},
         "user",
         "",
     )
@@ -167,3 +167,23 @@ def test_memory_list_and_pending_scope_filter(tmp_path: Path) -> None:
     pending_whitespace = pending_fn("   ", 10)
     assert pending_whitespace["success"] is True
     assert {m["subject"] for m in pending_whitespace["data"]["memories"]} == {"fin_a", "meal_a"}
+
+
+def test_memory_create_mcp_returns_invalid_input_for_bad_payload(tmp_path: Path) -> None:
+    db_path = tmp_path / "bad_payload.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    create_fn = get_tool(server, "memory_create").fn
+    result = create_fn(
+        "preference",
+        "core",
+        "bad_payload_subject",
+        0.9,
+        {"not_a_valid_preference_key": True},
+        "user",
+        "",
+    )
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert result["error"] is not None
+    assert "not_a_valid_preference_key" in result["error"]

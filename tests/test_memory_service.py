@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -838,7 +839,7 @@ def test_create_memory_duplicate_live_triple_raises_conflict(tmp_path) -> None:
         scope="core",
         subject="tz",
         confidence=0.9,
-        payload={"tz": "UTC"},
+        payload={"category": "timezone", "value": "UTC"},
         source="user",
         actor="user",
     )
@@ -848,7 +849,7 @@ def test_create_memory_duplicate_live_triple_raises_conflict(tmp_path) -> None:
             scope="core",
             subject="tz",
             confidence=0.4,
-            payload={"tz": "America/Los_Angeles"},
+            payload={"category": "timezone", "value": "America/Los_Angeles"},
             source="user",
             actor="user",
         )
@@ -1312,3 +1313,79 @@ def test_memory_events_check_narrowed_rejects_vault_synced(tmp_path) -> None:
             (rec.id,),
         )
     svc.conn.rollback()
+
+
+def test_create_memory_rejects_invalid_payload(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    n = int(svc.conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()["c"])
+    with pytest.raises(InvalidInputError, match="invalid payload"):
+        svc.create_memory(
+            memory_type="preference",
+            scope="core",
+            subject="x",
+            confidence=0.9,
+            payload={"typo_field": 1},
+            source="s",
+            actor="user",
+        )
+    assert int(svc.conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()["c"]) == n
+
+
+def test_ingest_proposals_skips_invalid_payloads_and_logs_warning(tmp_path, caplog) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    bad = MemoryProposal(
+        memory_type="preference",
+        scope="s",
+        subject="bad_subj",
+        confidence=0.9,
+        payload={"not_a_field": 1},
+        source="detector:test",
+        reason="r",
+    )
+    good = MemoryProposal(
+        memory_type="preference",
+        scope="s",
+        subject="good_subj",
+        confidence=0.9,
+        payload={"note": "ok"},
+        source="detector:test",
+        reason="r2",
+    )
+    with caplog.at_level(logging.WARNING):
+        out = svc.ingest_proposals((bad, good), actor="detector")
+    assert len(out) == 1
+    assert out[0].subject == "good_subj"
+    assert "bad_subj" in caplog.text
+    assert "preference" in caplog.text
+    assert "detector:test" in caplog.text
+
+
+def test_update_payload_rejects_invalid_payload_with_reread_type(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="u",
+        confidence=0.9,
+        payload={"value": "v0"},
+        source="s",
+        actor="user",
+    )
+    with pytest.raises(InvalidInputError, match="invalid payload"):
+        svc.update_payload(rec.id, payload={"bogus": 1})
+
+
+def test_update_payload_allows_valid_payload(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="u2",
+        confidence=0.9,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    updated = svc.update_payload(rec.id, payload={"note": "hello", "value": "x"})
+    assert updated.payload["note"] == "hello"
+    assert updated.payload["value"] == "x"

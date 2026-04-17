@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
@@ -13,7 +14,10 @@ from typing import Any, cast
 from minx_mcp.base_service import BaseService
 from minx_mcp.contracts import ConflictError, InvalidInputError, NotFoundError
 from minx_mcp.core.memory_models import MemoryProposal, MemoryRecord
+from minx_mcp.core.memory_payloads import validate_memory_payload
 from minx_mcp.validation import require_non_empty
+
+logger = logging.getLogger(__name__)
 
 _ALLOWED_ACTORS = frozenset({"system", "detector", "user", "harness", "vault_sync"})
 _ALLOWED_STATUS = frozenset({"candidate", "active", "rejected", "expired"})
@@ -64,6 +68,7 @@ class MemoryService(BaseService):
         reason: str = "",
         actor: str = "system",
     ) -> MemoryRecord:
+        payload = validate_memory_payload(memory_type, payload)
         mt = require_non_empty("memory_type", memory_type)
         sc = require_non_empty("scope", scope)
         sj = require_non_empty("subject", subject)
@@ -275,6 +280,8 @@ class MemoryService(BaseService):
         expected_status = str(row["status"])
         if expected_status in {"rejected", "expired"}:
             raise InvalidInputError("Cannot update payload for rejected or expired memories")
+        memory_type = str(row["memory_type"])
+        payload = validate_memory_payload(memory_type, payload)
         payload_json = json.dumps(payload, sort_keys=True)
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -414,6 +421,21 @@ class MemoryService(BaseService):
             if prior_status == "rejected":
                 continue
 
+            try:
+                validated_payload = validate_memory_payload(
+                    proposal.memory_type, dict(proposal.payload)
+                )
+            except InvalidInputError:
+                logger.warning(
+                    "skipping memory proposal with invalid payload: memory_type=%r "
+                    "scope=%r subject=%r source=%r",
+                    proposal.memory_type,
+                    proposal.scope,
+                    proposal.subject,
+                    proposal.source,
+                )
+                continue
+
             if row is None or prior_status == "expired":
                 status: str = "active" if proposal.confidence >= 0.8 else "candidate"
                 rec = self._insert_memory_and_events(
@@ -422,7 +444,7 @@ class MemoryService(BaseService):
                     subject=require_non_empty("subject", proposal.subject),
                     confidence=proposal.confidence,
                     status=status,
-                    payload=dict(proposal.payload),
+                    payload=validated_payload,
                     source=require_non_empty("source", proposal.source),
                     reason=proposal.reason,
                     actor=actor,
@@ -436,7 +458,7 @@ class MemoryService(BaseService):
             try:
                 memory_id = int(row["id"])
                 prior_payload = _parse_payload_json(str(row["payload_json"]))
-                merged: dict[str, object] = {**prior_payload, **dict(proposal.payload)}
+                merged: dict[str, object] = {**prior_payload, **validated_payload}
                 new_confidence = max(float(row["confidence"]), float(proposal.confidence))
                 new_status = prior_status
                 promoted = False

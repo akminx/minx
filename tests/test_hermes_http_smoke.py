@@ -149,7 +149,7 @@ async def test_hermes_http_stack_smoke(tmp_path: Path) -> None:
                 "scope": "core",
                 "subject": "hermes_smoke_timezone",
                 "confidence": 0.5,
-                "payload": {"tz": "UTC"},
+                "payload": {"category": "timezone", "value": "UTC"},
                 "source": "hermes-http-smoke",
                 "reason": "stated in smoke test",
             },
@@ -167,7 +167,7 @@ async def test_hermes_http_stack_smoke(tmp_path: Path) -> None:
                 "scope": "finance",
                 "subject": "hermes_smoke_weekly_review",
                 "confidence": 0.9,
-                "payload": {"day": "sunday"},
+                "payload": {"category": "weekly_review", "value": "sunday"},
                 "source": "hermes-http-smoke",
             },
         )
@@ -204,7 +204,7 @@ async def test_hermes_http_stack_smoke(tmp_path: Path) -> None:
                 "scope": "core",
                 "subject": "hermes_smoke_timezone",
                 "confidence": 0.9,
-                "payload": {"tz": "UTC"},
+                "payload": {"category": "timezone", "value": "UTC"},
                 "source": "hermes-http-smoke",
             },
         )
