@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -441,7 +442,8 @@ def test_confirm_non_candidate_raises(tmp_path) -> None:
 def test_migration_set_includes_015_memories_unique_live() -> None:
     names = sorted(p.name for p in migration_dir().glob("*.sql"))
     assert "015_slice6_memories_unique_live.sql" in names
-    assert names[-1] == "015_slice6_memories_unique_live.sql"
+    assert "016_memory_ttl_and_event_check.sql" in names
+    assert names[-1] == "016_memory_ttl_and_event_check.sql"
 
 
 def test_unique_index_rejects_duplicate_live_triple(tmp_path) -> None:
@@ -1169,3 +1171,143 @@ def test_ingest_merge_does_not_overwrite_rejected(tmp_path) -> None:
         ).fetchall()
     ]
     assert ev_types == ["created", "rejected"]
+
+
+def test_reject_memory_sets_expires_at_to_now_plus_30_days(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    before = datetime.now(UTC)
+    rec = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="ttl_reject",
+        confidence=0.4,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.reject_memory(rec.id, actor="user", reason="no")
+    after = datetime.now(UTC)
+    row = svc.conn.execute("SELECT expires_at FROM memories WHERE id = ?", (rec.id,)).fetchone()
+    assert row is not None and row["expires_at"] is not None
+    expires = datetime.fromisoformat(str(row["expires_at"]))
+    expected_min = before + timedelta(days=30)
+    expected_max = after + timedelta(days=30)
+    assert expected_min - timedelta(seconds=1) <= expires <= expected_max + timedelta(seconds=1)
+
+
+def test_reject_memory_expires_at_is_iso_utc(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="iso_utc",
+        confidence=0.4,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.reject_memory(rec.id, actor="user")
+    raw = str(
+        svc.conn.execute("SELECT expires_at FROM memories WHERE id = ?", (rec.id,)).fetchone()["expires_at"]
+    )
+    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() == timedelta(0)
+
+
+def test_prune_expired_memories_removes_expired_rejected_rows(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="prune_me",
+        confidence=0.4,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.reject_memory(rec.id, actor="user")
+    yesterday = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    svc.conn.execute("UPDATE memories SET expires_at = ? WHERE id = ?", (yesterday, rec.id))
+    svc.conn.commit()
+    n = svc.prune_expired_memories()
+    assert n == 1
+    row = svc.conn.execute("SELECT 1 FROM memories WHERE id = ?", (rec.id,)).fetchone()
+    assert row is None
+
+
+def test_prune_expired_memories_leaves_unrejected_rows_alone(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    past = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    for subject, confidence in (("a", 0.4), ("b", 0.9), ("c", 0.9)):
+        svc.create_memory(
+            memory_type="t",
+            scope="s",
+            subject=subject,
+            confidence=confidence,
+            payload={},
+            source="s",
+            actor="user",
+        )
+    svc.conn.execute("UPDATE memories SET expires_at = ?", (past,))
+    svc.conn.commit()
+    n = svc.prune_expired_memories()
+    assert n == 0
+    assert svc.conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()["c"] == 3
+
+
+def test_prune_expired_memories_leaves_rejected_but_unexpired_alone(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="still_here",
+        confidence=0.4,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.reject_memory(rec.id, actor="user")
+    n = svc.prune_expired_memories()
+    assert n == 0
+    assert svc.get_memory(rec.id).status == "rejected"
+
+
+def test_prune_expired_memories_respects_explicit_now_argument(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="future_prune",
+        confidence=0.4,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.reject_memory(rec.id, actor="user")
+    far_future = datetime(2100, 1, 1, tzinfo=UTC)
+    n = svc.prune_expired_memories(now=far_future)
+    assert n == 1
+    assert svc.conn.execute("SELECT 1 FROM memories WHERE id = ?", (rec.id,)).fetchone() is None
+
+
+def test_memory_events_check_narrowed_rejects_vault_synced(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="ev_check",
+        confidence=0.9,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        svc.conn.execute(
+            """
+            INSERT INTO memory_events (memory_id, event_type, payload_json, actor, created_at)
+            VALUES (?, 'vault_synced', '{}', 'system', datetime('now'))
+            """,
+            (rec.id,),
+        )
+    svc.conn.rollback()

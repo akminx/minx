@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from sqlite3 import Connection
 from typing import Any, cast
@@ -16,6 +17,15 @@ from minx_mcp.validation import require_non_empty
 
 _ALLOWED_ACTORS = frozenset({"system", "detector", "user", "harness", "vault_sync"})
 _ALLOWED_STATUS = frozenset({"candidate", "active", "rejected", "expired"})
+
+REJECTED_MEMORY_TTL_DAYS = 30
+
+
+def _utc_reference_iso(now: datetime | None = None) -> str:
+    reference = now if now is not None else datetime.now(UTC)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=UTC)
+    return reference.astimezone(UTC).isoformat()
 
 
 def _raise_memory_status_conflict(memory_id: int, expected_status: str) -> None:
@@ -90,6 +100,9 @@ class MemoryService(BaseService):
                 raise InvalidInputError(f"status must be one of {sorted(_ALLOWED_STATUS)}")
             clauses.append("status = ?")
             params.append(status)
+            if status == "active":
+                clauses.append("(expires_at IS NULL OR expires_at > ?)")
+                params.append(_utc_reference_iso(None))
         if memory_type is not None:
             clauses.append("memory_type = ?")
             params.append(require_non_empty("memory_type", memory_type))
@@ -166,15 +179,19 @@ class MemoryService(BaseService):
         expected_status = str(row["status"])
         if expected_status != "candidate":
             raise InvalidInputError("Only candidate memories can be rejected")
+        now_utc = datetime.now(UTC)
+        expires_at_iso = (now_utc + timedelta(days=REJECTED_MEMORY_TTL_DAYS)).isoformat()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             cur = self.conn.execute(
                 """
                 UPDATE memories
-                SET status = 'rejected', updated_at = datetime('now')
+                SET status = 'rejected',
+                    expires_at = ?,
+                    updated_at = datetime('now')
                 WHERE id = ? AND status = ?
                 """,
-                (memory_id, expected_status),
+                (expires_at_iso, memory_id, expected_status),
             )
             if cur.rowcount != 1:
                 if self.conn.in_transaction:
@@ -295,8 +312,11 @@ class MemoryService(BaseService):
         limit: int = 50,
     ) -> list[MemoryRecord]:
         _validate_limit(limit)
-        clauses = ["status = 'candidate'"]
-        params: list[object] = []
+        clauses = [
+            "status = 'candidate'",
+            "(expires_at IS NULL OR expires_at > ?)",
+        ]
+        params: list[object] = [_utc_reference_iso(None)]
         if scope is not None:
             clauses.append("scope = ?")
             params.append(require_non_empty("scope", scope))
@@ -309,6 +329,34 @@ class MemoryService(BaseService):
         )
         rows = self.conn.execute(sql, params).fetchall()
         return [_row_to_record(row) for row in rows]
+
+    def list_active_memories(
+        self,
+        *,
+        memory_type: str | None = None,
+        scope: str | None = None,
+        limit: int = 100,
+    ) -> list[MemoryRecord]:
+        """Return active memories, excluding rows past ``expires_at`` (defensive TTL gate)."""
+        return self.list_memories(
+            status="active",
+            memory_type=memory_type,
+            scope=scope,
+            limit=limit,
+        )
+
+    def prune_expired_memories(self, now: datetime | None = None) -> int:
+        """Delete rejected memories whose expires_at is in the past. Returns count pruned."""
+        reference_iso = _utc_reference_iso(now)
+        cur = self.conn.execute(
+            "DELETE FROM memories "
+            "WHERE status = 'rejected' "
+            "AND expires_at IS NOT NULL "
+            "AND expires_at <= ?",
+            (reference_iso,),
+        )
+        self.conn.commit()
+        return int(cur.rowcount or 0)
 
     def ingest_proposals(
         self,

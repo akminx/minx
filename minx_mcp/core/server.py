@@ -492,12 +492,20 @@ def _memory_list(
     lim = _coerce_limit(limit, maximum=500)
     with scoped_connection(Path(config.db_path)) as conn:
         service = MemoryService(Path(config.db_path), conn=conn)
-        rows = service.list_memories(
-            status=effective_status,
-            memory_type=effective_type,
-            scope=effective_scope,
-            limit=lim,
-        )
+        if effective_status == "active":
+            service.prune_expired_memories()
+            rows = service.list_active_memories(
+                memory_type=effective_type,
+                scope=effective_scope,
+                limit=lim,
+            )
+        else:
+            rows = service.list_memories(
+                status=effective_status,
+                memory_type=effective_type,
+                scope=effective_scope,
+                limit=lim,
+            )
         return {"memories": [memory_record_as_dict(r) for r in rows]}
 
 
@@ -578,6 +586,7 @@ def _get_pending_memory_candidates(
     lim = _coerce_limit(limit, maximum=500)
     with scoped_connection(Path(config.db_path)) as conn:
         service = MemoryService(Path(config.db_path), conn=conn)
+        service.prune_expired_memories()
         rows = service.list_pending_candidates(scope=effective_scope, limit=lim)
         return {"memories": [memory_record_as_dict(r) for r in rows]}
 
