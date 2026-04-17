@@ -66,6 +66,41 @@ def test_memory_tools_round_trip(tmp_path: Path) -> None:
     assert exp["data"]["memory"]["status"] == "expired"
 
 
+def test_memory_create_duplicate_live_triple_returns_conflict(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    create_fn = get_tool(server, "memory_create").fn
+
+    first = create_fn(
+        "preference",
+        "core",
+        "tz",
+        0.9,
+        {"tz": "UTC"},
+        "user",
+        "",
+    )
+    assert first["success"] is True
+
+    dup = create_fn(
+        "preference",
+        "core",
+        "tz",
+        0.4,
+        {"tz": "America/Los_Angeles"},
+        "user",
+        "",
+    )
+    assert dup["success"] is False
+    assert dup["error_code"] == "CONFLICT"
+    assert dup["data"] == {
+        "memory_type": "preference",
+        "scope": "core",
+        "subject": "tz",
+    }
+
+
 def test_memory_list_and_pending_scope_filter(tmp_path: Path) -> None:
     db_path = tmp_path / "m.db"
     get_connection(db_path).close()

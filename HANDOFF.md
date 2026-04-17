@@ -1,6 +1,6 @@
 # Project Handoff
 
-Status as of 2026-04-17: Slices 1 through 4 are implemented, and consolidation/code-quality/observability hardening is complete. Slices 6 (Durable Memory) and 8 (Proactive Autonomy) are fully designed and now prioritized as the next implementation work.
+Status as of 2026-04-17: Slices 1 through 4 are implemented, consolidation/code-quality/observability hardening is complete, and **Slice 6 phases 6a + 6b (durable memory schema, service, MCP tools, first detectors, and snapshot archiving) are shipped on `main`**. Slice 6 phases 6c–6f (vault scanner + index, `MemoryContext` on snapshots, vault-write MCP tool, bidirectional vault↔SQLite sync) are next. Slice 8 (Proactive Autonomy) is fully designed and queued after Slice 6.
 
 Hermes cutover snapshot (2026-04-14):
 - Minx MCP ports: finance `8000`, core `8001`, meals `8002`, training `8003`
@@ -46,6 +46,9 @@ Key architectural decisions that govern future work:
 | 2.5: MCP Surface Refactor (+ cleanup) | Implemented | Core MCP tool cleanup (`get_daily_snapshot`, `get_insight_history`, `get_goal_trajectory`, `persist_note`, `goal_parse`, `finance_query`) and cleanup fixes |
 | 3: Meals MCP | Implemented | Meals logging/planning, nutrition read model integration, meal/nutrition events and detectors |
 | 4: Training MCP Skeleton + Integration | Implemented | Training domain server/service/schema/read API/events/progression, core snapshot/detector integration, harness-start scripts |
+| 6a: Memory schema + MemoryService + CRUD tools + first detectors | Implemented (2026-04-17) | `memories` + `memory_events` tables, lifecycle (create/confirm/reject/expire + auto-promote at 0.80), `MemoryService.ingest_proposals` dedupe/merge, three detectors (recurring merchant / category preference / schedule), seven MCP tools |
+| 6b: Snapshot archives | Implemented (2026-04-17) | `snapshot_archives` table with content-hash dedupe, `build_daily_snapshot` auto-persist, `list_snapshot_archives` and `get_snapshot_archive` MCP tools |
+| 6 hardening | Implemented (2026-04-17) | Partial unique index `UNIQUE(memory_type, scope, subject) WHERE status IN ('candidate','active')`, `expire_memory` restricted to `active`-only (rejection is truly terminal), `create_memory` maps the partial-unique violation to `CONFLICT`, `scope` filter on list/pending tools, `VaultReader` handles UTF-8 BOM, `VaultWriter` raises `InvalidInputError` |
 
 ## Priority Roadmap (Post-Consolidation)
 
@@ -53,7 +56,8 @@ Key architectural decisions that govern future work:
 |---|---|---|
 | Consolidation + code quality | Completed (2026-04-17) | [cleanup.md](docs/superpowers/plans/cleanup.md), [consolidation.md](docs/superpowers/plans/consolidation.md) |
 | Observability + CI hardening | Completed (2026-04-17) | [consolidation-and-refactor.md](docs/superpowers/plans/2026-04-15-consolidation-and-refactor.md) |
-| Slice 6: Durable Memory | Next (designed) | [slice6-durable-memory.md](docs/superpowers/specs/2026-04-15-slice6-durable-memory.md) |
+| Slice 6a–6b: Durable Memory foundations | Shipped 2026-04-17 | [slice6-durable-memory.md](docs/superpowers/specs/2026-04-15-slice6-durable-memory.md) |
+| Slice 6c–6f: Vault scanner, MemoryContext, vault-write MCP, bidirectional sync | Next | [slice6-durable-memory.md](docs/superpowers/specs/2026-04-15-slice6-durable-memory.md) |
 | Slice 8: Proactive Autonomy | Next after Slice 6 (designed) | [slice8-proactive-autonomy.md](docs/superpowers/specs/2026-04-15-slice8-proactive-autonomy.md) |
 | Slice 7: Journal MCP | Deferred | Standard CRUD, same pattern as Meals/Training, build when wanted |
 | Slice 5: Harness Adaptation | Deferred | One harness (Hermes) today; add harness-specific behavior directly to Core/Hermes as needed |
@@ -66,11 +70,15 @@ Key architectural decisions that govern future work:
 - Finance tools: `finance_query` (+ existing finance domain operations)
 - Meals domain: meal logging/planning + nutrition summary flows
 - Training domain: exercise/program/session/progress flows
+- **Memory tools (Slice 6a/6b)**: `memory_list(status?, memory_type?, scope?, limit?)`, `memory_get`, `memory_create(memory_type, scope, subject, confidence, payload, source, reason?)`, `memory_confirm`, `memory_reject` (candidate-only), `memory_expire` (active-only), `get_pending_memory_candidates(scope?, limit?)`, `list_snapshot_archives`, `get_snapshot_archive`
 
 ### Planned MCP Surface Additions
 
-Slice 6 will add:
-- `memory_list`, `memory_get`, `memory_create`, `memory_confirm`, `memory_reject`, `memory_expire`, `get_pending_memory_candidates`
+Slice 6c–6f will add:
+- A `vault_index` table + scanner (6c) — no new MCP tool required yet
+- `MemoryContext` on `DailySnapshot` (6d) — surfaces through existing `get_daily_snapshot`
+- A vault-write MCP tool wrapping `VaultWriter.replace_section` (6e)
+- Bidirectional vault↔SQLite sync + merge/conflict rules (6f)
 
 Slice 8 will add:
 - `log_playbook_run`, `playbook_history`

@@ -612,6 +612,155 @@ def test_list_memories_scope_filter(tmp_path) -> None:
     assert [m.subject for m in meals_active] == ["b"]
 
 
+def test_expire_memory_rejects_non_active_statuses(tmp_path) -> None:
+    """Expire is the active→expired path only.
+
+    This is the correctness rail that prevents ``ingest_proposals`` from
+    resurrecting a rejected memory (rejected→expired→"looks like a TTL expiry"
+    → detector re-proposes and inserts a fresh candidate).
+    """
+    svc = _fresh_memory_service(tmp_path)
+
+    candidate = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="cand",
+        confidence=0.3,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    assert candidate.status == "candidate"
+    with pytest.raises(InvalidInputError, match="Only active memories can be expired"):
+        svc.expire_memory(candidate.id, actor="system")
+    assert svc.get_memory(candidate.id).status == "candidate"
+
+    rejected = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="rej",
+        confidence=0.3,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.reject_memory(rejected.id, actor="user", reason="not interested")
+    with pytest.raises(InvalidInputError, match="Only active memories can be expired"):
+        svc.expire_memory(rejected.id, actor="system")
+    assert svc.get_memory(rejected.id).status == "rejected"
+
+    active = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="act",
+        confidence=0.9,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    assert active.status == "active"
+    expired = svc.expire_memory(active.id, actor="system")
+    assert expired.status == "expired"
+    again = svc.expire_memory(active.id, actor="system")
+    assert again.status == "expired"
+    events = svc.conn.execute(
+        "SELECT event_type FROM memory_events WHERE memory_id = ? ORDER BY id",
+        (active.id,),
+    ).fetchall()
+    expired_events = [e for e in events if str(e["event_type"]) == "expired"]
+    assert len(expired_events) == 1, (
+        "expire_memory must be idempotent: a second call on an already-expired "
+        "row must not emit a second 'expired' event"
+    )
+
+
+def test_rejected_prior_stays_sticky_even_after_expire_attempts(tmp_path) -> None:
+    """Regression guard for the reject→expire→re-ingest resurrection bug.
+
+    Before the expire_memory active-only guard, a detector could effectively
+    resurrect a rejected memory by (1) having the row end up in 'expired' state
+    somehow, (2) re-proposing it, because ingest_proposals treats expired-prior
+    as a fresh lifecycle. The guard in expire_memory plus the suppression path
+    in ingest_proposals together make rejection truly terminal.
+    """
+    svc = _fresh_memory_service(tmp_path)
+    candidate = svc.create_memory(
+        memory_type="recurring_merchant",
+        scope="finance",
+        subject="starbucks",
+        confidence=0.4,
+        payload={"cadence": "weekly"},
+        source="detector:recurring_merchant",
+        actor="detector",
+    )
+    svc.reject_memory(candidate.id, actor="user", reason="I don't want this tracked")
+
+    with pytest.raises(InvalidInputError):
+        svc.expire_memory(candidate.id, actor="system")
+
+    proposal = MemoryProposal(
+        memory_type="recurring_merchant",
+        scope="finance",
+        subject="starbucks",
+        confidence=0.9,
+        payload={"cadence": "weekly"},
+        source="detector:recurring_merchant",
+        reason="resurgence",
+    )
+    out = svc.ingest_proposals((proposal,), actor="detector")
+    assert out == [], "rejected-prior must remain sticky across re-ingest"
+    rows = svc.conn.execute(
+        "SELECT id, status FROM memories "
+        "WHERE memory_type='recurring_merchant' AND scope='finance' "
+        "AND subject='starbucks' ORDER BY id"
+    ).fetchall()
+    assert [(int(r["id"]), str(r["status"])) for r in rows] == [
+        (candidate.id, "rejected"),
+    ]
+
+
+def test_create_memory_duplicate_live_triple_raises_conflict(tmp_path) -> None:
+    """Migration 015's partial unique index surfaces as a CONFLICT error.
+
+    Without explicit mapping, ``sqlite3.IntegrityError`` would surface as a
+    generic INTERNAL_ERROR to MCP clients — obscuring an actionable operator
+    mistake (trying to manually create a memory that already has a live row).
+    """
+    from minx_mcp.contracts import ConflictError
+
+    svc = _fresh_memory_service(tmp_path)
+    svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="tz",
+        confidence=0.9,
+        payload={"tz": "UTC"},
+        source="user",
+        actor="user",
+    )
+    with pytest.raises(ConflictError) as excinfo:
+        svc.create_memory(
+            memory_type="preference",
+            scope="core",
+            subject="tz",
+            confidence=0.4,
+            payload={"tz": "America/Los_Angeles"},
+            source="user",
+            actor="user",
+        )
+    assert excinfo.value.data == {
+        "memory_type": "preference",
+        "scope": "core",
+        "subject": "tz",
+    }
+
+
+def test_list_memories_rejects_unknown_status(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    with pytest.raises(InvalidInputError, match="status must be one of"):
+        svc.list_memories(status="nope")
+
+
 def test_ingest_proposals_after_expired_creates_new_row(tmp_path) -> None:
     svc = _fresh_memory_service(tmp_path)
     rec = svc.create_memory(

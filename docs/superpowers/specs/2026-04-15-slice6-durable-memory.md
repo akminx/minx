@@ -113,7 +113,7 @@ CREATE TABLE snapshot_archives (
     generated_at TEXT NOT NULL DEFAULT (datetime('now')),
     snapshot_json TEXT NOT NULL,
     content_hash TEXT NOT NULL,      -- SHA-256 over stable-serialized snapshot_json
-    source TEXT NOT NULL DEFAULT 'snapshot_builder',
+    source TEXT NOT NULL DEFAULT 'build_daily_snapshot',
     UNIQUE(review_date, content_hash)  -- dedupe identical rebuilds; divergent rebuilds still append
 );
 ```
@@ -142,7 +142,7 @@ CREATE TABLE vault_index (
 | `memory_create(memory_type, scope, subject, confidence, payload, source, reason?)` | Manual creation (harness records user-stated preferences)                |
 | `memory_confirm(memory_id)`                                                        | Promote candidate to active (candidate-only)                             |
 | `memory_reject(memory_id, reason?)`                                                | Reject a candidate (candidate-only; use `memory_expire` for active rows) |
-| `memory_expire(memory_id, reason?)`                                                | Manually expire                                                          |
+| `memory_expire(memory_id, reason?)`                                                | Manually expire an active memory (active-only; idempotent on already-expired) |
 | `get_pending_memory_candidates(scope?, limit?)`                                    | Candidates awaiting confirmation (harness uses this)                     |
 | `list_snapshot_archives(review_date?, limit?)`                                     | Metadata listing of archived snapshots                                   |
 | `get_snapshot_archive(archive_id)`                                                 | Full archived snapshot JSON                                              |
@@ -271,4 +271,16 @@ column names; "domain" survives only as a conversational alias in docs.
 - 2026-04-17: partial `UNIQUE(memory_type, scope, subject) WHERE status IN ('candidate', 'active')`
 index added (migration 015) to enforce at-most-one-live-row per triple at the DB
 level, complementing the application-level dedupe in `ingest_proposals`.
+- 2026-04-17: post-6b code review tightened two correctness rails:
+  1. `expire_memory` now **only accepts `active` rows**. Previously it also accepted
+     `candidate` and (silently) `rejected` rows, which allowed a detector to
+     effectively resurrect a user-rejected memory by going
+     rejected → expired → next ingest treats "expired prior" as a new lifecycle
+     → fresh candidate row. Terminal states (`rejected`, `expired`) are now
+     sticky by design.
+  2. `create_memory` translates the migration-015 partial-unique-index violation
+     into a `CONFLICT` error (with the offending `(memory_type, scope, subject)`
+     triple in `data`) instead of bubbling `sqlite3.IntegrityError` up as
+     `INTERNAL_ERROR`. MCP clients can now distinguish "duplicate live memory"
+     from generic internal failures.
 

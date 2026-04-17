@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 from sqlite3 import Connection
 from typing import Any, cast
 
 from minx_mcp.base_service import BaseService
-from minx_mcp.contracts import InvalidInputError, NotFoundError
+from minx_mcp.contracts import ConflictError, InvalidInputError, NotFoundError
 from minx_mcp.core.memory_models import MemoryProposal, MemoryRecord
 from minx_mcp.validation import require_non_empty
 
@@ -177,12 +178,32 @@ class MemoryService(BaseService):
         actor: str = "system",
         reason: str = "",
     ) -> MemoryRecord:
+        """Expire an active memory.
+
+        Only ``active`` memories may be expired through this path. Restricting the
+        allowed prior statuses is a **correctness requirement**, not just a
+        conservatism: if a ``rejected`` row were demoted to ``expired``, the
+        ``ingest_proposals`` lookup (which branches on the **latest** row's status)
+        would then treat the triple as "expired → insert fresh row" and silently
+        resurrect the user's rejection. Terminal states (``rejected``, ``expired``)
+        are sticky by design.
+
+        - ``candidate``: use :meth:`reject_memory` instead.
+        - ``rejected``: already terminal; no transition is allowed.
+        - ``expired``: idempotent — returns the existing row unchanged.
+        """
         _validate_actor(actor)
         row = self.conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"Memory {memory_id} not found")
-        if str(row["status"]) == "expired":
+        status_before = str(row["status"])
+        if status_before == "expired":
             return _row_to_record(row)
+        if status_before != "active":
+            raise InvalidInputError(
+                "Only active memories can be expired "
+                "(candidates should be rejected; rejected rows are terminal)"
+            )
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             self.conn.execute(
@@ -414,6 +435,38 @@ class MemoryService(BaseService):
             if emit_promoted:
                 _insert_event(self.conn, memory_id, "promoted", {}, actor)
             self.conn.commit()
+        except sqlite3.IntegrityError as exc:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            # Migration 015's partial unique index enforces at most one live
+            # (candidate/active) row per (memory_type, scope, subject). Translate
+            # that specific violation into a CONFLICT error code so MCP clients
+            # can distinguish "duplicate live memory" from a generic internal
+            # failure. Other IntegrityErrors (check constraints, null, etc.)
+            # remain unmapped and surface as INTERNAL_ERROR — they indicate
+            # programmer bugs, not caller-addressable conflicts.
+            #
+            # SQLite's IntegrityError message for partial unique indexes names
+            # the columns, not the index (e.g. "UNIQUE constraint failed:
+            # memories.memory_type, memories.scope, memories.subject"). We
+            # detect that exact column tuple — no other constraint on the
+            # ``memories`` table covers the same combination.
+            msg = str(exc)
+            triple_signature = (
+                "memories.memory_type" in msg
+                and "memories.scope" in msg
+                and "memories.subject" in msg
+            )
+            if triple_signature:
+                raise ConflictError(
+                    "A live memory already exists for this (memory_type, scope, subject)",
+                    data={
+                        "memory_type": memory_type,
+                        "scope": scope,
+                        "subject": subject,
+                    },
+                ) from exc
+            raise
         except Exception:
             if self.conn.in_transaction:
                 self.conn.rollback()
