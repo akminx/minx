@@ -537,7 +537,15 @@ class MealsService(BaseService):
     def scan_vault_recipes(self, directory: str = "Recipes") -> list[Recipe]:
         if self._vault_root is None:
             raise InvalidInputError("vault_root is required to scan recipes")
-        self._reconcile_vault_recipes_inner(self._vault_root)
+        # Reconcile in its own transaction boundary BEFORE entering the
+        # index_recipe loop. Previously the inner call shared the outer
+        # transaction with subsequent index_recipe SAVEPOINTs; a
+        # ROLLBACK TO SAVEPOINT in index_recipe does NOT undo statements
+        # issued before the savepoint, so on mid-loop failure we could leave
+        # reconcile writes (UPDATE meals_recipes + meals.recipe_orphaned
+        # events) in an uncommitted outer transaction with no guaranteed
+        # commit/rollback at this method's scope.
+        self.reconcile_vault_recipes()
         root = _vault_child_path(self._vault_root, directory)
         vault_root = self._vault_root.resolve()
         paths = sorted(root.rglob("*.md"))

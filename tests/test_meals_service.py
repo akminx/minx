@@ -11,6 +11,7 @@ import minx_mcp.meals.service as meals_service_module
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import query_events
 from minx_mcp.db import get_connection
+from minx_mcp.meals.models import Recipe
 from minx_mcp.meals.service import MealsService, ReconcileRecipesResult
 from minx_mcp.preferences import set_preference
 
@@ -605,3 +606,61 @@ def test_scan_vault_recipes_calls_reconcile_first(db_path, tmp_path) -> None:
         ).fetchone()
 
     assert row["vault_path"] is None
+
+
+def test_scan_vault_recipes_persists_reconcile_even_if_later_index_raises(
+    db_path, tmp_path, monkeypatch
+) -> None:
+    """Regression: previously scan_vault_recipes called _reconcile_vault_recipes_inner
+    (no commit), then iterated index_recipe which uses a SAVEPOINT. If an index
+    call failed, ROLLBACK TO SAVEPOINT left reconcile writes (UPDATE + event)
+    stranded in the outer transaction with no guaranteed commit/rollback. After
+    the fix we call the public reconcile_vault_recipes, which owns its own
+    transaction and commits before we iterate.
+    """
+    vault = tmp_path / "vault"
+    recipes_dir = vault / "Recipes"
+    recipes_dir.mkdir(parents=True)
+    # One real recipe file so the index loop has something to process.
+    (recipes_dir / "soup.md").write_text(
+        "# Soup\n\n## Ingredients\n- 1 cup broth\n\n## Steps\n1. Heat.\n",
+        encoding="utf-8",
+    )
+    svc = MealsService(db_path, vault_root=vault)
+    with svc:
+        # Seed a ghost row whose file is missing; reconcile should nullify it.
+        svc.conn.execute(
+            """
+            INSERT INTO meals_recipes (vault_path, title, normalized_title, content_hash)
+            VALUES ('Recipes/Ghost.md', 'Ghost', 'ghost', 'g1')
+            """
+        )
+        svc.conn.commit()
+
+        # Force index_recipe to blow up mid-loop.
+        original_index = svc.index_recipe
+
+        def exploding_index(path: str) -> Recipe:
+            raise RuntimeError("boom in index_recipe")
+
+        monkeypatch.setattr(svc, "index_recipe", exploding_index)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            svc.scan_vault_recipes("Recipes")
+
+        # Even though scan itself raised, reconcile already committed: the
+        # ghost row's vault_path must be NULL and the recipe_orphaned event
+        # must be durable.
+        row = svc.conn.execute(
+            "SELECT vault_path FROM meals_recipes WHERE normalized_title = 'ghost'"
+        ).fetchone()
+        assert row["vault_path"] is None
+        # Restore so cleanup works
+        monkeypatch.setattr(svc, "index_recipe", original_index)
+        events = svc.conn.execute(
+            """
+            SELECT event_type FROM events
+            WHERE event_type = 'meals.recipe_orphaned'
+            """
+        ).fetchall()
+        assert len(events) == 1
