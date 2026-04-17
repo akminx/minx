@@ -7,6 +7,7 @@ from mcp.server.fastmcp import FastMCP
 from minx_mcp.contracts import ToolResponse, wrap_tool_call
 from minx_mcp.meals.recommendations import recommend_recipes as recommend
 from minx_mcp.meals.service import MealsService
+from minx_mcp.meals.templates import read_recipe_starter_template, recipe_starter_template_path
 
 
 def create_meals_server(service: MealsService) -> FastMCP:
@@ -111,6 +112,16 @@ def create_meals_server(service: MealsService) -> FastMCP:
                 "recipes": [asdict(recipe) for recipe in service.scan_vault_recipes(directory)]
             },
             tool_name="recipe_scan",
+        )
+
+    @mcp.tool(name="recipe_template")
+    def recipe_template() -> ToolResponse:
+        return wrap_tool_call(
+            lambda: {
+                "filename": recipe_starter_template_path().name,
+                "template": read_recipe_starter_template(),
+            },
+            tool_name="recipe_template",
         )
 
     @mcp.tool(name="recommend_recipes")

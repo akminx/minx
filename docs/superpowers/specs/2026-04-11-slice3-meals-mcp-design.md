@@ -434,6 +434,16 @@ Recipe ingredients should support required versus optional behavior. Recipe ingr
 
 If a recipe lacks picture metadata, the system should still work normally. If a recipe has picture metadata, the harness should surface it.
 
+### Recipe note starter scaffold (shipped)
+
+To reduce "my recipe didn't index" support loops and give the harness a canonical shape to reference when capturing recipes from a photo, URL, or user dictation, the meals package ships a starter scaffold as package data:
+
+- **Location:** `minx_mcp/meals/templates/recipe-starter.md`, wired in `pyproject.toml` via `"minx_mcp.meals.templates" = ["*.md"]` — same pattern as `minx_mcp/finance/templates/` and `minx_mcp/schema/migrations/`. The wheel-packing test at `tests/test_db.py::test_built_wheel_includes_packaged_resources` guards presence.
+- **Classification:** this is an **input scaffold for humans** (a DX improvement), not an output renderer from SQL data like the finance report templates or the deferred shopping-list template in Phase 3. It is plain markdown — no `string.Template` placeholders — so `read_recipe_starter_template()` returns the bytes verbatim and callers decide whether to hand it to a user as-is or prefill values before writing.
+- **Loader:** `minx_mcp.meals.templates.read_recipe_starter_template()` and `recipe_starter_template_path()`, mirroring the finance `TEMPLATE_DIR = Path(__file__).resolve().parent` pattern so wheel installs resolve correctly.
+- **MCP tool:** `recipe_template` on the minx-meals server returns `{"filename": "recipe-starter.md", "template": "<markdown>"}`. The harness can expose this to a user verbatim when they ask to create a new recipe.
+- **Indexer contract:** the scaffold's frontmatter keys (`title`, `tags`, `prep_time`, `cook_time`, `servings`, `source`, `image`) and section layout (`## Ingredients`, `## Substitutions`, `## Notes` with a leading `# Title` body heading) match exactly what `parse_recipe_note` expects, so a freshly-copied scaffold indexes cleanly before any edits. This round-trip is asserted by `tests/test_meals_templates.py::test_recipe_starter_scaffold_parses_through_meals_indexer`.
+
 ## Phase 2: Recipe Recommendation
 
 Recipe recommendation adds the deterministic path needed for "what should I cook today?"

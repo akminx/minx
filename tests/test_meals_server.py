@@ -18,6 +18,7 @@ def test_meals_server_registers_expected_tools(db_path, tmp_path) -> None:
     assert "recommend_recipes" in tool_names
     assert "nutrition_profile_set" in tool_names
     assert "nutrition_profile_get" in tool_names
+    assert "recipe_template" in tool_names
 
 
 def test_meal_log_tool(db_path, tmp_path) -> None:
@@ -78,3 +79,19 @@ def test_nutrition_profile_tools(db_path, tmp_path) -> None:
     assert set_result["data"]["plan"]["targets"]["calorie_target_kcal"] == 2359
     assert get_result["success"] is True
     assert get_result["data"]["plan"]["profile"]["activity_level"] == "moderately_active"
+
+
+def test_recipe_template_tool_returns_packaged_scaffold(db_path, tmp_path) -> None:
+    server = create_meals_server(MealsService(db_path, vault_root=tmp_path))
+
+    result = _call(server, "recipe_template", {})
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["filename"] == "recipe-starter.md"
+    template = data["template"]
+    assert isinstance(template, str)
+    assert template.startswith("---\n"), "tool must return the scaffold verbatim, including frontmatter"
+    assert "## Ingredients" in template
+    assert "## Substitutions" in template
+    assert "## Notes" in template

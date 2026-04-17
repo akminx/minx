@@ -428,6 +428,11 @@ def test_built_wheel_includes_packaged_resources(tmp_path):
     assert "minx_mcp/finance/templates/finance-weekly-summary.md" in names
     assert "minx_mcp/finance/templates/finance-monthly-summary.md" in names
 
+    # Meals ships the recipe starter scaffold as package data so installed wheels
+    # (and the minx-meals ``recipe_template`` tool) can serve it without relying
+    # on the repo layout.
+    assert "minx_mcp/meals/templates/recipe-starter.md" in names
+
 
 def test_missing_migrations_preserve_row_factory(tmp_path, monkeypatch):
     missing_root = tmp_path / "missing"
