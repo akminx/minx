@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,7 @@ class ParsedRecipe:
     substitutions: list[ParsedSubstitution]
     content_hash: str
     notes: str | None
+    nutrition_summary: dict[str, object] | None = None
 
 
 _SECTION_RE = re.compile(r"^##\s+(.+?)\s*$")
@@ -61,6 +63,7 @@ def parse_recipe_note(path: Path) -> ParsedRecipe:
     ingredients = _parse_ingredients(_section_lines(body, "Ingredients"))
     substitutions = _parse_substitutions(_section_lines(body, "Substitutions"))
     notes_text = "\n".join(_section_lines(body, "Notes")).strip()
+    nutrition_summary = _parse_nutrition_from_frontmatter(frontmatter)
     return ParsedRecipe(
         title=title,
         tags=_list_value(metadata.get("tags")),
@@ -73,6 +76,7 @@ def parse_recipe_note(path: Path) -> ParsedRecipe:
         substitutions=substitutions,
         content_hash=hashlib.sha256(content.encode()).hexdigest(),
         notes=notes_text or None,
+        nutrition_summary=nutrition_summary,
     )
 
 
@@ -85,6 +89,58 @@ def _split_frontmatter(content: str) -> tuple[str, str]:
     frontmatter = content[4:end]
     body = content[end + len("\n---") :]
     return frontmatter, body.lstrip("\n")
+
+
+def _parse_nutrition_from_frontmatter(frontmatter: str) -> dict[str, object] | None:
+    """Parse optional ``nutrition`` YAML frontmatter (case-insensitive key).
+
+    Supports a single-line JSON object after ``nutrition:`` or an indented
+    ``key: value`` block on following lines.
+    """
+    lines = frontmatter.splitlines()
+    for i, line in enumerate(lines):
+        if ":" not in line:
+            continue
+        key, _, rest = line.partition(":")
+        if key.strip().lower() != "nutrition":
+            continue
+        rest = rest.strip()
+        if rest.startswith("{"):
+            try:
+                loaded = json.loads(rest)
+            except json.JSONDecodeError:
+                return None
+            return loaded if isinstance(loaded, dict) else None
+        block: dict[str, object] = {}
+        for j in range(i + 1, len(lines)):
+            cont = lines[j]
+            if not cont.strip():
+                continue
+            if not cont[:1].isspace():
+                break
+            stripped = cont.strip()
+            if ":" not in stripped:
+                continue
+            ik, _, iv = stripped.partition(":")
+            ik = ik.strip()
+            iv = iv.strip()
+            if not ik:
+                continue
+            block[ik] = _coerce_frontmatter_scalar(iv)
+        return block or None
+    return None
+
+
+def _coerce_frontmatter_scalar(raw: str) -> object:
+    lowered = raw.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    try:
+        if "." in raw:
+            return float(raw)
+        return int(raw)
+    except ValueError:
+        return raw
 
 
 def _parse_frontmatter(text: str) -> dict[str, object]:

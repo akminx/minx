@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any, cast
 
 from minx_mcp.db import get_connection
 from minx_mcp.meals.server import create_meals_server
@@ -70,6 +71,7 @@ def test_nutrition_profile_tools(db_path, tmp_path) -> None:
             "height_cm": 180.0,
             "weight_kg": 80.0,
             "activity_level": "moderately_active",
+            "goal": "maintenance",
             "calorie_deficit_kcal": 400,
         },
     )
@@ -79,6 +81,41 @@ def test_nutrition_profile_tools(db_path, tmp_path) -> None:
     assert set_result["data"]["plan"]["targets"]["calorie_target_kcal"] == 2359
     assert get_result["success"] is True
     assert get_result["data"]["plan"]["profile"]["activity_level"] == "moderately_active"
+
+
+def test_nutrition_profile_set_mcp_default_goal_matches_service(db_path, tmp_path) -> None:
+    """Omitting `goal` on the MCP tool must produce the same targets as omitting it on the service."""
+    service = MealsService(db_path, vault_root=tmp_path)
+    expected = service.set_nutrition_profile(
+        sex="male",
+        age_years=30,
+        height_cm=180.0,
+        weight_kg=80.0,
+        activity_level="moderately_active",
+    )
+
+    server = create_meals_server(MealsService(db_path, vault_root=tmp_path))
+    set_result = cast(
+        dict[str, Any],
+        _call(
+            server,
+            "nutrition_profile_set",
+            {
+                "sex": "male",
+                "age_years": 30,
+                "height_cm": 180.0,
+                "weight_kg": 80.0,
+                "activity_level": "moderately_active",
+            },
+        ),
+    )
+
+    assert set_result["success"] is True
+    assert (
+        set_result["data"]["plan"]["targets"]["calorie_target_kcal"]
+        == expected.targets.calorie_target_kcal
+    )
+    assert set_result["data"]["plan"]["profile"]["goal"] == expected.profile.goal
 
 
 def test_recipe_template_tool_returns_packaged_scaffold(db_path, tmp_path) -> None:

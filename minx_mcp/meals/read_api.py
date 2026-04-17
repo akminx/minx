@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-from datetime import date as date_cls
-from datetime import datetime, timedelta
 from sqlite3 import Connection
-from zoneinfo import ZoneInfo
 
 from minx_mcp.core.models import NutritionSnapshot
 from minx_mcp.meals.models import PantryItem
 from minx_mcp.meals.pantry import pantry_item_from_row
-from minx_mcp.preferences import get_preference
-from minx_mcp.time_utils import format_utc_timestamp
+from minx_mcp.time_utils import local_day_utc_bounds, resolve_timezone_name
 
 
 class MealsReadAPI:
@@ -17,7 +13,7 @@ class MealsReadAPI:
         self._db = db
 
     def get_nutrition_summary(self, date: str) -> NutritionSnapshot:
-        start_utc, end_utc = _local_day_utc_bounds(date, _resolve_timezone_name(self._db))
+        start_utc, end_utc = local_day_utc_bounds(date, resolve_timezone_name(self._db))
         rows = self._db.execute(
             """
             SELECT id, occurred_at, meal_kind, protein_grams, calories
@@ -58,20 +54,3 @@ class MealsReadAPI:
             """
         ).fetchall()
         return [pantry_item_from_row(row) for row in rows]
-
-
-def _resolve_timezone_name(conn: Connection) -> str:
-    configured = get_preference(conn, "core", "timezone", None)
-    if isinstance(configured, str) and configured:
-        return configured
-    tzinfo = datetime.now().astimezone().tzinfo
-    key = getattr(tzinfo, "key", None)
-    return key if isinstance(key, str) and key else "UTC"
-
-
-def _local_day_utc_bounds(review_date: str, timezone_name: str) -> tuple[str, str]:
-    zone = ZoneInfo(timezone_name)
-    local_day = date_cls.fromisoformat(review_date)
-    local_start = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
-    local_end = local_start + timedelta(days=1)
-    return format_utc_timestamp(local_start), format_utc_timestamp(local_end)

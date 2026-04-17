@@ -22,7 +22,7 @@ def normalize_utc_timestamp(value: str) -> str:
     return format_utc_timestamp(parsed)
 
 
-def _resolve_timezone_name(conn: Connection) -> str:
+def resolve_timezone_name(conn: Connection) -> str:
     configured = get_preference(conn, "core", "timezone", None)
     if isinstance(configured, str) and configured:
         return configured
@@ -31,12 +31,22 @@ def _resolve_timezone_name(conn: Connection) -> str:
     return key if isinstance(key, str) and key else "UTC"
 
 
-def _local_day_utc_bounds(review_date: str, timezone_name: str) -> tuple[str, str]:
+def local_day_utc_bounds(review_date: str, timezone_name: str) -> tuple[str, str]:
     zone = ZoneInfo(timezone_name)
     local_day = date.fromisoformat(review_date)
     local_start = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
     local_end = local_start + timedelta(days=1)
     return format_utc_timestamp(local_start), format_utc_timestamp(local_end)
+
+
+def local_calendar_date_for_utc_timestamp(occurred_at: str, timezone_name: str) -> str:
+    """Map a UTC (or offset) ISO timestamp to the calendar date in ``timezone_name``."""
+    normalized = occurred_at.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    local_dt = parsed.astimezone(ZoneInfo(timezone_name))
+    return local_dt.date().isoformat()
 
 
 def next_day(value: str) -> str:

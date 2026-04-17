@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
-from datetime import date as date_cls
-from datetime import datetime, timedelta
 from pathlib import Path
 from sqlite3 import Connection, Row
-from zoneinfo import ZoneInfo
 
 from minx_mcp.base_service import BaseService
 from minx_mcp.contracts import InvalidInputError, NotFoundError
@@ -23,18 +21,27 @@ from minx_mcp.meals.models import (
 )
 from minx_mcp.meals.nutrition import (
     ACTIVITY_MULTIPLIERS,
+    GOAL_CALORIE_MULTIPLIERS,
     SEX_BMR_OFFSETS,
     calculate_nutrition_targets,
 )
 from minx_mcp.meals.pantry import normalize_ingredient, pantry_item_from_row
 from minx_mcp.meals.recipes import parse_recipe_note
-from minx_mcp.preferences import get_preference
-from minx_mcp.time_utils import format_utc_timestamp
+from minx_mcp.time_utils import (
+    local_calendar_date_for_utc_timestamp,
+    local_day_utc_bounds,
+    resolve_timezone_name,
+)
 
+_logger = logging.getLogger(__name__)
 EVENT_SOURCE = "meals.service"
 VALID_MEAL_KINDS = {"breakfast", "lunch", "dinner", "snack", "other"}
 VALID_ACTIVITY_LEVELS = set(ACTIVITY_MULTIPLIERS)
 VALID_SEX_VALUES = set(SEX_BMR_OFFSETS)
+# Canonical nutrition goals for target calculation (see ``GOAL_CALORIE_MULTIPLIERS``).
+# ``fat_loss`` / ``muscle_gain`` are accepted legacy aliases for ``cut`` / ``bulk``.
+_GOAL_ALIASES: dict[str, str] = {"fat_loss": "cut", "muscle_gain": "bulk"}
+_VALID_GOAL_CANONICAL = set(GOAL_CALORIE_MULTIPLIERS)
 
 
 class MealsService(BaseService):
@@ -118,6 +125,8 @@ class MealsService(BaseService):
             self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             raise
         self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        self.conn.commit()
+        _emit_nutrition_day_updated(self.conn, occurred_at=occurred_at)
         self.conn.commit()
         return entry
 
@@ -218,7 +227,7 @@ class MealsService(BaseService):
             ).fetchall()
             return [_meal_entry_from_row(row) for row in rows]
 
-        start_utc, end_utc = _local_day_utc_bounds(date, _resolve_timezone_name(self.conn))
+        start_utc, end_utc = local_day_utc_bounds(date, resolve_timezone_name(self.conn))
         rows = self.conn.execute(
             """
             SELECT id, occurred_at, meal_kind, summary, food_items_json, protein_grams,
@@ -240,7 +249,7 @@ class MealsService(BaseService):
         height_cm: float,
         weight_kg: float,
         activity_level: str,
-        goal: str = "fat_loss",
+        goal: str = "maintenance",
         calorie_deficit_kcal: int = 400,
         protein_g_per_kg: float = 2.0,
         fat_g_per_kg: float = 0.77,
@@ -248,7 +257,7 @@ class MealsService(BaseService):
     ) -> NutritionPlan:
         normalized_sex = sex.strip().lower()
         normalized_activity = activity_level.strip().lower()
-        normalized_goal = goal.strip().lower() or "fat_loss"
+        normalized_goal = goal.strip().lower() or "maintenance"
         if normalized_sex not in VALID_SEX_VALUES:
             raise InvalidInputError("sex must be one of male, female, other")
         if age_years <= 0:
@@ -267,12 +276,18 @@ class MealsService(BaseService):
         if fat_g_per_kg <= 0:
             raise InvalidInputError("fat_g_per_kg must be positive")
 
+        canonical_goal = _GOAL_ALIASES.get(normalized_goal, normalized_goal)
+        if canonical_goal not in _VALID_GOAL_CANONICAL:
+            allowed = ", ".join(sorted(_VALID_GOAL_CANONICAL | set(_GOAL_ALIASES)))
+            raise InvalidInputError(f"goal must be one of: {allowed}")
+
         calculated = calculate_nutrition_targets(
             sex=normalized_sex,
             age_years=age_years,
             height_cm=height_cm,
             weight_kg=weight_kg,
             activity_level=normalized_activity,
+            goal=canonical_goal,
             calorie_deficit_kcal=calorie_deficit_kcal,
             protein_g_per_kg=protein_g_per_kg,
             fat_g_per_kg=fat_g_per_kg,
@@ -391,96 +406,109 @@ class MealsService(BaseService):
         ).fetchone()
         if existing is not None and existing["content_hash"] == parsed.content_hash:
             return self.get_recipe(int(existing["id"]))
-        if existing is None:
-            cursor = self.conn.execute(
-                """
-                INSERT INTO meals_recipes (
-                    vault_path, title, normalized_title, source_url, image_ref,
-                    prep_time_minutes, cook_time_minutes, servings, tags_json,
-                    notes, content_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    vault_path,
-                    parsed.title,
-                    normalize_ingredient(parsed.title),
-                    parsed.source_url,
-                    parsed.image_ref,
-                    parsed.prep_time_minutes,
-                    parsed.cook_time_minutes,
-                    parsed.servings,
-                    json.dumps(parsed.tags),
-                    parsed.notes,
-                    parsed.content_hash,
-                ),
-            )
-            recipe_id = cursor.lastrowid or 0
-        else:
-            recipe_id = int(existing["id"])
-            self.conn.execute(
-                """
-                UPDATE meals_recipes
-                SET title = ?, normalized_title = ?, source_url = ?, image_ref = ?,
-                    prep_time_minutes = ?, cook_time_minutes = ?, servings = ?,
-                    tags_json = ?, notes = ?, content_hash = ?,
-                    indexed_at = datetime('now'), updated_at = datetime('now')
-                WHERE id = ?
-                """,
-                (
-                    parsed.title,
-                    normalize_ingredient(parsed.title),
-                    parsed.source_url,
-                    parsed.image_ref,
-                    parsed.prep_time_minutes,
-                    parsed.cook_time_minutes,
-                    parsed.servings,
-                    json.dumps(parsed.tags),
-                    parsed.notes,
-                    parsed.content_hash,
-                    recipe_id,
-                ),
-            )
-            self.conn.execute(
-                "DELETE FROM meals_recipe_ingredients WHERE recipe_id = ?", (recipe_id,)
-            )
-        ingredient_ids_by_name: dict[str, int] = {}
-        for ingredient in parsed.ingredients:
-            cursor = self.conn.execute(
-                """
-                INSERT INTO meals_recipe_ingredients (
-                    recipe_id, display_text, normalized_name, quantity, unit,
-                    is_required, sort_order
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    recipe_id,
-                    ingredient.display_text,
-                    ingredient.normalized_name,
-                    ingredient.quantity,
-                    ingredient.unit,
-                    int(ingredient.is_required),
-                    ingredient.sort_order,
-                ),
-            )
-            ingredient_ids_by_name.setdefault(ingredient.normalized_name, cursor.lastrowid or 0)
-        for substitution in parsed.substitutions:
-            ingredient_id = ingredient_ids_by_name.get(substitution.original_name)
-            if ingredient_id is None:
-                continue
-            self.conn.execute(
-                """
-                INSERT INTO meals_recipe_substitutions (
-                    recipe_ingredient_id, substitute_normalized_name,
-                    display_text, priority
-                ) VALUES (?, ?, ?, ?)
-                """,
-                (
-                    ingredient_id,
-                    substitution.substitute_name,
-                    substitution.display_text,
-                    substitution.priority,
-                ),
-            )
+        nutrition_summary_json = (
+            json.dumps(parsed.nutrition_summary) if parsed.nutrition_summary is not None else None
+        )
+        savepoint = "meals_index_recipe"
+        self.conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            if existing is None:
+                cursor = self.conn.execute(
+                    """
+                    INSERT INTO meals_recipes (
+                        vault_path, title, normalized_title, source_url, image_ref,
+                        prep_time_minutes, cook_time_minutes, servings, tags_json,
+                        notes, nutrition_summary_json, content_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        vault_path,
+                        parsed.title,
+                        normalize_ingredient(parsed.title),
+                        parsed.source_url,
+                        parsed.image_ref,
+                        parsed.prep_time_minutes,
+                        parsed.cook_time_minutes,
+                        parsed.servings,
+                        json.dumps(parsed.tags),
+                        parsed.notes,
+                        nutrition_summary_json,
+                        parsed.content_hash,
+                    ),
+                )
+                recipe_id = cursor.lastrowid or 0
+            else:
+                recipe_id = int(existing["id"])
+                self.conn.execute(
+                    """
+                    UPDATE meals_recipes
+                    SET title = ?, normalized_title = ?, source_url = ?, image_ref = ?,
+                        prep_time_minutes = ?, cook_time_minutes = ?, servings = ?,
+                        tags_json = ?, notes = ?, nutrition_summary_json = ?, content_hash = ?,
+                        indexed_at = datetime('now'), updated_at = datetime('now')
+                    WHERE id = ?
+                    """,
+                    (
+                        parsed.title,
+                        normalize_ingredient(parsed.title),
+                        parsed.source_url,
+                        parsed.image_ref,
+                        parsed.prep_time_minutes,
+                        parsed.cook_time_minutes,
+                        parsed.servings,
+                        json.dumps(parsed.tags),
+                        parsed.notes,
+                        nutrition_summary_json,
+                        parsed.content_hash,
+                        recipe_id,
+                    ),
+                )
+                self.conn.execute(
+                    "DELETE FROM meals_recipe_ingredients WHERE recipe_id = ?", (recipe_id,)
+                )
+            ingredient_ids_by_name: dict[str, int] = {}
+            for ingredient in parsed.ingredients:
+                cursor = self.conn.execute(
+                    """
+                    INSERT INTO meals_recipe_ingredients (
+                        recipe_id, display_text, normalized_name, quantity, unit,
+                        is_required, sort_order
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        recipe_id,
+                        ingredient.display_text,
+                        ingredient.normalized_name,
+                        ingredient.quantity,
+                        ingredient.unit,
+                        int(ingredient.is_required),
+                        ingredient.sort_order,
+                    ),
+                )
+                ingredient_ids_by_name.setdefault(ingredient.normalized_name, cursor.lastrowid or 0)
+            for substitution in parsed.substitutions:
+                ingredient_id = ingredient_ids_by_name.get(substitution.original_name)
+                if ingredient_id is None:
+                    continue
+                self.conn.execute(
+                    """
+                    INSERT INTO meals_recipe_substitutions (
+                        recipe_ingredient_id, substitute_normalized_name,
+                        display_text, priority
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        ingredient_id,
+                        substitution.substitute_name,
+                        substitution.display_text,
+                        substitution.priority,
+                    ),
+                )
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception:
+            self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
         self.conn.commit()
         return self.get_recipe(recipe_id)
 
@@ -566,6 +594,43 @@ class MealsService(BaseService):
             (recipe_id,),
         ).fetchall()
         return [_substitution_from_row(row) for row in rows]
+
+
+def _emit_nutrition_day_updated(conn: Connection, *, occurred_at: str) -> None:
+    timezone_name = resolve_timezone_name(conn)
+    day = local_calendar_date_for_utc_timestamp(occurred_at, timezone_name)
+    start_utc, end_utc = local_day_utc_bounds(day, timezone_name)
+    rows = conn.execute(
+        """
+        SELECT protein_grams, calories
+        FROM meals_meal_entries
+        WHERE datetime(occurred_at) >= datetime(?)
+          AND datetime(occurred_at) < datetime(?)
+        ORDER BY occurred_at ASC, id ASC
+        """,
+        (start_utc, end_utc),
+    ).fetchall()
+    protein_values = [float(row["protein_grams"]) for row in rows if row["protein_grams"] is not None]
+    calorie_values = [int(row["calories"]) for row in rows if row["calories"] is not None]
+    event_id = emit_event(
+        conn,
+        event_type="nutrition.day_updated",
+        domain="meals",
+        occurred_at=occurred_at,
+        entity_ref=f"nutrition-{day}",
+        source=EVENT_SOURCE,
+        payload={
+            "date": day,
+            "meal_count": len(rows),
+            "protein_grams": sum(protein_values) if protein_values else None,
+            "calories": sum(calorie_values) if calorie_values else None,
+        },
+    )
+    if event_id is None:
+        _logger.warning(
+            "nutrition.day_updated emission returned no event_id",
+            extra={"date": day, "meal_count": len(rows), "domain": "meals"},
+        )
 
 
 def _vault_child_path(vault_root: Path, relative_path: str) -> Path:
@@ -679,20 +744,3 @@ def _recipe_from_row(
         ingredients=ingredients,
         substitutions=substitutions,
     )
-
-
-def _resolve_timezone_name(conn: Connection) -> str:
-    configured = get_preference(conn, "core", "timezone", None)
-    if isinstance(configured, str) and configured:
-        return configured
-    tzinfo = datetime.now().astimezone().tzinfo
-    key = getattr(tzinfo, "key", None)
-    return key if isinstance(key, str) and key else "UTC"
-
-
-def _local_day_utc_bounds(review_date: str, timezone_name: str) -> tuple[str, str]:
-    zone = ZoneInfo(timezone_name)
-    local_day = date_cls.fromisoformat(review_date)
-    local_start = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
-    local_end = local_start + timedelta(days=1)
-    return format_utc_timestamp(local_start), format_utc_timestamp(local_end)

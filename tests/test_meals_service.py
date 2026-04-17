@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 import minx_mcp.meals.service as meals_service_module
@@ -32,6 +34,69 @@ def test_log_meal_emits_event(db_path) -> None:
     assert len(events) == 1
     assert events[0].payload["food_count"] == 2
     assert events[0].payload["protein_grams"] == 40.0
+
+
+def test_log_meal_emits_nutrition_day_updated_after_commit(db_path) -> None:
+    svc = MealsService(db_path)
+    with svc:
+        set_preference(svc.conn, "core", "timezone", "UTC")
+        svc.log_meal(
+            occurred_at="2026-04-12T12:00:00Z",
+            meal_kind="lunch",
+            summary="Salad",
+            protein_grams=40.0,
+            calories=700,
+        )
+
+    conn = get_connection(db_path)
+    try:
+        day_events = query_events(conn, domain="meals", event_type="nutrition.day_updated")
+    finally:
+        conn.close()
+
+    assert len(day_events) == 1
+    assert day_events[0].payload["date"] == "2026-04-12"
+    assert day_events[0].payload["meal_count"] == 1
+    assert day_events[0].payload["protein_grams"] == 40.0
+    assert day_events[0].payload["calories"] == 700
+
+
+def test_nutrition_day_updated_aggregates_multiple_meals_in_local_day(db_path) -> None:
+    """Two meals logged on the same local day must roll up into one updated event per log.
+
+    The final event must reflect the running total (meal_count == 2, summed macros),
+    not just the delta from the latest meal. Anchors the documented aggregation contract.
+    """
+    svc = MealsService(db_path)
+    with svc:
+        set_preference(svc.conn, "core", "timezone", "UTC")
+        svc.log_meal(
+            occurred_at="2026-04-12T08:00:00Z",
+            meal_kind="breakfast",
+            summary="Eggs",
+            protein_grams=25.0,
+            calories=400,
+        )
+        svc.log_meal(
+            occurred_at="2026-04-12T19:30:00Z",
+            meal_kind="dinner",
+            summary="Salmon",
+            protein_grams=35.5,
+            calories=650,
+        )
+
+    conn = get_connection(db_path)
+    try:
+        day_events = query_events(conn, domain="meals", event_type="nutrition.day_updated")
+    finally:
+        conn.close()
+
+    assert len(day_events) == 2
+    latest = day_events[-1]
+    assert latest.payload["date"] == "2026-04-12"
+    assert latest.payload["meal_count"] == 2
+    assert latest.payload["protein_grams"] == 60.5
+    assert latest.payload["calories"] == 1050
 
 
 def test_log_meal_validates_kind(db_path) -> None:
@@ -137,7 +202,7 @@ def test_set_nutrition_profile_persists_calculated_targets(db_path) -> None:
             height_cm=180.0,
             weight_kg=80.0,
             activity_level="moderately_active",
-            goal="fat_loss",
+            goal="maintenance",
             calorie_deficit_kcal=400,
             protein_g_per_kg=2.0,
             fat_g_per_kg=0.77,
@@ -183,3 +248,74 @@ def test_list_meals_uses_timezone_local_day_boundaries(db_path) -> None:
         meals = svc.list_meals("2026-04-13")
 
     assert [meal.summary for meal in meals] == ["same local day after midnight"]
+
+
+def test_set_nutrition_profile_goal_cut_lowers_calories_vs_maintenance(db_path) -> None:
+    svc = MealsService(db_path)
+    base = dict(
+        sex="male",
+        age_years=30,
+        height_cm=180.0,
+        weight_kg=80.0,
+        activity_level="moderately_active",
+        calorie_deficit_kcal=400,
+        protein_g_per_kg=2.0,
+        fat_g_per_kg=0.77,
+    )
+    with svc:
+        maintenance = svc.set_nutrition_profile(goal="maintenance", **base)
+        cut = svc.set_nutrition_profile(goal="cut", **base)
+
+    assert cut.targets.calorie_target_kcal < maintenance.targets.calorie_target_kcal
+
+
+def test_index_recipe_rolls_back_entirely_on_ingredient_integrity_error(db_path, tmp_path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "Recipes" / "Soup.md"
+    note.parent.mkdir(parents=True)
+    note.write_text(
+        "---\ntitle: Soup\n---\n## Ingredients\n- 1 onion\n- 2 carrots\n"
+    )
+    svc = MealsService(db_path, vault_root=vault)
+
+    with svc:
+        conn = svc.conn
+        conn.execute(
+            """
+            CREATE TEMP TRIGGER meals_test_abort_second_ingredient
+            BEFORE INSERT ON meals_recipe_ingredients
+            WHEN (
+                SELECT COUNT(*) FROM meals_recipe_ingredients r
+                WHERE r.recipe_id = NEW.recipe_id
+            ) >= 1
+            BEGIN
+                SELECT RAISE(ABORT, 'forced second ingredient failure');
+            END
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="forced second ingredient failure"):
+            svc.index_recipe("Recipes/Soup.md")
+
+        recipe_count = conn.execute("SELECT COUNT(*) FROM meals_recipes").fetchone()[0]
+        ingredient_count = conn.execute("SELECT COUNT(*) FROM meals_recipe_ingredients").fetchone()[
+            0
+        ]
+
+    assert recipe_count == 0
+    assert ingredient_count == 0
+
+
+def test_index_recipe_persists_nutrition_summary_from_frontmatter(db_path, tmp_path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "Recipes" / "Tagged.md"
+    note.parent.mkdir(parents=True)
+    note.write_text(
+        '---\ntitle: Tagged\nnutrition: {"calories": 512, "protein_grams": 44}\n---\n'
+        "## Ingredients\n- 1 egg\n"
+    )
+    svc = MealsService(db_path, vault_root=vault)
+
+    with svc:
+        recipe = svc.index_recipe("Recipes/Tagged.md")
+
+    assert recipe.nutrition_summary == {"calories": 512, "protein_grams": 44}

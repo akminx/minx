@@ -95,6 +95,7 @@ def test_recommend_recipes_uses_nutrition_targets_for_ranking_and_filtering(db_p
             height_cm=180.0,
             weight_kg=80.0,
             activity_level="moderately_active",
+            goal="maintenance",
             calorie_deficit_kcal=400,
         )
         svc.conn.commit()

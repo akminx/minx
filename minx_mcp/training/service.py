@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from sqlite3 import Connection, Row
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from minx_mcp.base_service import BaseService
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import emit_event
-from minx_mcp.preferences import get_preference
-from minx_mcp.time_utils import format_utc_timestamp, utc_now_isoformat
+from minx_mcp.time_utils import local_day_utc_bounds, resolve_timezone_name, utc_now_isoformat
 from minx_mcp.training.models import (
     TrainingExercise,
     TrainingProgram,
@@ -456,12 +454,12 @@ class TrainingService(BaseService):
         end_date: str | None = None,
         limit: int = 50,
     ) -> list[TrainingSession]:
-        timezone_name = _resolve_timezone_name(self.conn)
+        timezone_name = resolve_timezone_name(self.conn)
         start_utc = (
-            _local_day_utc_bounds(start_date, timezone_name)[0] if start_date is not None else None
+            local_day_utc_bounds(start_date, timezone_name)[0] if start_date is not None else None
         )
         end_utc = (
-            _local_day_utc_bounds(end_date, timezone_name)[1] if end_date is not None else None
+            local_day_utc_bounds(end_date, timezone_name)[1] if end_date is not None else None
         )
         where_clauses: list[str] = []
         params: list[object] = []
@@ -502,12 +500,12 @@ class TrainingService(BaseService):
         if lookback_days <= 0:
             raise InvalidInputError("lookback_days must be positive")
         review_date = as_of or date.today().isoformat()
-        timezone_name = _resolve_timezone_name(self.conn)
-        end_utc = _local_day_utc_bounds(review_date, timezone_name)[1]
+        timezone_name = resolve_timezone_name(self.conn)
+        end_utc = local_day_utc_bounds(review_date, timezone_name)[1]
         start_date = (
             date.fromisoformat(review_date) - timedelta(days=lookback_days - 1)
         ).isoformat()
-        start_utc = _local_day_utc_bounds(start_date, timezone_name)[0]
+        start_utc = local_day_utc_bounds(start_date, timezone_name)[0]
         rows = self.conn.execute(
             """
             SELECT
@@ -714,20 +712,3 @@ def _emit_required_event(
     if event_id is None:
         raise RuntimeError(f"{event_type} event emission failed")
     return int(event_id)
-
-
-def _resolve_timezone_name(conn: Connection) -> str:
-    configured = get_preference(conn, "core", "timezone", None)
-    if isinstance(configured, str) and configured:
-        return configured
-    tzinfo = datetime.now().astimezone().tzinfo
-    key = getattr(tzinfo, "key", None)
-    return key if isinstance(key, str) and key else "UTC"
-
-
-def _local_day_utc_bounds(review_date: str, timezone_name: str) -> tuple[str, str]:
-    zone = ZoneInfo(timezone_name)
-    local_day = date.fromisoformat(review_date)
-    local_start = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
-    local_end = local_start + timedelta(days=1)
-    return format_utc_timestamp(local_start), format_utc_timestamp(local_end)

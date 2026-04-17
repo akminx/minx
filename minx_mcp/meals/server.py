@@ -147,7 +147,7 @@ def create_meals_server(service: MealsService) -> FastMCP:
         height_cm: float,
         weight_kg: float,
         activity_level: str,
-        goal: str = "fat_loss",
+        goal: str = "maintenance",
         calorie_deficit_kcal: int = 400,
         protein_g_per_kg: float = 2.0,
         fat_g_per_kg: float = 0.77,

@@ -42,3 +42,23 @@ def test_parse_recipe_frontmatter_minute_strings_and_obsidian_image(tmp_path) ->
         "chickpea pasta",
         "lentil pasta",
     }
+
+
+def test_parse_recipe_note_nutrition_json_frontmatter(tmp_path) -> None:
+    note = tmp_path / "Nutrition.md"
+    note.write_text(
+        '---\ntitle: Power Bowl\nNutrition: {"calories": 600, "protein_grams": 50}\n---\n'
+        "## Ingredients\n- chicken\n"
+    )
+    result = parse_recipe_note(note)
+    assert result.nutrition_summary == {"calories": 600, "protein_grams": 50}
+
+
+def test_parse_recipe_note_nutrition_indented_block(tmp_path) -> None:
+    note = tmp_path / "Block.md"
+    note.write_text(
+        "---\ntitle: Block\nnutrition:\n  calories: 420\n  protein_grams: 33\n---\n"
+        "## Ingredients\n- tofu\n"
+    )
+    result = parse_recipe_note(note)
+    assert result.nutrition_summary == {"calories": 420, "protein_grams": 33}
