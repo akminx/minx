@@ -462,6 +462,21 @@ Required behavior:
 - Verify only necessary items appear.
 - Verify substituted and optional items do not leak into the shopping list.
 
+### Shopping list markdown template
+
+Because shopping lists are deterministic SQL-backed renders (not LLM-authored) written to Obsidian on a recurring basis, they fit the same template pattern as the finance weekly/monthly reports. Ship a scaffold alongside the meals package:
+
+- **Location:** `minx_mcp/meals/templates/shopping-list.md`, wired in `pyproject.toml` via `"minx_mcp.meals.templates" = ["*.md"]` — same pattern as `minx_mcp/finance/templates/` and `minx_mcp/schema/migrations/`. Cover in the wheel-packing test at `tests/test_db.py::test_built_wheel_includes_packaged_resources`.
+- **Fill semantics:** `string.Template` `${placeholder}` (identical to finance report renderers), populated from the generated-artifact SQL (`meals_shopping_lists` + `meals_shopping_list_items`).
+- **Structure (proposed):** YAML frontmatter with `type: minx-shopping-list` + `generated_at` + `source_recipe` so the vault scanner (Slice 6c) can index it; a fixed section layout such as `## Missing Ingredients`, `## Covered by Pantry`, `## Covered by Substitutions` so later queries (and any human glance) can parse it without guessing.
+
+The loader should mirror `minx_mcp/finance/report_builders.py`:
+
+```python
+TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
+template = Template((TEMPLATE_DIR / "shopping-list.md").read_text(encoding="utf-8"))
+```
+
 This phase should not be pulled into the first implementation plan unless the user explicitly expands scope.
 
 ## Phase 4: Rich Presentation (Deferred)
