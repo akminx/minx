@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal, InvalidOperation
 
 from minx_mcp.contracts import InvalidInputError
 
+_AMOUNT_BODY = re.compile(r"-?(?:\d+\.?\d*|\d*\.\d+)")
+
 
 def parse_dollars_to_cents(value: str) -> int:
+    raw = value.strip()
+    if raw.startswith("USD "):
+        raw = raw.removeprefix("USD ").strip()
+    elif raw.startswith("$"):
+        raw = raw.removeprefix("$").strip()
+    normalized = raw.replace(",", "")
+    if not _AMOUNT_BODY.fullmatch(normalized):
+        raise InvalidInputError("amount contains unsupported characters")
     try:
-        amount = Decimal(value.strip())
+        amount = Decimal(normalized)
     except (AttributeError, InvalidOperation) as exc:
         raise InvalidInputError("amount must be a valid decimal string") from exc
     exponent = amount.as_tuple().exponent

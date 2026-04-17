@@ -13,7 +13,9 @@ from minx_mcp.finance.importers import (
     stream_snapshot_copy_and_hash,
 )
 from minx_mcp.finance.parsers.dcu import _parse_dcu_posted_at, parse_dcu_csv
+from minx_mcp.finance.parsers.discover import _parse_discover_posted_at, parse_discover_pdf
 from minx_mcp.finance.parsers.generic_csv import parse_generic_csv
+from minx_mcp.finance.parsers.robinhood_gold import parse_robinhood_csv
 
 
 def test_detect_robinhood_csv(tmp_path):
@@ -273,6 +275,45 @@ def test_dcu_parser_normalizes_posted_at_to_iso(tmp_path) -> None:
 def test_dcu_parser_rejects_malformed_date(tmp_path) -> None:
     with pytest.raises(InvalidInputError, match="invalid or unsupported Date"):
         _parse_dcu_posted_at("not-a-date")
+
+
+def test_discover_parser_normalizes_date_to_iso(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "discover_statement.pdf"
+    path.write_text("stub")
+    monkeypatch.setattr(
+        "minx_mcp.finance.parsers.discover.extract_text",
+        lambda _: (
+            "Transactions\n"
+            "04/17/2026 04/17/2026 TOMATO $ 1.00 Supermarkets\n"
+        ),
+    )
+    parsed = parse_discover_pdf(path, account_name="Discover")
+    assert parsed.transactions[0].posted_at == "2026-04-17"
+
+
+def test_discover_parser_rejects_malformed_date() -> None:
+    with pytest.raises(InvalidInputError, match="Discover PDF: invalid date"):
+        _parse_discover_posted_at("2026-04-17")
+
+
+def test_robinhood_gold_parser_normalizes_date_to_iso(tmp_path) -> None:
+    path = tmp_path / "rh.csv"
+    path.write_text(
+        "Date,Time,Cardholder,Card,Amount,Description\n"
+        "2026-04-17,09:00,Alex,1234,-1.00,STORE\n"
+    )
+    parsed = parse_robinhood_csv(path, account_name="Robinhood")
+    assert parsed.transactions[0].posted_at == "2026-04-17"
+
+
+def test_robinhood_gold_parser_rejects_malformed_date(tmp_path) -> None:
+    path = tmp_path / "rh_bad_date.csv"
+    path.write_text(
+        "Date,Time,Cardholder,Card,Amount,Description\n"
+        "04/17/2026,09:00,Alex,1234,-1.00,STORE\n"
+    )
+    with pytest.raises(InvalidInputError, match="Robinhood Gold CSV: invalid date"):
+        parse_robinhood_csv(path, account_name="Robinhood")
 
 
 def test_parse_generic_csv_requires_complete_mapping(tmp_path):

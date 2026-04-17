@@ -52,3 +52,21 @@ def test_parse_dollars_to_cents_handles_very_large_values():
 def test_parse_dollars_to_cents_handles_negative_amounts():
     assert parse_dollars_to_cents("-0.01") == -1
     assert parse_dollars_to_cents("-1000.00") == -100000
+
+
+def test_parse_dollars_to_cents_strips_thousands_separator() -> None:
+    """US-style grouped amounts (updated 2026-04-17 to accept thousands separators)."""
+    assert parse_dollars_to_cents("1,234.56") == 123456
+
+
+def test_parse_dollars_to_cents_strips_leading_dollar_sign() -> None:
+    assert parse_dollars_to_cents("$1,234.56") == 123456
+
+
+def test_parse_dollars_to_cents_rejects_trailing_garbage() -> None:
+    with pytest.raises(InvalidInputError, match="unsupported characters"):
+        parse_dollars_to_cents("1,234.56 USD")
+
+
+def test_parse_dollars_to_cents_handles_negative_with_comma() -> None:
+    assert parse_dollars_to_cents("-1,234.56") == -123456

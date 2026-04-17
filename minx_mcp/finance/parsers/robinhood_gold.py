@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import datetime
 from pathlib import Path
 
 from minx_mcp.contracts import InvalidInputError
@@ -11,6 +12,14 @@ from minx_mcp.finance.import_models import (
     ParsedTransaction,
 )
 from minx_mcp.money import parse_dollars_to_cents
+
+
+def _parse_robinhood_posted_at(raw: str) -> str:
+    s = raw.strip()
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date().isoformat()
+    except ValueError as exc:
+        raise InvalidInputError(f"Robinhood Gold CSV: invalid date {raw!r}") from exc
 
 
 def parse_robinhood_csv(path: Path, account_name: str) -> ParsedImportBatch:
@@ -27,12 +36,13 @@ def parse_robinhood_csv(path: Path, account_name: str) -> ParsedImportBatch:
                 )
             try:
                 description = row["Description"]
-                posted_at = row["Date"]
+                raw_date = row["Date"]
                 raw_amount = row["Amount"]
             except KeyError as exc:
                 raise InvalidInputError(
                     f"Robinhood CSV is missing expected column {exc.args[0]!r}"
                 ) from exc
+            posted_at = _parse_robinhood_posted_at(raw_date)
             transactions.append(
                 ParsedTransaction(
                     posted_at=posted_at,

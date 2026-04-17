@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 
 from minx_mcp.contracts import InvalidInputError
@@ -12,6 +13,16 @@ from minx_mcp.finance.import_models import (
     ParsedTransaction,
 )
 from minx_mcp.money import parse_dollars_to_cents
+
+
+def _parse_discover_posted_at(raw: str) -> str:
+    s = raw.strip()
+    for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    raise InvalidInputError(f"Discover PDF: invalid date {raw!r}")
 
 
 def parse_discover_pdf(path: Path, account_name: str) -> ParsedImportBatch:
@@ -39,11 +50,11 @@ def parse_discover_pdf(path: Path, account_name: str) -> ParsedImportBatch:
             raise InvalidInputError(
                 f"Discover PDF exceeds maximum row count ({MAX_FINANCE_IMPORT_ROWS} transactions)"
             )
-        month, day, year = match.group("trans").split("/")
         description = match.group("desc")
+        posted_at = _parse_discover_posted_at(match.group("trans"))
         transactions.append(
             ParsedTransaction(
-                posted_at=f"{year if len(year) == 4 else f'20{year}'}-{month}-{day}",
+                posted_at=posted_at,
                 description=description,
                 amount_cents=-parse_dollars_to_cents(match.group("amount")),
                 merchant=description,
