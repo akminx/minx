@@ -1,9 +1,12 @@
 """SQLite access and migration application.
 
-SQL migrations are loaded only from the packaged tree ``minx_mcp/schema/migrations``
-(next to this module). That directory is what ships in the wheel; the repository
-also keeps ``schema/migrations`` as a mirror—tests enforce matching filenames and
-normalized SQL contents.
+SQL migrations live in a single source of truth: the packaged tree
+``minx_mcp/schema/migrations`` (next to this module). That directory ships in
+the wheel and is the only path ``apply_migrations`` loads. An earlier version
+of this codebase also kept a ``schema/migrations`` mirror at the repo root for
+human browsing; it was removed because the parity test normalized whitespace
+away and the duplication was an ongoing footgun. When adding a new migration,
+drop the ``.sql`` file into ``minx_mcp/schema/migrations/`` only.
 
 Migration contract:
 - Migrations run inside a single transaction and must be idempotent.
@@ -32,8 +35,7 @@ def migration_dir() -> Path:
 
     Resolves to ``minx_mcp/schema/migrations`` relative to this package (editable
     install, wheel extract, or test import). This is the sole migration source for
-    ``get_connection`` / ``apply_migrations``; it is not the repo-root
-    ``schema/migrations`` path.
+    ``get_connection`` / ``apply_migrations``.
     """
     return Path(__file__).resolve().parent / "schema" / "migrations"
 

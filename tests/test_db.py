@@ -226,18 +226,14 @@ def test_add_column_if_missing_raises_for_unknown_table(tmp_path):
 
 
 def test_report_lifecycle_migration_dedupes_existing_report_runs(tmp_path):
-    project_root = Path(__file__).resolve().parent.parent
+    migrations = migration_dir()
     db_path = tmp_path / "legacy.db"
     conn = sqlite3.connect(str(db_path))
-    conn.executescript((project_root / "schema" / "migrations" / "001_platform.sql").read_text())
-    conn.executescript((project_root / "schema" / "migrations" / "002_finance.sql").read_text())
-    conn.executescript(
-        (project_root / "schema" / "migrations" / "003_finance_views.sql").read_text()
-    )
-    conn.executescript(
-        (project_root / "schema" / "migrations" / "004_finance_amount_cents.sql").read_text()
-    )
-    conn.executescript((project_root / "schema" / "migrations" / "005_core.sql").read_text())
+    conn.executescript((migrations / "001_platform.sql").read_text())
+    conn.executescript((migrations / "002_finance.sql").read_text())
+    conn.executescript((migrations / "003_finance_views.sql").read_text())
+    conn.executescript((migrations / "004_finance_amount_cents.sql").read_text())
+    conn.executescript((migrations / "005_core.sql").read_text())
     conn.execute(
         """
         CREATE TABLE _migrations (
@@ -285,14 +281,12 @@ def test_report_lifecycle_migration_dedupes_existing_report_runs(tmp_path):
 
 
 def test_amount_cents_migration_backfills_existing_rows(tmp_path):
-    project_root = Path(__file__).resolve().parent.parent
+    migrations = migration_dir()
     db_path = tmp_path / "legacy.db"
     conn = sqlite3.connect(str(db_path))
-    conn.executescript((project_root / "schema" / "migrations" / "001_platform.sql").read_text())
-    conn.executescript((project_root / "schema" / "migrations" / "002_finance.sql").read_text())
-    conn.executescript(
-        (project_root / "schema" / "migrations" / "003_finance_views.sql").read_text()
-    )
+    conn.executescript((migrations / "001_platform.sql").read_text())
+    conn.executescript((migrations / "002_finance.sql").read_text())
+    conn.executescript((migrations / "003_finance_views.sql").read_text())
     conn.execute(
         """
         CREATE TABLE _migrations (
@@ -492,19 +486,3 @@ def test_unreadable_migration_rolls_back_and_restores_connection(tmp_path, monke
     assert conn.row_factory is original_row_factory
     assert not conn.in_transaction
 
-
-def test_source_and_packaged_migrations_match():
-    project_root = Path(__file__).resolve().parent.parent
-    source_root = project_root / "schema" / "migrations"
-    packaged_root = project_root / "minx_mcp" / "schema" / "migrations"
-    # apply_migrations / get_connection read from the packaged tree only.
-    assert migration_dir().resolve() == packaged_root.resolve()
-    source_files = sorted(path.name for path in source_root.glob("*.sql"))
-    packaged_files = sorted(path.name for path in packaged_root.glob("*.sql"))
-
-    assert source_files == packaged_files
-
-    for filename in source_files:
-        assert (source_root / filename).read_text().strip() == (
-            packaged_root / filename
-        ).read_text().strip()
