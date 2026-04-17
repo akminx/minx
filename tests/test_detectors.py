@@ -19,7 +19,7 @@ def test_detect_spending_spike_returns_empty_below_threshold():
 
     from minx_mcp.core.detectors import detect_spending_spike
 
-    assert detect_spending_spike(read_models) == []
+    assert detect_spending_spike(read_models).insights == ()
 
 
 def test_detect_spending_spike_returns_warning_at_twenty_five_percent():
@@ -30,7 +30,7 @@ def test_detect_spending_spike_returns_warning_at_twenty_five_percent():
 
     from minx_mcp.core.detectors import detect_spending_spike
 
-    insights = detect_spending_spike(read_models)
+    insights = detect_spending_spike(read_models).insights
 
     assert [_simplify(insight) for insight in insights] == [
         (
@@ -51,7 +51,7 @@ def test_detect_spending_spike_returns_alert_at_fifty_percent():
 
     from minx_mcp.core.detectors import detect_spending_spike
 
-    insights = detect_spending_spike(read_models)
+    insights = detect_spending_spike(read_models).insights
 
     assert len(insights) == 1
     assert insights[0].severity == "alert"
@@ -62,7 +62,7 @@ def test_detect_spending_spike_returns_empty_for_cold_start():
 
     from minx_mcp.core.detectors import detect_spending_spike
 
-    assert detect_spending_spike(read_models) == []
+    assert detect_spending_spike(read_models).insights == ()
 
 
 def test_detect_spending_spike_adds_dominant_category_signal_when_one_category_drives_change():
@@ -74,7 +74,7 @@ def test_detect_spending_spike_adds_dominant_category_signal_when_one_category_d
 
     from minx_mcp.core.detectors import detect_spending_spike
 
-    insights = detect_spending_spike(read_models)
+    insights = detect_spending_spike(read_models).insights
 
     assert len(insights) == 1
     assert insights[0].supporting_signals == [
@@ -112,7 +112,7 @@ def test_detect_open_loops_returns_one_insight_per_loop():
 
     from minx_mcp.core.detectors import detect_open_loops
 
-    insights = detect_open_loops(read_models)
+    insights = detect_open_loops(read_models).insights
 
     assert [_simplify(insight) for insight in insights] == [
         (
@@ -161,7 +161,7 @@ def test_detect_open_loops_uses_loop_severity_mapping():
 
     from minx_mcp.core.detectors import detect_open_loops
 
-    insights = detect_open_loops(read_models)
+    insights = detect_open_loops(read_models).insights
 
     assert [insight.severity for insight in insights] == ["warning", "warning"]
     assert [insight.actionability for insight in insights] == [
@@ -175,7 +175,7 @@ def test_detect_open_loops_returns_empty_when_none_exist():
 
     from minx_mcp.core.detectors import detect_open_loops
 
-    assert detect_open_loops(read_models) == []
+    assert detect_open_loops(read_models).insights == ()
 
 
 def test_detector_dedupe_keys_remain_stable_when_summary_wording_changes():
@@ -186,13 +186,13 @@ def test_detector_dedupe_keys_remain_stable_when_summary_wording_changes():
             vs_prior_week_pct=40.0,
             by_category={"Groceries": 7000, "Dining Out": 3000},
         )
-    )
+    ).insights
     second_spending = detect_spending_spike(
         _build_read_models(
             vs_prior_week_pct=40.0,
             by_category={"Groceries": 7000, "Dining Out": 3000},
         )
-    )
+    ).insights
     first_open_loops = detect_open_loops(
         _build_read_models(
             open_loops=[
@@ -205,7 +205,7 @@ def test_detector_dedupe_keys_remain_stable_when_summary_wording_changes():
                 )
             ]
         )
-    )
+    ).insights
     second_open_loops = detect_open_loops(
         _build_read_models(
             open_loops=[
@@ -218,7 +218,7 @@ def test_detector_dedupe_keys_remain_stable_when_summary_wording_changes():
                 )
             ]
         )
-    )
+    ).insights
 
     assert first_spending[0].dedupe_key == second_spending[0].dedupe_key
     assert first_open_loops[0].dedupe_key == second_open_loops[0].dedupe_key
@@ -247,7 +247,7 @@ def test_detect_goal_drift_returns_off_track_goal_insight():
 
     from minx_mcp.core.goal_detectors import detect_goal_drift
 
-    insights = detect_goal_drift(read_models)
+    insights = detect_goal_drift(read_models).insights
 
     assert len(insights) == 1
     assert insights[0].insight_type == "core.goal_drift"
@@ -279,7 +279,7 @@ def test_detect_goal_drift_returns_empty_for_on_track_goals():
 
     from minx_mcp.core.goal_detectors import detect_goal_drift
 
-    assert detect_goal_drift(read_models) == []
+    assert detect_goal_drift(read_models).insights == ()
 
 
 def test_detect_category_drift_returns_alert_for_real_baseline_increase():
@@ -311,7 +311,7 @@ def test_detect_category_drift_returns_alert_for_real_baseline_increase():
 
     from minx_mcp.core.goal_detectors import detect_category_drift
 
-    insights = detect_category_drift(read_models)
+    insights = detect_category_drift(read_models).insights
 
     assert len(insights) == 1
     assert insights[0].insight_type == "finance.category_drift"
@@ -348,7 +348,7 @@ def test_detect_category_drift_returns_warning_for_real_baseline_increase():
 
     from minx_mcp.core.goal_detectors import detect_category_drift
 
-    insights = detect_category_drift(read_models)
+    insights = detect_category_drift(read_models).insights
 
     assert len(insights) == 1
     assert insights[0].severity == "warning"
@@ -390,7 +390,7 @@ def test_detect_category_drift_does_not_fire_when_goal_is_merely_watch_without_m
 
     from minx_mcp.core.goal_detectors import detect_category_drift
 
-    assert detect_category_drift(read_models) == []
+    assert detect_category_drift(read_models).insights == ()
 
 
 def test_detect_category_drift_does_not_fire_on_cold_start_baseline():
@@ -422,7 +422,7 @@ def test_detect_category_drift_does_not_fire_on_cold_start_baseline():
 
     from minx_mcp.core.goal_detectors import detect_category_drift
 
-    assert detect_category_drift(read_models) == []
+    assert detect_category_drift(read_models).insights == ()
 
 
 def test_detect_category_drift_uses_count_thresholds_for_warning_and_alert():
@@ -479,8 +479,8 @@ def test_detect_category_drift_uses_count_thresholds_for_warning_and_alert():
 
     from minx_mcp.core.goal_detectors import detect_category_drift
 
-    warning = detect_category_drift(warning_models)
-    alert = detect_category_drift(alert_models)
+    warning = detect_category_drift(warning_models).insights
+    alert = detect_category_drift(alert_models).insights
 
     assert len(warning) == 1
     assert warning[0].severity == "warning"
@@ -529,7 +529,7 @@ def test_detect_category_drift_supports_merchant_only_goals():
 
     from minx_mcp.core.goal_detectors import detect_category_drift
 
-    insights = detect_category_drift(read_models)
+    insights = detect_category_drift(read_models).insights
 
     assert len(insights) == 1
     assert insights[0].insight_type == "finance.category_drift"
@@ -579,12 +579,35 @@ def test_detect_category_drift_supports_account_only_goals():
 
     from minx_mcp.core.goal_detectors import detect_category_drift
 
-    insights = detect_category_drift(read_models)
+    insights = detect_category_drift(read_models).insights
 
     assert len(insights) == 1
     assert insights[0].summary == (
         "DCU activity is up versus the prior comparable span for Fewer DCU purchases."
     )
+
+
+def test_detector_result_preserves_spending_spike_insights():
+    read_models = _build_read_models(
+        vs_prior_week_pct=25.0,
+        by_category={"Groceries": 3500, "Dining Out": 2500},
+    )
+    from minx_mcp.core.detectors import detect_spending_spike
+
+    result = detect_spending_spike(read_models)
+    assert result.memory_proposals == ()
+    assert [_simplify(i) for i in result.insights] == [
+        (
+            "finance.spending_spike",
+            "2026-03-15:spending_spike:groceries",
+            "warning",
+            "suggestion",
+            [
+                "Spending increased 25.0% versus the prior week.",
+                "Top spending category today: Groceries ($35.00).",
+            ],
+        )
+    ]
 
 
 def _build_read_models(

@@ -44,5 +44,5 @@ def test_nutrition_detectors_fire_for_low_protein_and_skipped_meals() -> None:
     )
     read_models = _build_read_models(nutrition)
 
-    assert detect_low_protein(read_models)[0].insight_type == "nutrition.low_protein"
-    assert detect_skipped_meals(read_models)[0].insight_type == "nutrition.skipped_meals"
+    assert detect_low_protein(read_models).insights[0].insight_type == "nutrition.low_protein"
+    assert detect_skipped_meals(read_models).insights[0].insight_type == "nutrition.skipped_meals"

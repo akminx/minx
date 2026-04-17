@@ -1,3 +1,13 @@
+"""Domain timeline event emission and payload versioning.
+
+This module owns DOMAIN TIMELINE events: user-facing behavioral signals
+(`finance.transaction_posted`, `meals.meal_logged`, etc.) with registered Pydantic
+payload models and versioned upcasters. It is NOT the memory audit trail. Slice 6's
+`memory_events` table records memory-lifecycle operations (`created`, `confirmed`,
+`rejected`, `expired`, `vault_synced`) as plain SQLite rows keyed by memory_id. Do
+not route memory-lifecycle events through `emit_event`; they belong in `memory_events`.
+"""
+
 from __future__ import annotations
 
 import json

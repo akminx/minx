@@ -180,7 +180,7 @@ All pages use `[[wikilinks]]` for Obsidian cross-referencing.
 
 ## 10) Integration Points
 
-- **Snapshot builder** (`read_models.py`): New `MemoryContext` field on `ReadModels` containing active memories, pending candidates count, and recent memory events
+- **Read models**: Add `MemoryContext` to the `ReadModels` dataclass in `minx_mcp/core/snapshot_models.py`; populate it inside `minx_mcp/core/read_models.py::build_read_models`. It holds active memories, pending candidates count, and recent memory events.
 - **Goal system**: Goals can reference memories for context enrichment
 - **Finance query**: LLM interpretation layer uses memories for disambiguation
 - **VaultWriter**: `replace_section` method (already tested, first production use case) enables targeted section updates in wiki pages
@@ -199,7 +199,7 @@ All pages use `[[wikilinks]]` for Obsidian cross-referencing.
 | 6a | Memory schema + MemoryService + CRUD MCP tools + first detectors | 2-3 days | Consolidation plan done |
 | 6b | Snapshot archive table + auto-persist on snapshot build | 1-2 days | 6a |
 | 6c | Vault scanner (frontmatter indexing) | 1-2 days | 6a |
-| 6d | Inject MemoryContext into ReadModels and snapshot builder | 1 day | 6a |
+| 6d | Add `MemoryContext` on `ReadModels` in `snapshot_models.py`, populate in `read_models.py::build_read_models`, wire snapshot builder | 1 day | 6a |
 | 6e | Wiki page generation for memories (vault write-back, harness side) | 1 day | 6a, 6c |
 | 6f | Bidirectional vault sync (user edits -> memory updates) | 1 day | 6c, 6e |
 | 6g (optional) | Semantic search with sqlite-vec | 2-3 days | 6c proven insufficient |
@@ -214,3 +214,7 @@ All pages use `[[wikilinks]]` for Obsidian cross-referencing.
 - Integration test: propose memory -> auto-promote -> verify in snapshot context
 - Integration test: write memory note -> manually edit frontmatter -> rescan -> verify memory updated
 - Snapshot archive roundtrip: build snapshot -> archive -> retrieve -> compare
+
+## Implementation notes (post-review)
+
+- 2026-04-17: clarified that `MemoryContext` lives in `snapshot_models.py` (the `ReadModels` home), populated by `read_models.py::build_read_models`.

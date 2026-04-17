@@ -4,6 +4,7 @@ import pytest
 
 from minx_mcp.core.events import emit_event
 from minx_mcp.core.goals import GoalService
+from minx_mcp.core.memory_models import DetectorResult
 from minx_mcp.core.models import GoalCreateInput, InsightCandidate, SnapshotContext
 from minx_mcp.core.snapshot import build_daily_snapshot
 from minx_mcp.db import get_connection
@@ -103,7 +104,7 @@ async def test_build_daily_snapshot_refreshes_existing_detector_rows_on_rerun(
     monkeypatch.setattr(
         snapshot_module,
         "_run_detectors",
-        lambda _read_models: [
+        lambda _read_models: DetectorResult.insights_only(
             InsightCandidate(
                 insight_type="finance.spending_spike",
                 dedupe_key="2026-03-15:spending_spike:dining-out",
@@ -114,14 +115,14 @@ async def test_build_daily_snapshot_refreshes_existing_detector_rows_on_rerun(
                 actionability="suggestion",
                 source="detector",
             )
-        ],
+        ),
     )
     await build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path))
 
     monkeypatch.setattr(
         snapshot_module,
         "_run_detectors",
-        lambda _read_models: [
+        lambda _read_models: DetectorResult.insights_only(
             InsightCandidate(
                 insight_type="finance.spending_spike",
                 dedupe_key="2026-03-15:spending_spike:dining-out",
@@ -132,7 +133,7 @@ async def test_build_daily_snapshot_refreshes_existing_detector_rows_on_rerun(
                 actionability="action",
                 source="detector",
             )
-        ],
+        ),
     )
     await build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path))
 

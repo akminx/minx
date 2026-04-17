@@ -6,6 +6,7 @@ from pathlib import Path
 from sqlite3 import Connection
 
 from minx_mcp.core.detectors import DETECTORS
+from minx_mcp.core.memory_models import DetectorResult, MemoryProposal
 from minx_mcp.core.models import (
     DailySnapshot,
     DurabilitySinkFailure,
@@ -40,7 +41,9 @@ async def build_daily_snapshot(
 ) -> DailySnapshot:
     with scoped_connection(Path(ctx.db_path)) as conn:
         read_models = _build_snapshot_models(conn, review_date, ctx)
-        detector_signals = _sorted_insights(_run_detectors(read_models))
+        detector_run = _run_detectors(read_models)
+        # TODO(slice6-6a): MemoryService.ingest_proposals(detector_run.memory_proposals, ...)
+        detector_signals = _sorted_insights(list(detector_run.insights))
         warning = _persist_warning(conn, review_date, detector_signals, force=force)
         return DailySnapshot(
             date=review_date,
@@ -71,13 +74,16 @@ def _build_snapshot_models(
     )
 
 
-def _run_detectors(read_models: ReadModels) -> list[InsightCandidate]:
+def _run_detectors(read_models: ReadModels) -> DetectorResult:
     insights: list[InsightCandidate] = []
+    memory_proposals: list[MemoryProposal] = []
     for detector in DETECTORS:
         if not detector.enabled_by_default:
             continue
-        insights.extend(detector.fn(read_models))
-    return insights
+        result = detector.fn(read_models)
+        insights.extend(result.insights)
+        memory_proposals.extend(result.memory_proposals)
+    return DetectorResult(tuple(insights), tuple(memory_proposals))
 
 
 def _sorted_insights(insights: list[InsightCandidate]) -> list[InsightCandidate]:

@@ -58,7 +58,7 @@ def test_finance_risk_fires_at_68_percent():
     goal = _make_goal(target_value=10_000, actual_value=6_800, status="watch")
     read_models = _make_read_models([goal])
 
-    insights = detect_goal_finance_risks(read_models)
+    insights = detect_goal_finance_risks(read_models).insights
 
     assert len(insights) == 1
     assert insights[0].severity == "warning"
@@ -70,7 +70,7 @@ def test_finance_risk_fires_at_85_percent_alert():
     goal = _make_goal(target_value=10_000, actual_value=8_500, status="watch")
     read_models = _make_read_models([goal])
 
-    insights = detect_goal_finance_risks(read_models)
+    insights = detect_goal_finance_risks(read_models).insights
 
     assert len(insights) == 1
     assert insights[0].severity == "alert"
@@ -82,14 +82,14 @@ def test_finance_risk_skips_on_track():
     goal = _make_goal(target_value=10_000, actual_value=6_800, status="on_track")
     read_models = _make_read_models([goal])
 
-    assert detect_goal_finance_risks(read_models) == []
+    assert detect_goal_finance_risks(read_models).insights == ()
 
 
 def test_finance_risk_skips_below_60_percent():
     goal = _make_goal(target_value=10_000, actual_value=5_000, status="watch")
     read_models = _make_read_models([goal])
 
-    assert detect_goal_finance_risks(read_models) == []
+    assert detect_goal_finance_risks(read_models).insights == ()
 
 
 def test_finance_risk_fires_for_count_below():
@@ -101,7 +101,7 @@ def test_finance_risk_fires_for_count_below():
     )
     read_models = _make_read_models([goal])
 
-    insights = detect_goal_finance_risks(read_models)
+    insights = detect_goal_finance_risks(read_models).insights
 
     assert len(insights) == 1
     assert insights[0].severity == "warning"
@@ -114,14 +114,14 @@ def test_finance_risk_skips_sum_above():
     )
     read_models = _make_read_models([goal])
 
-    assert detect_goal_finance_risks(read_models) == []
+    assert detect_goal_finance_risks(read_models).insights == ()
 
 
 def test_goal_drift_fires_for_off_track():
     goal = _make_goal(target_value=10_000, actual_value=11_000, status="off_track")
     read_models = _make_read_models([goal])
 
-    insights = detect_goal_drift(read_models)
+    insights = detect_goal_drift(read_models).insights
 
     assert len(insights) == 1
     assert insights[0].insight_type == "core.goal_drift"
@@ -133,4 +133,4 @@ def test_goal_drift_skips_on_track():
     goal = _make_goal(target_value=10_000, actual_value=3_000, status="on_track")
     read_models = _make_read_models([goal])
 
-    assert detect_goal_drift(read_models) == []
+    assert detect_goal_drift(read_models).insights == ()

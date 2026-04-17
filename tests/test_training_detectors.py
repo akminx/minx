@@ -58,8 +58,8 @@ def test_training_detectors_fire_for_expected_signals() -> None:
     )
     read_models = _build_read_models(training=training, nutrition=nutrition)
 
-    stalled = detect_training_volume_stalled(read_models)
-    mismatch = detect_training_with_low_protein(read_models)
+    stalled = detect_training_volume_stalled(read_models).insights
+    mismatch = detect_training_with_low_protein(read_models).insights
 
     assert stalled
     assert stalled[0].insight_type == "training.volume_stalled"
@@ -88,8 +88,8 @@ def test_training_adherence_drop_and_recovery_risk() -> None:
     low_models = _build_read_models(training=low_training)
     risk_models = _build_read_models(training=risk_training)
 
-    adherence = detect_training_adherence_drop(low_models)
-    recovery = detect_training_recovery_risk(risk_models)
+    adherence = detect_training_adherence_drop(low_models).insights
+    recovery = detect_training_recovery_risk(risk_models).insights
 
     assert adherence
     assert adherence[0].insight_type == "training.adherence_drop"

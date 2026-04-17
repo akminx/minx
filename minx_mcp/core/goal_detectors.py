@@ -4,6 +4,7 @@ from datetime import date, timedelta
 
 from minx_mcp.core._utils import slugify
 from minx_mcp.core.goal_progress import get_metric_value
+from minx_mcp.core.memory_models import DetectorResult
 from minx_mcp.core.models import GoalProgress, InsightCandidate, ReadModels
 from minx_mcp.money import format_cents
 
@@ -15,7 +16,7 @@ DRIFT_COUNT_ALERT_DELTA = 4  # 4+ extra transactions → alert
 DRIFT_COUNT_WARN_DELTA = 2  # 2+ extra transactions → warning
 
 
-def detect_goal_drift(read_models: ReadModels) -> list[InsightCandidate]:
+def detect_goal_drift(read_models: ReadModels) -> DetectorResult:
     insights: list[InsightCandidate] = []
     for goal in read_models.goal_progress:
         if goal.status != "off_track":
@@ -32,12 +33,12 @@ def detect_goal_drift(read_models: ReadModels) -> list[InsightCandidate]:
                 source="detector",
             )
         )
-    return insights
+    return DetectorResult(tuple(insights), ())
 
 
-def detect_category_drift(read_models: ReadModels) -> list[InsightCandidate]:
+def detect_category_drift(read_models: ReadModels) -> DetectorResult:
     if read_models.finance_api is None:
-        return []
+        return DetectorResult.empty()
 
     insights: list[InsightCandidate] = []
     for goal in read_models.goal_progress:
@@ -91,10 +92,10 @@ def detect_category_drift(read_models: ReadModels) -> list[InsightCandidate]:
                 source="detector",
             )
         )
-    return insights
+    return DetectorResult(tuple(insights), ())
 
 
-def detect_goal_finance_risks(read_models: ReadModels) -> list[InsightCandidate]:
+def detect_goal_finance_risks(read_models: ReadModels) -> DetectorResult:
     insights: list[InsightCandidate] = []
     for goal in read_models.goal_progress:
         if (
@@ -118,7 +119,7 @@ def detect_goal_finance_risks(read_models: ReadModels) -> list[InsightCandidate]
                 source="detector",
             )
         )
-    return insights
+    return DetectorResult(tuple(insights), ())
 
 
 def _read_goal_window_value(

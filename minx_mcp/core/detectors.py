@@ -10,10 +10,11 @@ from minx_mcp.core.goal_detectors import (
     detect_goal_drift,
     detect_goal_finance_risks,
 )
+from minx_mcp.core.memory_models import DetectorResult
 from minx_mcp.core.models import InsightCandidate, OpenLoop, ReadModels
 from minx_mcp.money import format_cents
 
-DetectorFn = Callable[[ReadModels], list[InsightCandidate]]
+DetectorFn = Callable[[ReadModels], DetectorResult]
 LOW_PROTEIN_THRESHOLD_GRAMS = 50.0
 
 
@@ -25,11 +26,11 @@ class Detector:
     tags: frozenset[str] = field(default_factory=frozenset)
 
 
-def detect_spending_spike(read_models: ReadModels) -> list[InsightCandidate]:
+def detect_spending_spike(read_models: ReadModels) -> DetectorResult:
     spending = read_models.spending
     change_pct = spending.vs_prior_week_pct
     if change_pct is None or change_pct < 25:
-        return []
+        return DetectorResult.empty()
 
     primary_category, primary_total = _primary_category(spending.by_category)
     supporting_signals = [
@@ -53,7 +54,7 @@ def detect_spending_spike(read_models: ReadModels) -> list[InsightCandidate]:
         else f"Spending is up {change_pct:.1f}% versus last week, led by {primary_category}."
     )
     dedupe_bucket = slugify(primary_category or "overall")
-    return [
+    return DetectorResult.insights_only(
         InsightCandidate(
             insight_type="finance.spending_spike",
             dedupe_key=f"{spending.date}:spending_spike:{dedupe_bucket}",
@@ -64,10 +65,10 @@ def detect_spending_spike(read_models: ReadModels) -> list[InsightCandidate]:
             actionability="suggestion",
             source="detector",
         )
-    ]
+    )
 
 
-def detect_open_loops(read_models: ReadModels) -> list[InsightCandidate]:
+def detect_open_loops(read_models: ReadModels) -> DetectorResult:
     insights: list[InsightCandidate] = []
     for loop in read_models.open_loops.loops:
         insights.append(
@@ -84,16 +85,16 @@ def detect_open_loops(read_models: ReadModels) -> list[InsightCandidate]:
                 source="detector",
             )
         )
-    return insights
+    return DetectorResult(tuple(insights), ())
 
 
-def detect_low_protein(read_models: ReadModels) -> list[InsightCandidate]:
+def detect_low_protein(read_models: ReadModels) -> DetectorResult:
     nutrition = read_models.nutrition
     if nutrition is None or nutrition.protein_grams is None:
-        return []
+        return DetectorResult.empty()
     if nutrition.protein_grams >= LOW_PROTEIN_THRESHOLD_GRAMS:
-        return []
-    return [
+        return DetectorResult.empty()
+    return DetectorResult.insights_only(
         InsightCandidate(
             insight_type="nutrition.low_protein",
             dedupe_key=f"{nutrition.date}:low_protein",
@@ -107,18 +108,18 @@ def detect_low_protein(read_models: ReadModels) -> list[InsightCandidate]:
             actionability="suggestion",
             source="detector",
         )
-    ]
+    )
 
 
-def detect_skipped_meals(read_models: ReadModels) -> list[InsightCandidate]:
+def detect_skipped_meals(read_models: ReadModels) -> DetectorResult:
     nutrition = read_models.nutrition
     if nutrition is None or not nutrition.skipped_meal_signals:
-        return []
+        return DetectorResult.empty()
     skipped = ", ".join(
         signal.replace("no ", "").replace(" logged", "")
         for signal in nutrition.skipped_meal_signals
     )
-    return [
+    return DetectorResult.insights_only(
         InsightCandidate(
             insight_type="nutrition.skipped_meals",
             dedupe_key=f"{nutrition.date}:skipped_meals",
@@ -129,14 +130,14 @@ def detect_skipped_meals(read_models: ReadModels) -> list[InsightCandidate]:
             actionability="suggestion",
             source="detector",
         )
-    ]
+    )
 
 
-def detect_training_adherence_drop(read_models: ReadModels) -> list[InsightCandidate]:
+def detect_training_adherence_drop(read_models: ReadModels) -> DetectorResult:
     training = read_models.training
     if training is None or training.adherence_signal != "low":
-        return []
-    return [
+        return DetectorResult.empty()
+    return DetectorResult.insights_only(
         InsightCandidate(
             insight_type="training.adherence_drop",
             dedupe_key=f"{training.date}:training_adherence_drop",
@@ -150,18 +151,18 @@ def detect_training_adherence_drop(read_models: ReadModels) -> list[InsightCandi
             actionability="action_needed",
             source="detector",
         )
-    ]
+    )
 
 
-def detect_training_volume_stalled(read_models: ReadModels) -> list[InsightCandidate]:
+def detect_training_volume_stalled(read_models: ReadModels) -> DetectorResult:
     training = read_models.training
     if training is None:
-        return []
+        return DetectorResult.empty()
     if training.sessions_logged < 2:
-        return []
+        return DetectorResult.empty()
     if training.total_volume_kg >= 1_000.0:
-        return []
-    return [
+        return DetectorResult.empty()
+    return DetectorResult.insights_only(
         InsightCandidate(
             insight_type="training.volume_stalled",
             dedupe_key=f"{training.date}:training_volume_stalled",
@@ -175,16 +176,16 @@ def detect_training_volume_stalled(read_models: ReadModels) -> list[InsightCandi
             actionability="suggestion",
             source="detector",
         )
-    ]
+    )
 
 
-def detect_training_recovery_risk(read_models: ReadModels) -> list[InsightCandidate]:
+def detect_training_recovery_risk(read_models: ReadModels) -> DetectorResult:
     training = read_models.training
     if training is None:
-        return []
+        return DetectorResult.empty()
     if training.sessions_logged < 5:
-        return []
-    return [
+        return DetectorResult.empty()
+    return DetectorResult.insights_only(
         InsightCandidate(
             insight_type="training.recovery_risk",
             dedupe_key=f"{training.date}:training_recovery_risk",
@@ -198,21 +199,21 @@ def detect_training_recovery_risk(read_models: ReadModels) -> list[InsightCandid
             actionability="suggestion",
             source="detector",
         )
-    ]
+    )
 
 
-def detect_training_with_low_protein(read_models: ReadModels) -> list[InsightCandidate]:
+def detect_training_with_low_protein(read_models: ReadModels) -> DetectorResult:
     training = read_models.training
     nutrition = read_models.nutrition
     if training is None or nutrition is None or nutrition.protein_grams is None:
-        return []
+        return DetectorResult.empty()
     if training.adherence_signal not in {"steady", "on_track"}:
-        return []
+        return DetectorResult.empty()
     if training.sessions_logged < 2:
-        return []
+        return DetectorResult.empty()
     if nutrition.protein_grams >= LOW_PROTEIN_THRESHOLD_GRAMS:
-        return []
-    return [
+        return DetectorResult.empty()
+    return DetectorResult.insights_only(
         InsightCandidate(
             insight_type="cross.training_nutrition_mismatch",
             dedupe_key=f"{training.date}:training_nutrition_mismatch",
@@ -226,7 +227,7 @@ def detect_training_with_low_protein(read_models: ReadModels) -> list[InsightCan
             actionability="suggestion",
             source="detector",
         )
-    ]
+    )
 
 
 DETECTORS: list[Detector] = [

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from minx_mcp.core.detectors import DETECTORS, Detector
+from minx_mcp.core.memory_models import DetectorResult
 from minx_mcp.core.models import (
     DailyTimeline,
     InsightCandidate,
@@ -107,7 +108,7 @@ class TestEnabledByDefaultFiltering:
 
         def spy_fn(read_models):
             called.append("disabled_detector")
-            return []
+            return DetectorResult.empty()
 
         disabled = Detector(
             key="test.disabled",
@@ -134,7 +135,7 @@ class TestEnabledByDefaultFiltering:
         def make_spy(key):
             def fn(read_models):
                 called.append(key)
-                return []
+                return DetectorResult.empty()
 
             return fn
 
@@ -171,10 +172,10 @@ class TestEnabledByDefaultFiltering:
 
     def test_disabled_detector_results_are_excluded_from_output(self):
         def enabled_fn(read_models):
-            return [_make_insight()]
+            return DetectorResult.insights_only(_make_insight())
 
         def disabled_fn(read_models):
-            return [_make_insight()]
+            return DetectorResult.insights_only(_make_insight())
 
         import minx_mcp.core.snapshot as snapshot_module
 
@@ -194,7 +195,7 @@ class TestEnabledByDefaultFiltering:
 
             results = _run_detectors(_make_read_models())
 
-        assert len(results) == 1
+        assert len(results.insights) == 1
 
 
 # ---------------------------------------------------------------------------
