@@ -125,10 +125,9 @@ def run_finance_import(
 
         savepoint_active = False
         try:
-            mark_running(host.conn, str(job["id"]), commit=False)
-            host.conn.execute("SAVEPOINT finance_import")
-            savepoint_active = True
-
+            # Parse before opening the write transaction so slow sources (e.g. PDF via
+            # subprocess) do not hold RESERVED/PENDING locks on the finance DB for the
+            # whole parse window. Job failure handling still runs via this try's except.
             parsed = parse_source_file(
                 canonical_source_path,
                 account_name,
@@ -137,6 +136,11 @@ def run_finance_import(
                 snapshot_path=snapshot_path,
                 content_hash=content_hash,
             )
+
+            mark_running(host.conn, str(job["id"]), commit=False)
+            host.conn.execute("SAVEPOINT finance_import")
+            savepoint_active = True
+
             batch_id = host._insert_batch(account_id, parsed)
             inserted = 0
             skipped = 0
