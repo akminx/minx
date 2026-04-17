@@ -1,3 +1,55 @@
+"""Regex-based natural-language goal capture parser.
+
+This module implements a deliberately lightweight, rule-based parser for
+conversational goal capture (e.g. "log last week's groceries" or "lower my
+coffee spend below $40 a month"). It is intentionally narrow in scope: the
+parser recognizes a curated set of phrasings that appear frequently in user
+messages and produces structured :class:`GoalCaptureResult` responses without
+depending on a language model.
+
+Why regex first?
+----------------
+* **Determinism.** The most common flows ("create a grocery budget",
+  "log the last transaction to this goal") must behave identically for the
+  same input. Regex-driven logic gives us exact control over which phrasings
+  map to which :class:`GoalCaptureResult` variants.
+* **Latency and cost.** Common messages resolve in microseconds without
+  reaching an LLM. This keeps the happy-path cheap and offline-friendly.
+* **Trust boundary.** Natural-language input is untrusted. A focused regex
+  parser makes it easier to validate amounts, merchants, and categories
+  before they ever reach the goal service.
+
+LLM fallback lives in :mod:`minx_mcp.core.goal_capture_llm` and is invoked by
+:mod:`minx_mcp.core.goal_parse` only when the regex layer is unable to
+confidently interpret the message.
+
+Known limitations
+-----------------
+The regex layer intentionally trades recall for precision. Representative
+phrasings that are *not* handled today and that callers should route to the
+LLM fallback or a structured form:
+
+* Multi-clause or compound requests ("add a grocery budget and pause my
+  coffee goal"). Only a single intent per message is recognized.
+* Relative dates beyond a small curated set ("log yesterday", "log last
+  week" work; "log the Tuesday before last" does not).
+* Free-form amounts in non-USD currencies, words instead of digits
+  ("fifty dollars"), or ranges ("between $30 and $50").
+* Spanish, Spanglish, or other non-English phrasings. All matchers assume
+  English and are case-insensitive but not locale-aware.
+* Merchant and category names that diverge from the user's stored catalog.
+  We only resolve known merchants/categories; novel names return a
+  clarification response rather than guessing.
+* Typos and aggressive abbreviations beyond a small curated synonym table
+  (e.g. "mo" → "month"). We do not perform fuzzy matching.
+
+When adding new phrasings, prefer extending the structured helpers in
+:mod:`minx_mcp.core.goal_capture_utils` and keeping this module focused on
+pattern recognition. If a phrasing requires semantic understanding beyond
+regex matching, route it through the LLM fallback instead of adding an
+ever-growing pile of special cases here.
+"""
+
 from __future__ import annotations
 
 import re

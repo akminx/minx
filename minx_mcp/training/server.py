@@ -28,13 +28,15 @@ def create_training_server(service: TrainingService) -> FastMCP:
                         notes=notes,
                     )
                 )
-            }
+            },
+            tool_name="training_exercise_upsert",
         )
 
     @mcp.tool(name="training_exercise_list")
     def training_exercise_list() -> ToolResponse:
         return wrap_tool_call(
-            lambda: {"exercises": [asdict(exercise) for exercise in service.list_exercises()]}
+            lambda: {"exercises": [asdict(exercise) for exercise in service.list_exercises()]},
+            tool_name="training_exercise_list",
         )
 
     @mcp.tool(name="training_program_upsert")
@@ -52,16 +54,23 @@ def create_training_server(service: TrainingService) -> FastMCP:
                         days=days,
                     )
                 )
-            }
+            },
+            tool_name="training_program_upsert",
         )
 
     @mcp.tool(name="training_program_activate")
     def training_program_activate(program_id: int) -> ToolResponse:
-        return wrap_tool_call(lambda: {"program": asdict(service.activate_program(program_id))})
+        return wrap_tool_call(
+            lambda: {"program": asdict(service.activate_program(program_id))},
+            tool_name="training_program_activate",
+        )
 
     @mcp.tool(name="training_program_get")
     def training_program_get(program_id: int) -> ToolResponse:
-        return wrap_tool_call(lambda: {"program": asdict(service.get_program(program_id))})
+        return wrap_tool_call(
+            lambda: {"program": asdict(service.get_program(program_id))},
+            tool_name="training_program_get",
+        )
 
     @mcp.tool(name="training_session_log")
     def training_session_log(
@@ -80,7 +89,8 @@ def create_training_server(service: TrainingService) -> FastMCP:
                         notes=notes,
                     )
                 )
-            }
+            },
+            tool_name="training_session_log",
         )
 
     @mcp.tool(name="training_session_list")
@@ -99,7 +109,8 @@ def create_training_server(service: TrainingService) -> FastMCP:
                         limit=limit,
                     )
                 ]
-            }
+            },
+            tool_name="training_session_list",
         )
 
     @mcp.tool(name="training_progress_summary")
@@ -115,7 +126,8 @@ def create_training_server(service: TrainingService) -> FastMCP:
                         lookback_days=lookback_days,
                     )
                 )
-            }
+            },
+            tool_name="training_progress_summary",
         )
 
     @mcp.resource("health://status")

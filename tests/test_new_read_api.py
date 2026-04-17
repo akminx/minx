@@ -339,7 +339,8 @@ def _register_upcaster(event_type, version, fn):
 def test_upcaster_transforms_old_schema_payload(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
 
-    # Insert an event with schema_version=1 that is missing "new_field"
+    # Insert an event stored before v1 (schema_version=0) that is missing
+    # the "new_field" introduced by the v1 upcaster.
     old_payload = _imported_payload()
     old_payload_json = json.dumps(old_payload)
     cursor = conn.execute(
@@ -357,7 +358,7 @@ def test_upcaster_transforms_old_schema_payload(tmp_path):
             None,
             "tests",
             old_payload_json,
-            1,
+            0,
             "normal",
         ),
     )
@@ -396,7 +397,7 @@ def test_upcasters_chain_v1_to_v3(tmp_path):
             None,
             "tests",
             json.dumps(old_payload),
-            1,
+            0,
             "normal",
         ),
     )
@@ -416,7 +417,7 @@ def test_upcasters_chain_v1_to_v3(tmp_path):
     try:
         events = query_events(conn, event_type="finance.transactions_imported")
         target = next(e for e in events if e.id == event_id)
-        # schema_version=1: v1 runs (0→10), then v2 runs (10→110)
+        # schema_version=0: v1 runs (0→10), then v2 runs (10→110)
         assert target.payload["value"] == 110
     finally:
         cleanup_v1()
@@ -457,7 +458,7 @@ def test_current_schema_version_events_are_not_upcasted(tmp_path):
     try:
         events = query_events(conn, event_type="finance.transactions_imported")
         target = next(e for e in events if e.id == event_id)
-        # schema_version=2; v1 upcaster only applies when schema_version <= 1
+        # schema_version=2; v1 upcaster only applies when schema_version < 1
         assert target.payload["value"] == 42
     finally:
         cleanup()

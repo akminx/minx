@@ -108,7 +108,7 @@ These are broken behavior or data-corrupting logic. Fix first.
 
 - `meals/__main__.py` and `training/__main__.py` are nearly identical
 - Extract a shared `run_domain_server(name, create_server_fn, service_cls)` helper into `minx_mcp/transport.py` or a new `minx_mcp/entrypoint.py`
-- Both `__main__` files become ~5 lines each
+- Both `__main_`_ files become ~5 lines each
 
 ---
 

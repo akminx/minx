@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from minx_mcp.finance.read_models import (
     ImportJobIssue,
@@ -16,9 +16,12 @@ if TYPE_CHECKING:
         DailyTimeline,
         InsightCandidate,
         LLMReviewResult,
+        NutritionSnapshot,
         OpenLoopsSnapshot,
         SpendingSnapshot,
+        TrainingSnapshot,
     )
+    from minx_mcp.meals.models import PantryItem
 
 
 class LLMInterface(Protocol):
@@ -74,12 +77,12 @@ class FinanceReadInterface(Protocol):
 
 
 class MealsReadInterface(Protocol):
-    def get_nutrition_summary(self, date: str) -> Any: ...
-    def get_pantry_items(self) -> list[Any]: ...
+    def get_nutrition_summary(self, date: str) -> NutritionSnapshot: ...
+    def get_pantry_items(self) -> list[PantryItem]: ...
 
 
 class TrainingReadInterface(Protocol):
-    def get_training_summary(self, date: str) -> Any: ...
+    def get_training_summary(self, date: str) -> TrainingSnapshot: ...
 
 
 __all__ = [

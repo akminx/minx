@@ -54,12 +54,23 @@ def _validate_upcaster_contiguity(
 def _upcast_payload(
     event_type: str, payload: dict[str, Any], schema_version: int
 ) -> dict[str, Any]:
+    """Apply registered upcasters to bring ``payload`` up to the latest schema version.
+
+    Each upcaster keyed at version ``N`` transforms a payload from version
+    ``N - 1`` to version ``N``. A payload stored with ``schema_version = S``
+    is already at version ``S``, so we only apply upcasters for target
+    versions strictly greater than ``S`` (i.e. ``S + 1, S + 2, ...``).
+
+    Upcasters are not required to be idempotent, so applying the upcaster
+    keyed at ``S`` to a payload already at version ``S`` is incorrect and
+    must be avoided.
+    """
     upcasters = PAYLOAD_UPCASTERS.get(event_type)
     if upcasters is None:
         return payload
     current = dict(payload)
     for version in sorted(upcasters):
-        if schema_version <= version:
+        if schema_version < version:
             current = upcasters[version](current)
     return current
 

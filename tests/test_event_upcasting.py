@@ -66,7 +66,7 @@ def test_upcast_payload_applies_chain_from_v1_to_latest():
         PAYLOAD_UPCASTERS.update(original_upcasters)
 
 
-def test_upcast_payload_skips_upcasters_for_versions_below_schema_version():
+def test_upcast_payload_skips_upcasters_at_or_below_schema_version():
     upcasters = {
         "test.versioned2": {
             1: lambda p: {**p, "added_in_v1": True},
@@ -77,14 +77,61 @@ def test_upcast_payload_skips_upcasters_for_versions_below_schema_version():
     original_upcasters = dict(PAYLOAD_UPCASTERS)
     PAYLOAD_UPCASTERS.update(upcasters)
     try:
-        # schema_version=3 means stored schema is already at v3; upcasters for
-        # versions < schema_version are skipped (condition: schema_version <= version).
-        # 3<=1 False, 3<=2 False, 3<=3 True — only v3 runs.
-        result = _upcast_payload("test.versioned2", {"base": True}, schema_version=3)
+        # schema_version=2 means the stored payload is already at v2, so only
+        # upcasters for versions strictly greater than 2 should be applied
+        # (condition: schema_version < version).
+        result = _upcast_payload("test.versioned2", {"base": True}, schema_version=2)
         assert result["base"] is True
         assert "added_in_v1" not in result
         assert "added_in_v2" not in result
         assert result["added_in_v3"] is True
+    finally:
+        for key in upcasters:
+            PAYLOAD_UPCASTERS.pop(key, None)
+        PAYLOAD_UPCASTERS.update(original_upcasters)
+
+
+def test_upcast_payload_skips_all_upcasters_when_at_latest_schema_version():
+    upcasters = {
+        "test.versioned3": {
+            1: lambda p: {**p, "added_in_v1": True},
+            2: lambda p: {**p, "added_in_v2": True},
+        }
+    }
+    original_upcasters = dict(PAYLOAD_UPCASTERS)
+    PAYLOAD_UPCASTERS.update(upcasters)
+    try:
+        # schema_version=2 equals the latest registered version; no upcaster
+        # should run because the payload is already in its target shape.
+        result = _upcast_payload("test.versioned3", {"base": True}, schema_version=2)
+        assert result == {"base": True}
+    finally:
+        for key in upcasters:
+            PAYLOAD_UPCASTERS.pop(key, None)
+        PAYLOAD_UPCASTERS.update(original_upcasters)
+
+
+def test_upcast_payload_does_not_reapply_upcaster_at_stored_version():
+    """Regression test: upcasters must not be re-applied to payloads already at their version.
+
+    Non-idempotent upcasters (e.g. those that increment a counter or append to
+    a list) would corrupt data if the target version ran on a payload that was
+    already stored at that version.
+    """
+    calls: list[str] = []
+
+    def v1_upcaster(p: dict[str, object]) -> dict[str, object]:
+        calls.append("v1")
+        return {**p, "v1_applications": int(p.get("v1_applications", 0) or 0) + 1}
+
+    upcasters = {"test.nonidempotent": {1: v1_upcaster}}
+    original_upcasters = dict(PAYLOAD_UPCASTERS)
+    PAYLOAD_UPCASTERS.update(upcasters)
+    try:
+        payload = {"v1_applications": 1}
+        result = _upcast_payload("test.nonidempotent", payload, schema_version=1)
+        assert calls == []
+        assert result == {"v1_applications": 1}
     finally:
         for key in upcasters:
             PAYLOAD_UPCASTERS.pop(key, None)

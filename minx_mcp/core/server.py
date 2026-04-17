@@ -53,7 +53,10 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         review_date: str | None = None,
         force: bool = False,
     ) -> ToolResponse:
-        return await wrap_async_tool_call(lambda: _daily_snapshot(config, review_date, force))
+        return await wrap_async_tool_call(
+            lambda: _daily_snapshot(config, review_date, force),
+            tool_name="get_daily_snapshot",
+        )
 
     @mcp.tool(name="goal_create")
     def goal_create(
@@ -87,16 +90,23 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
                     ends_on=ends_on,
                     notes=notes,
                 ),
-            )
+            ),
+            tool_name="goal_create",
         )
 
     @mcp.tool(name="goal_list")
     def goal_list(status: str | None = None) -> ToolResponse:
-        return wrap_tool_call(lambda: _goal_list(config, status))
+        return wrap_tool_call(
+            lambda: _goal_list(config, status),
+            tool_name="goal_list",
+        )
 
     @mcp.tool(name="goal_get")
     def goal_get(goal_id: int, review_date: str | None = None) -> ToolResponse:
-        return wrap_tool_call(lambda: _goal_get(config, goal_id, review_date))
+        return wrap_tool_call(
+            lambda: _goal_get(config, goal_id, review_date),
+            tool_name="goal_get",
+        )
 
     @mcp.tool(name="goal_update")
     def goal_update(
@@ -122,12 +132,16 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
                     clear_ends_on=clear_ends_on,
                     clear_notes=clear_notes,
                 ),
-            )
+            ),
+            tool_name="goal_update",
         )
 
     @mcp.tool(name="goal_archive")
     def goal_archive(goal_id: int) -> ToolResponse:
-        return wrap_tool_call(lambda: _goal_archive(config, goal_id))
+        return wrap_tool_call(
+            lambda: _goal_archive(config, goal_id),
+            tool_name="goal_archive",
+        )
 
     @mcp.tool(name="goal_parse")
     async def goal_parse(
@@ -136,7 +150,8 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         review_date: str | None = None,
     ) -> ToolResponse:
         return await wrap_async_tool_call(
-            lambda: _goal_parse(config, message, structured_input, review_date)
+            lambda: _goal_parse(config, message, structured_input, review_date),
+            tool_name="goal_parse",
         )
 
     @mcp.tool(name="get_insight_history")
@@ -153,7 +168,8 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
                 insight_type=insight_type,
                 goal_id=goal_id,
                 end_date=end_date,
-            )
+            ),
+            tool_name="get_insight_history",
         )
 
     @mcp.tool(name="get_goal_trajectory")
@@ -168,7 +184,8 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
                 goal_id=goal_id,
                 periods=periods,
                 as_of_date=as_of_date,
-            )
+            ),
+            tool_name="get_goal_trajectory",
         )
 
     @mcp.resource("health://status")
@@ -183,7 +200,10 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         content: str,
         overwrite: bool = False,
     ) -> ToolResponse:
-        return wrap_tool_call(lambda: _persist_note(config, relative_path, content, overwrite))
+        return wrap_tool_call(
+            lambda: _persist_note(config, relative_path, content, overwrite),
+            tool_name="persist_note",
+        )
 
     return mcp
 

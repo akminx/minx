@@ -127,11 +127,17 @@ def create_finance_server(
 
     @mcp.tool(name="safe_finance_summary")
     def safe_finance_summary() -> ToolResponse:
-        return wrap_tool_call(lambda: _safe_finance_summary(service))
+        return wrap_tool_call(
+            lambda: _safe_finance_summary(service),
+            tool_name="safe_finance_summary",
+        )
 
     @mcp.tool(name="safe_finance_accounts")
     def safe_finance_accounts() -> ToolResponse:
-        return wrap_tool_call(lambda: _safe_finance_accounts(service))
+        return wrap_tool_call(
+            lambda: _safe_finance_accounts(service),
+            tool_name="safe_finance_accounts",
+        )
 
     @mcp.tool(name="finance_import")
     def finance_import(
@@ -140,7 +146,8 @@ def create_finance_server(
         source_kind: str | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: _finance_import(service, source_ref, account_name, source_kind)
+            lambda: _finance_import(service, source_ref, account_name, source_kind),
+            tool_name="finance_import",
         )
 
     @mcp.tool(name="finance_import_preview")
@@ -150,12 +157,16 @@ def create_finance_server(
         source_kind: str | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: _finance_import_preview(service, source_ref, account_name, source_kind)
+            lambda: _finance_import_preview(service, source_ref, account_name, source_kind),
+            tool_name="finance_import_preview",
         )
 
     @mcp.tool(name="finance_categorize")
     def finance_categorize(transaction_ids: list[int], category_name: str) -> ToolResponse:
-        return wrap_tool_call(lambda: _finance_categorize(service, transaction_ids, category_name))
+        return wrap_tool_call(
+            lambda: _finance_categorize(service, transaction_ids, category_name),
+            tool_name="finance_categorize",
+        )
 
     @mcp.tool(name="finance_add_category_rule")
     def finance_add_category_rule(
@@ -164,31 +175,43 @@ def create_finance_server(
         pattern: str,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: _finance_add_category_rule(service, category_name, match_kind, pattern)
+            lambda: _finance_add_category_rule(service, category_name, match_kind, pattern),
+            tool_name="finance_add_category_rule",
         )
 
     @mcp.tool(name="finance_anomalies")
     def finance_anomalies() -> ToolResponse:
-        return wrap_tool_call(lambda: _finance_anomalies(service))
+        return wrap_tool_call(
+            lambda: _finance_anomalies(service),
+            tool_name="finance_anomalies",
+        )
 
     @mcp.tool(name="finance_monitoring")
     def finance_monitoring(period_start: str, period_end: str) -> ToolResponse:
-        return wrap_tool_call(lambda: _finance_monitoring(service, period_start, period_end))
+        return wrap_tool_call(
+            lambda: _finance_monitoring(service, period_start, period_end),
+            tool_name="finance_monitoring",
+        )
 
     @mcp.tool(name="finance_job_status")
     def finance_job_status(job_id: str) -> ToolResponse:
-        return wrap_tool_call(lambda: _finance_job_status(service, job_id))
+        return wrap_tool_call(
+            lambda: _finance_job_status(service, job_id),
+            tool_name="finance_job_status",
+        )
 
     @mcp.tool(name="finance_generate_weekly_report")
     def finance_generate_weekly_report(period_start: str, period_end: str) -> ToolResponse:
         return wrap_tool_call(
-            lambda: _finance_generate_weekly_report(service, period_start, period_end)
+            lambda: _finance_generate_weekly_report(service, period_start, period_end),
+            tool_name="finance_generate_weekly_report",
         )
 
     @mcp.tool(name="finance_generate_monthly_report")
     def finance_generate_monthly_report(period_start: str, period_end: str) -> ToolResponse:
         return wrap_tool_call(
-            lambda: _finance_generate_monthly_report(service, period_start, period_end)
+            lambda: _finance_generate_monthly_report(service, period_start, period_end),
+            tool_name="finance_generate_monthly_report",
         )
 
     @mcp.tool(name="sensitive_finance_query")
@@ -214,7 +237,8 @@ def create_finance_server(
                 merchant,
                 account_name,
                 description_contains,
-            )
+            ),
+            tool_name="sensitive_finance_query",
         )
 
     @mcp.resource("health://status")
@@ -245,7 +269,8 @@ def create_finance_server(
                 session_ref=session_ref,
                 limit=limit,
                 llm=llm,
-            )
+            ),
+            tool_name="finance_query",
         )
 
     return mcp

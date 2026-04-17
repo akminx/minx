@@ -10,8 +10,12 @@ from sqlite3 import Connection
 from typing import Literal, Protocol
 
 from minx_mcp.contracts import InvalidInputError
-from minx_mcp.finance.report_builders import build_monthly_report, build_weekly_report
-from minx_mcp.finance.report_rendering import render_monthly_markdown, render_weekly_markdown
+from minx_mcp.finance.report_builders import (
+    build_monthly_report,
+    build_weekly_report,
+    render_monthly_markdown,
+    render_weekly_markdown,
+)
 from minx_mcp.vault_writer import VaultWriter
 
 logger = logging.getLogger(__name__)

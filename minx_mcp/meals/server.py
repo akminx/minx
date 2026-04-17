@@ -33,7 +33,8 @@ def create_meals_server(service: MealsService) -> FastMCP:
                         calories=calories,
                     )
                 )
-            }
+            },
+            tool_name="meal_log",
         )
 
     @mcp.tool(name="pantry_add")
@@ -55,7 +56,8 @@ def create_meals_server(service: MealsService) -> FastMCP:
                         low_stock_threshold=low_stock_threshold,
                     )
                 )
-            }
+            },
+            tool_name="pantry_add",
         )
 
     @mcp.tool(name="pantry_update")
@@ -77,29 +79,38 @@ def create_meals_server(service: MealsService) -> FastMCP:
                         low_stock_threshold=low_stock_threshold,
                     )
                 )
-            }
+            },
+            tool_name="pantry_update",
         )
 
     @mcp.tool(name="pantry_remove")
     def pantry_remove(item_id: int) -> ToolResponse:
-        return wrap_tool_call(lambda: _remove_pantry_item(service, item_id))
+        return wrap_tool_call(
+            lambda: _remove_pantry_item(service, item_id),
+            tool_name="pantry_remove",
+        )
 
     @mcp.tool(name="pantry_list")
     def pantry_list() -> ToolResponse:
         return wrap_tool_call(
-            lambda: {"items": [asdict(item) for item in service.list_pantry_items()]}
+            lambda: {"items": [asdict(item) for item in service.list_pantry_items()]},
+            tool_name="pantry_list",
         )
 
     @mcp.tool(name="recipe_index")
     def recipe_index(vault_path: str) -> ToolResponse:
-        return wrap_tool_call(lambda: {"recipe": asdict(service.index_recipe(vault_path))})
+        return wrap_tool_call(
+            lambda: {"recipe": asdict(service.index_recipe(vault_path))},
+            tool_name="recipe_index",
+        )
 
     @mcp.tool(name="recipe_scan")
     def recipe_scan(directory: str = "Recipes") -> ToolResponse:
         return wrap_tool_call(
             lambda: {
                 "recipes": [asdict(recipe) for recipe in service.scan_vault_recipes(directory)]
-            }
+            },
+            tool_name="recipe_scan",
         )
 
     @mcp.tool(name="recommend_recipes")
@@ -114,7 +125,8 @@ def create_meals_server(service: MealsService) -> FastMCP:
                     include_needs_shopping=include_needs_shopping,
                     apply_nutrition_filter=apply_nutrition_filter,
                 )
-            )
+            ),
+            tool_name="recommend_recipes",
         )
 
     @mcp.tool(name="nutrition_profile_set")
@@ -144,7 +156,8 @@ def create_meals_server(service: MealsService) -> FastMCP:
                         fat_g_per_kg=fat_g_per_kg,
                     )
                 )
-            }
+            },
+            tool_name="nutrition_profile_set",
         )
 
     @mcp.tool(name="nutrition_profile_get")
@@ -152,7 +165,8 @@ def create_meals_server(service: MealsService) -> FastMCP:
         return wrap_tool_call(
             lambda: {
                 "plan": asdict(plan) if (plan := service.get_nutrition_plan()) is not None else None
-            }
+            },
+            tool_name="nutrition_profile_get",
         )
 
     @mcp.resource("health://status")
