@@ -443,7 +443,8 @@ def test_migration_set_includes_015_memories_unique_live() -> None:
     names = sorted(p.name for p in migration_dir().glob("*.sql"))
     assert "015_slice6_memories_unique_live.sql" in names
     assert "016_memory_ttl_and_event_check.sql" in names
-    assert names[-1] == "016_memory_ttl_and_event_check.sql"
+    assert "017_recipes_vault_synced_at.sql" in names
+    assert names[-1] == "017_recipes_vault_synced_at.sql"
 
 
 def test_unique_index_rejects_duplicate_live_triple(tmp_path) -> None:

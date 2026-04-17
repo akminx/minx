@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection, Row
 
@@ -31,6 +33,7 @@ from minx_mcp.time_utils import (
     local_calendar_date_for_utc_timestamp,
     local_day_utc_bounds,
     resolve_timezone_name,
+    utc_now_isoformat,
 )
 
 _logger = logging.getLogger(__name__)
@@ -42,6 +45,17 @@ VALID_SEX_VALUES = set(SEX_BMR_OFFSETS)
 # ``fat_loss`` / ``muscle_gain`` are accepted legacy aliases for ``cut`` / ``bulk``.
 _GOAL_ALIASES: dict[str, str] = {"fat_loss": "cut", "muscle_gain": "bulk"}
 _VALID_GOAL_CANONICAL = set(GOAL_CALORIE_MULTIPLIERS)
+
+
+@dataclass(frozen=True)
+class ReconcileRecipesResult:
+    checked: int
+    orphaned: int
+    orphaned_recipe_ids: list[int]
+
+
+def _vault_sync_now_iso() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 class MealsService(BaseService):
@@ -405,10 +419,17 @@ class MealsService(BaseService):
             (vault_path,),
         ).fetchone()
         if existing is not None and existing["content_hash"] == parsed.content_hash:
+            now_iso = _vault_sync_now_iso()
+            self.conn.execute(
+                "UPDATE meals_recipes SET vault_synced_at = ? WHERE id = ?",
+                (now_iso, int(existing["id"])),
+            )
+            self.conn.commit()
             return self.get_recipe(int(existing["id"]))
         nutrition_summary_json = (
             json.dumps(parsed.nutrition_summary) if parsed.nutrition_summary is not None else None
         )
+        now_iso = _vault_sync_now_iso()
         savepoint = "meals_index_recipe"
         self.conn.execute(f"SAVEPOINT {savepoint}")
         try:
@@ -418,8 +439,8 @@ class MealsService(BaseService):
                     INSERT INTO meals_recipes (
                         vault_path, title, normalized_title, source_url, image_ref,
                         prep_time_minutes, cook_time_minutes, servings, tags_json,
-                        notes, nutrition_summary_json, content_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        notes, nutrition_summary_json, content_hash, vault_synced_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         vault_path,
@@ -434,6 +455,7 @@ class MealsService(BaseService):
                         parsed.notes,
                         nutrition_summary_json,
                         parsed.content_hash,
+                        now_iso,
                     ),
                 )
                 recipe_id = cursor.lastrowid or 0
@@ -445,7 +467,8 @@ class MealsService(BaseService):
                     SET title = ?, normalized_title = ?, source_url = ?, image_ref = ?,
                         prep_time_minutes = ?, cook_time_minutes = ?, servings = ?,
                         tags_json = ?, notes = ?, nutrition_summary_json = ?, content_hash = ?,
-                        indexed_at = datetime('now'), updated_at = datetime('now')
+                        indexed_at = datetime('now'), updated_at = datetime('now'),
+                        vault_synced_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -460,6 +483,7 @@ class MealsService(BaseService):
                         parsed.notes,
                         nutrition_summary_json,
                         parsed.content_hash,
+                        now_iso,
                         recipe_id,
                     ),
                 )
@@ -515,12 +539,90 @@ class MealsService(BaseService):
     def scan_vault_recipes(self, directory: str = "Recipes") -> list[Recipe]:
         if self._vault_root is None:
             raise InvalidInputError("vault_root is required to scan recipes")
+        self._reconcile_vault_recipes_inner(self._vault_root)
         root = _vault_child_path(self._vault_root, directory)
         vault_root = self._vault_root.resolve()
-        return [
-            self.index_recipe(str(path.relative_to(vault_root)))
-            for path in sorted(root.rglob("*.md"))
-        ]
+        paths = sorted(root.rglob("*.md"))
+        recipes = [self.index_recipe(str(path.relative_to(vault_root))) for path in paths]
+        if not paths:
+            self.conn.commit()
+        return recipes
+
+    def reconcile_vault_recipes(self, vault_root: Path | None = None) -> ReconcileRecipesResult:
+        """Walk meals_recipes rows; for each, verify vault_path still exists.
+
+        If a file is missing, nullify vault_path (soft delete — preserve ingredient
+        history and recipe id references from meal logs) and emit a
+        'meals.recipe_orphaned' domain event. Returns a structured result with
+        counts and orphaned recipe ids so callers can surface to the user.
+
+        Returns both 'checked' (total rows walked) and 'orphaned' (count of newly
+        nullified). Idempotent: re-running immediately produces zero orphans since
+        already-nullified rows are skipped.
+        """
+        root = vault_root if vault_root is not None else self._vault_root
+        if root is None:
+            raise InvalidInputError("vault_root is required to reconcile vault recipes")
+        savepoint = "meals_reconcile_vault_recipes"
+        self.conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            result = self._reconcile_vault_recipes_inner(root)
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception:
+            self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+        self.conn.commit()
+        return result
+
+    def _reconcile_vault_recipes_inner(self, vault_root: Path) -> ReconcileRecipesResult:
+        root = vault_root.resolve()
+        rows = self.conn.execute(
+            """
+            SELECT id, normalized_title AS slug, vault_path
+            FROM meals_recipes
+            WHERE vault_path IS NOT NULL
+            """
+        ).fetchall()
+        orphaned_recipe_ids: list[int] = []
+        orphaned = 0
+        checked = len(rows)
+        for row in rows:
+            recipe_id = int(row["id"])
+            slug = str(row["slug"])
+            relative = str(row["vault_path"])
+            if (root / relative).is_file():
+                continue
+            previous = relative
+            self.conn.execute(
+                """
+                UPDATE meals_recipes
+                SET vault_path = NULL, vault_synced_at = NULL
+                WHERE id = ?
+                """,
+                (recipe_id,),
+            )
+            event_id = emit_event(
+                self.conn,
+                event_type="meals.recipe_orphaned",
+                domain="meals",
+                occurred_at=utc_now_isoformat(timespec="seconds"),
+                entity_ref=f"recipe-{recipe_id}",
+                source=EVENT_SOURCE,
+                payload={
+                    "recipe_id": recipe_id,
+                    "slug": slug,
+                    "previous_vault_path": previous,
+                    "reason": "vault_file_missing",
+                },
+            )
+            if event_id is None:
+                raise RuntimeError("meals.recipe_orphaned event emission failed")
+            orphaned += 1
+            orphaned_recipe_ids.append(recipe_id)
+        return ReconcileRecipesResult(
+            checked=checked, orphaned=orphaned, orphaned_recipe_ids=orphaned_recipe_ids
+        )
 
     def get_recipe(self, recipe_id: int) -> Recipe:
         row = self.conn.execute(
@@ -727,9 +829,10 @@ def _recipe_from_row(
         if row["nutrition_summary_json"] is not None
         else None
     )
+    vault_cell = row["vault_path"]
     return Recipe(
         id=int(row["id"]),
-        vault_path=str(row["vault_path"]),
+        vault_path=str(vault_cell) if vault_cell is not None else "",
         title=str(row["title"]),
         normalized_title=str(row["normalized_title"]),
         source_url=row["source_url"],

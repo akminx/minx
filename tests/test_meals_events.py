@@ -15,6 +15,7 @@ def test_payload_models_include_finance_and_meals_events() -> None:
     assert "finance.anomalies_detected" in PAYLOAD_MODELS
     assert "meal.logged" in PAYLOAD_MODELS
     assert "nutrition.day_updated" in PAYLOAD_MODELS
+    assert "meals.recipe_orphaned" in PAYLOAD_MODELS
 
 
 @pytest.mark.parametrize("module_name", ["minx_mcp.finance.events", "minx_mcp.meals.events"])

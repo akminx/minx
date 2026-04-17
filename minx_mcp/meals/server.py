@@ -114,6 +114,20 @@ def create_meals_server(service: MealsService) -> FastMCP:
             tool_name="recipe_scan",
         )
 
+    @mcp.tool(name="recipes_reconcile")
+    def recipes_reconcile() -> ToolResponse:
+        """Walk vault-backed recipes and orphan rows whose files no longer exist in the vault."""
+
+        def _run() -> dict[str, object]:
+            result = service.reconcile_vault_recipes()
+            return {
+                "checked": result.checked,
+                "orphaned": result.orphaned,
+                "orphaned_recipe_ids": result.orphaned_recipe_ids,
+            }
+
+        return wrap_tool_call(_run, tool_name="recipes_reconcile")
+
     @mcp.tool(name="recipe_template")
     def recipe_template() -> ToolResponse:
         return wrap_tool_call(

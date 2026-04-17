@@ -18,7 +18,17 @@ class NutritionDayUpdatedPayload(EventPayload):
     calories: int | None = None
 
 
+class RecipeOrphanedPayload(EventPayload):
+    recipe_id: int
+    slug: str
+    previous_vault_path: str
+    reason: str
+
+
+RECIPE_ORPHANED = "meals.recipe_orphaned"
+
 MEALS_EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
     "meal.logged": MealLoggedPayload,
     "nutrition.day_updated": NutritionDayUpdatedPayload,
+    RECIPE_ORPHANED: RecipeOrphanedPayload,
 }

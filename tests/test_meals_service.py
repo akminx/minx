@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+import time
+from datetime import UTC, datetime
 
 import pytest
 
@@ -8,7 +11,7 @@ import minx_mcp.meals.service as meals_service_module
 from minx_mcp.contracts import InvalidInputError, NotFoundError
 from minx_mcp.core.events import query_events
 from minx_mcp.db import get_connection
-from minx_mcp.meals.service import MealsService
+from minx_mcp.meals.service import MealsService, ReconcileRecipesResult
 from minx_mcp.preferences import set_preference
 
 
@@ -319,3 +322,200 @@ def test_index_recipe_persists_nutrition_summary_from_frontmatter(db_path, tmp_p
         recipe = svc.index_recipe("Recipes/Tagged.md")
 
     assert recipe.nutrition_summary == {"calories": 512, "protein_grams": 44}
+
+
+def _parse_vault_synced_at(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def test_index_recipe_stamps_vault_synced_at(db_path, tmp_path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "Recipes" / "Soup.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("---\ntitle: Soup\n---\n## Ingredients\n- 1 onion\n")
+    svc = MealsService(db_path, vault_root=vault)
+
+    with svc:
+        recipe = svc.index_recipe("Recipes/Soup.md")
+        row = svc.conn.execute(
+            "SELECT vault_synced_at FROM meals_recipes WHERE id = ?",
+            (recipe.id,),
+        ).fetchone()
+
+    assert row is not None
+    assert row["vault_synced_at"] is not None
+    ts = _parse_vault_synced_at(str(row["vault_synced_at"]))
+    assert ts.tzinfo == UTC
+
+
+def test_index_recipe_refreshes_vault_synced_at_on_reindex(db_path, tmp_path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "Recipes" / "Soup.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("---\ntitle: Soup\n---\n## Ingredients\n- 1 onion\n")
+    svc = MealsService(db_path, vault_root=vault)
+
+    with svc:
+        first = svc.index_recipe("Recipes/Soup.md")
+        t0 = _parse_vault_synced_at(
+            str(
+                svc.conn.execute(
+                    "SELECT vault_synced_at FROM meals_recipes WHERE id = ?",
+                    (first.id,),
+                ).fetchone()["vault_synced_at"]
+            )
+        )
+        time.sleep(1)
+        svc.index_recipe("Recipes/Soup.md")
+        t1 = _parse_vault_synced_at(
+            str(
+                svc.conn.execute(
+                    "SELECT vault_synced_at FROM meals_recipes WHERE id = ?",
+                    (first.id,),
+                ).fetchone()["vault_synced_at"]
+            )
+        )
+
+    assert t1 > t0
+
+
+def test_reconcile_vault_recipes_nullifies_missing_vault_path(db_path, tmp_path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    svc = MealsService(db_path, vault_root=vault)
+
+    with svc:
+        svc.conn.execute(
+            """
+            INSERT INTO meals_recipes (vault_path, title, normalized_title, content_hash)
+            VALUES ('nope/Missing.md', 'Ghost', 'ghost', 'deadbeef')
+            """
+        )
+        svc.conn.commit()
+        rid = int(svc.conn.execute("SELECT id FROM meals_recipes").fetchone()["id"])
+        result = svc.reconcile_vault_recipes()
+        row = svc.conn.execute("SELECT vault_path FROM meals_recipes WHERE id = ?", (rid,)).fetchone()
+
+    assert isinstance(result, ReconcileRecipesResult)
+    assert result.checked == 1
+    assert result.orphaned == 1
+    assert result.orphaned_recipe_ids == [rid]
+    assert row["vault_path"] is None
+
+
+def test_reconcile_vault_recipes_preserves_existing_files(db_path, tmp_path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "Recipes" / "Soup.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("---\ntitle: Soup\n---\n## Ingredients\n- 1 onion\n")
+    svc = MealsService(db_path, vault_root=vault)
+
+    with svc:
+        recipe = svc.index_recipe("Recipes/Soup.md")
+        result = svc.reconcile_vault_recipes()
+        row = svc.conn.execute(
+            "SELECT vault_path, vault_synced_at FROM meals_recipes WHERE id = ?",
+            (recipe.id,),
+        ).fetchone()
+
+    assert result.checked == 1
+    assert result.orphaned == 0
+    assert result.orphaned_recipe_ids == []
+    assert row["vault_path"] == "Recipes/Soup.md"
+    assert row["vault_synced_at"] is not None
+
+
+def test_reconcile_vault_recipes_is_idempotent(db_path, tmp_path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    svc = MealsService(db_path, vault_root=vault)
+
+    with svc:
+        svc.conn.execute(
+            """
+            INSERT INTO meals_recipes (vault_path, title, normalized_title, content_hash)
+            VALUES ('gone/Stew.md', 'Stew', 'stew', 'abc123')
+            """
+        )
+        svc.conn.commit()
+        first = svc.reconcile_vault_recipes()
+        second = svc.reconcile_vault_recipes()
+
+    assert first.orphaned == 1
+    assert second.orphaned == 0
+    assert second.checked == 0
+
+
+def test_reconcile_vault_recipes_emits_recipe_orphaned_event(db_path, tmp_path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    svc = MealsService(db_path, vault_root=vault)
+
+    with svc:
+        svc.conn.execute(
+            """
+            INSERT INTO meals_recipes (vault_path, title, normalized_title, content_hash)
+            VALUES ('orphan/Pasta.md', 'Pasta', 'pasta', 'pasta1')
+            """
+        )
+        svc.conn.commit()
+        rid = int(svc.conn.execute("SELECT id FROM meals_recipes").fetchone()["id"])
+        svc.reconcile_vault_recipes()
+
+    conn = get_connection(db_path)
+    try:
+        events = query_events(conn, domain="meals", event_type="meals.recipe_orphaned")
+    finally:
+        conn.close()
+
+    assert len(events) == 1
+    payload = events[0].payload
+    assert payload["recipe_id"] == rid
+    assert payload["slug"] == "pasta"
+    assert payload["previous_vault_path"] == "orphan/Pasta.md"
+    assert payload["reason"] == "vault_file_missing"
+
+
+def test_reconcile_vault_recipes_preserves_recipe_id_for_meal_logs(db_path, tmp_path) -> None:
+    vault = tmp_path / "vault"
+    note = vault / "Recipes" / "Soup.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("---\ntitle: Soup\n---\n## Ingredients\n- 1 onion\n")
+    svc = MealsService(db_path, vault_root=vault)
+
+    with svc:
+        recipe = svc.index_recipe("Recipes/Soup.md")
+        svc.log_meal(
+            occurred_at="2026-04-12T12:00:00Z",
+            meal_kind="dinner",
+            food_items=[{"recipe_id": recipe.id, "name": "Soup"}],
+        )
+        note.unlink()
+        svc.reconcile_vault_recipes()
+        meal_row = svc.conn.execute(
+            "SELECT food_items_json FROM meals_meal_entries ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+
+    items = json.loads(str(meal_row["food_items_json"]))
+    assert items == [{"recipe_id": recipe.id, "name": "Soup"}]
+
+
+def test_scan_vault_recipes_calls_reconcile_first(db_path, tmp_path) -> None:
+    vault = tmp_path / "vault"
+    (vault / "Recipes").mkdir(parents=True)
+    svc = MealsService(db_path, vault_root=vault)
+
+    with svc:
+        svc.conn.execute(
+            """
+            INSERT INTO meals_recipes (vault_path, title, normalized_title, content_hash)
+            VALUES ('Recipes/Zombie.md', 'Zombie', 'zombie', 'z1')
+            """
+        )
+        svc.conn.commit()
+        svc.scan_vault_recipes("Recipes")
+        row = svc.conn.execute(
+            "SELECT vault_path FROM meals_recipes WHERE normalized_title = 'zombie'"
+        ).fetchone()
+
+    assert row["vault_path"] is None

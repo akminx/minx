@@ -20,6 +20,7 @@ def test_meals_server_registers_expected_tools(db_path, tmp_path) -> None:
     assert "nutrition_profile_set" in tool_names
     assert "nutrition_profile_get" in tool_names
     assert "recipe_template" in tool_names
+    assert "recipes_reconcile" in tool_names
 
 
 def test_meal_log_tool(db_path, tmp_path) -> None:
@@ -132,3 +133,17 @@ def test_recipe_template_tool_returns_packaged_scaffold(db_path, tmp_path) -> No
     assert "## Ingredients" in template
     assert "## Substitutions" in template
     assert "## Notes" in template
+
+
+def test_recipes_reconcile_tool_returns_ok_with_counts(db_path, tmp_path) -> None:
+    vault = tmp_path / "vault"
+    (vault / "Recipes").mkdir(parents=True)
+    server = create_meals_server(MealsService(db_path, vault_root=vault))
+
+    result = _call(server, "recipes_reconcile", {})
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["checked"] == 0
+    assert data["orphaned"] == 0
+    assert data["orphaned_recipe_ids"] == []
