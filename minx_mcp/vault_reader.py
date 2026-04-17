@@ -14,6 +14,10 @@ some editors (notably Windows Notepad) emit a BOM that would otherwise prevent
 ``---`` from matching on line 1. ``content_hash`` is still computed over the
 on-disk bytes, so BOM-prefixed and non-BOM versions of otherwise identical
 content hash differently (intentional; the scanner treats them as distinct).
+
+:class:`minx_mcp.vault_writer.VaultWriter` uses the same ``utf-8-sig`` decode
+when reading a note for section replacement, so BOM-prefixed files stay
+consistent with reader semantics.
 """
 
 from __future__ import annotations

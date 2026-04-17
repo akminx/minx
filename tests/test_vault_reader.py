@@ -141,6 +141,17 @@ def test_read_document_rejects_escape_via_dotdot(tmp_path: Path) -> None:
         reader.read_document(rel)
 
 
+def test_reader_strips_utf8_bom(tmp_path: Path) -> None:
+    root = tmp_path / "vault"
+    rel = Path("Minx") / "reader_bom.md"
+    raw = b"\xef\xbb\xbf---\nk: v\n---\nHi\n"
+    _write_bytes(root / rel, raw)
+    reader = VaultReader(root, ("Minx",))
+    doc = reader.read_document(rel.as_posix())
+    assert doc.frontmatter == {"k": "v"}
+    assert doc.body.strip() == "Hi"
+
+
 def test_read_document_strips_utf8_bom_before_frontmatter(tmp_path: Path) -> None:
     """Files written by some editors (e.g. Windows Notepad) start with a UTF-8 BOM.
 

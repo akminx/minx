@@ -1,9 +1,25 @@
+"""Write access to markdown files inside an Obsidian-style vault.
+
+Files are read with ``utf-8-sig`` to transparently strip UTF-8 BOM (matches
+:class:`minx_mcp.vault_reader.VaultReader`). Writes always emit bare UTF-8 (no
+BOM).
+
+Concurrent read-modify-write operations on the same note path use a sibling
+lock file and ``fcntl.flock`` so updates serialize across processes.
+"""
+
 from __future__ import annotations
 
+import fcntl
+import time
+from collections.abc import Callable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from minx_mcp.contracts import InvalidInputError
+from minx_mcp.contracts import ConflictError, InvalidInputError
+
+_LOCK_ACQUIRE_TIMEOUT_S = 8.0
+_LOCK_POLL_SLEEP_S = 0.05
 
 
 class VaultWriter:
@@ -16,26 +32,48 @@ class VaultWriter:
 
     def write_markdown(self, relative_path: str, content: str) -> Path:
         path = self._resolve(relative_path)
-        self._atomic_write_text(path, content)
+        self._locked_write(path, lambda _existing: content)
         return path
 
     def replace_section(self, relative_path: str, heading: str, body: str) -> Path:
         path = self._resolve(relative_path)
-        text = path.read_text(encoding="utf-8") if path.exists() else ""
         marker = f"## {heading}"
         replacement = f"{marker}\n\n{body.strip()}\n"
-        lines = text.splitlines()
-        start_line, end_line = self._find_section_bounds(lines, marker)
 
-        if start_line is None:
-            new_text = f"{text.rstrip()}\n\n{replacement}\n".strip() + "\n"
-        else:
+        def transform(text: str) -> str:
+            lines = text.splitlines()
+            start_line, end_line = self._find_section_bounds(lines, marker)
+            if start_line is None:
+                return f"{text.rstrip()}\n\n{replacement}\n".strip() + "\n"
             before = "\n".join(lines[:start_line]).rstrip()
             tail = "\n".join(lines[end_line:]).lstrip()
-            new_text = f"{before}\n\n{replacement}{tail}".strip() + "\n"
+            return f"{before}\n\n{replacement}{tail}".strip() + "\n"
 
-        self._atomic_write_text(path, new_text)
+        self._locked_write(path, transform)
         return path
+
+    def _lock_path(self, path: Path) -> Path:
+        return path.parent / f".{path.name}.lock"
+
+    def _locked_write(self, path: Path, transform: Callable[[str], str]) -> None:
+        lock_path = self._lock_path(path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + _LOCK_ACQUIRE_TIMEOUT_S
+        with open(lock_path, "a+", encoding="utf-8") as lock_handle:
+            while True:
+                try:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise ConflictError("vault file is locked by another writer") from None
+                    time.sleep(_LOCK_POLL_SLEEP_S)
+            try:
+                current_text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
+                new_text = transform(current_text)
+                self._atomic_write_text(path, new_text)
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
     def _atomic_write_text(self, path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
