@@ -119,3 +119,15 @@ uv run ruff check .
 ```
 
 Record the date and command outcome in the current handoff/PR notes, but do not freeze long-term health in this file with fixed counts.
+
+### Interpreting mypy output
+
+`uv run mypy` currently reports **0 errors in `minx_mcp/` (production source) and ~196 errors in `tests/`** (snapshot 2026-04-17). That total is expected, not a regression:
+
+- Run `uv run mypy minx_mcp` by itself for the headline production signal — this must always return `Success: no issues found`.
+- All test-side errors are the same loose-typing pattern: tests call MCP tools directly and index into the `ToolResponse` dict (typed `dict[str, Any]` by contract), so mypy cannot statically know that `result["data"]["memory"]["id"]` is an `int` on a specific call. Production callers either pass the envelope along unchanged or hydrate it into a typed dataclass, so they don't hit this at all.
+- Dominant error codes in `tests/` are `[index]` (~92), `[arg-type]` (~59), `[unused-ignore]` (~20), `[dict-item]` (~12); none correspond to runtime bugs.
+- When a PR or review asks "why is mypy noisy?", the answer is "test-only loose-dict indexing, see `docs/superpowers/plans/2026-04-15-code-quality-cleanup.md` §6.4". The test-only count is expected to trend down opportunistically as that phase lands, not in one sweep.
+- The canonical template for tightening a single test file is what `tests/test_hermes_http_smoke.py::_call_tool` does: annotate the tool-call helper's return as `dict[str, Any]` (narrowing from `object`) so downstream indexing into `["data"][…]` is well-typed. Applying this pattern to one file dropped 9 errors from the baseline (205 → 196) on 2026-04-17.
+
+The hard health rule is: **`minx_mcp/` source stays at 0 mypy errors, and every PR that touches a test file should not _increase_ the `tests/` count**. Monotonic decrease is the goal; full zero is a nice-to-have, not a gate.

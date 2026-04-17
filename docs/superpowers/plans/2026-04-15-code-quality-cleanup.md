@@ -259,6 +259,33 @@ Not all 190+ instances need fixing. Start with the most-used:
 - Both `core/models.py` and `finance/read_api.py` import from this shared location
 - Replace `Any` return types in `FinanceReadInterface` with the real types
 
+### 6.4 Burn down test-only mypy drift opportunistically
+
+**Context (2026-04-17):** `uv run mypy minx_mcp` is clean (0 errors in production source). `uv run mypy` over the full repo reports ~196 errors, all in `tests/`. The dominant error codes are `[index]` (~92), `[arg-type]` (~59), `[unused-ignore]` (~20), `[dict-item]` (~12). None of these represent runtime bugs; they come from tests indexing into `ToolResponse` envelopes (typed `dict[str, Any]` by contract) and into per-tool `data` payloads whose shape mypy cannot statically know.
+
+**Guiding rule:** `minx_mcp/` source stays at 0 mypy errors. Every PR that touches a `tests/` file should not _increase_ the test-side count. This is a ratchet, not a sweep.
+
+**Template for tightening a single test file (proven on `tests/test_hermes_http_smoke.py` on 2026-04-17, dropped 9 errors from baseline):**
+
+- Find the test-local helper that returns a tool response (typical names: `_call_tool`, `_invoke`, `_call`, `_tool`). If there isn't one, extract the tool-call boilerplate into one.
+- Tighten its return annotation from `object` (or missing) to `dict[str, Any]`. Import `typing.Any` if not already imported.
+- If the helper calls an MCP session over HTTP, assert `result.structuredContent is not None` into a local variable first, then return that local — mypy's narrowing will carry through.
+- If the helper calls an in-process tool via `get_tool(server, name).fn(...)`, cast the result with `cast(dict[str, Any], ...)` at the boundary rather than sprinkling casts at every indexing site.
+- Do not add `# type: ignore[...]` comments to silence the remaining drift — that pattern hides real bugs later and trips `[unused-ignore]` errors the next time mypy tightens.
+
+**Highest-leverage files to tackle first** (by error count, from the 2026-04-17 snapshot):
+
+- `tests/test_finance_service.py` (~22) — direct `.fn(...)` calls on finance tools
+- `tests/test_detectors.py` (~22) — detector return shapes
+- `tests/test_core_mcp_stdio.py` (~20) — stdio MCP client, similar pattern to `test_hermes_http_smoke.py`
+- `tests/test_contracts.py` (~18) — `ToolResponse` envelope shape tests
+- `tests/test_finance_reports.py` (~17) — report renderer output
+- `tests/test_goal_progress.py` (~16) — goal trajectory dicts
+
+**Scope boundary:** do not use this task as an excuse to rewrite test logic or expand coverage. The only allowed changes are annotation tightening, extracting local helpers whose sole purpose is narrowing, and pruning `[unused-ignore]` comments mypy has already flagged as dead.
+
+**Verification:** after a file is tightened, run `uv run mypy <edited file>` (must be `Success`), then `uv run mypy minx_mcp tests | tail -1` and confirm the total error count strictly decreased. No test behavior should change; `uv run pytest` stays green.
+
 ---
 
 ## Execution Order
