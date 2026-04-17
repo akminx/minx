@@ -14,7 +14,10 @@ from typing import Any, cast
 from minx_mcp.base_service import BaseService
 from minx_mcp.contracts import ConflictError, InvalidInputError, NotFoundError
 from minx_mcp.core.memory_models import MemoryProposal, MemoryRecord
-from minx_mcp.core.memory_payloads import validate_memory_payload
+from minx_mcp.core.memory_payloads import (
+    coerce_prior_payload_to_schema,
+    validate_memory_payload,
+)
 from minx_mcp.validation import require_non_empty
 
 logger = logging.getLogger(__name__)
@@ -458,7 +461,16 @@ class MemoryService(BaseService):
             try:
                 memory_id = int(row["id"])
                 prior_payload = _parse_payload_json(str(row["payload_json"]))
-                merged: dict[str, object] = {**prior_payload, **validated_payload}
+                # Normalize the prior payload against the current schema so
+                # legacy/pre-schema rows don't carry unknown keys forward
+                # through merges (they'd otherwise compound on every merge,
+                # since we only validate the NEW side). For canonical
+                # memory_types this drops unknown keys; for unknown types
+                # it's a no-op.
+                prior_payload_clean = coerce_prior_payload_to_schema(
+                    proposal.memory_type, prior_payload
+                )
+                merged: dict[str, object] = {**prior_payload_clean, **validated_payload}
                 new_confidence = max(float(row["confidence"]), float(proposal.confidence))
                 new_status = prior_status
                 promoted = False

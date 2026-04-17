@@ -327,6 +327,106 @@ def test_ingest_proposals_dedupe_merge_payload_and_promote(tmp_path) -> None:
     assert ev.index(("payload_updated", "detector")) < ev.index(("promoted", "detector"))
 
 
+def test_ingest_proposals_merge_drops_legacy_unknown_keys_on_canonical_type(tmp_path) -> None:
+    """Legacy rows from pre-schema Slice 6a testing may have unknown keys in
+    payload_json; on merge against a canonical (pydantic-validated) type,
+    those keys must drop out rather than compounding forever.
+    """
+    svc = _fresh_memory_service(tmp_path)
+    # Seed a preference row directly with legacy junk (bypassing the public
+    # create_memory path so we don't hit validation on insert — this is the
+    # shape real pre-Slice-6-review rows already have).
+    svc.conn.execute(
+        """
+        INSERT INTO memories (
+            memory_type, scope, subject, confidence, status,
+            payload_json, source, reason, created_at, updated_at
+        )
+        VALUES ('preference', 'core', 'pizza', 0.5, 'candidate',
+                ?, 'manual:seed', 'legacy',
+                datetime('now'), datetime('now'))
+        """,
+        (json.dumps({"note": "old", "legacy_key": "should_drop", "stale": 42}),),
+    )
+    svc.conn.commit()
+
+    # Now ingest a proposal that targets the same (type, scope, subject) with
+    # a valid payload; merge should drop legacy_key and stale.
+    p = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="pizza",
+        confidence=0.6,
+        payload={"category": "food"},
+        source="detector:test",
+        reason="merge-test",
+    )
+    out = svc.ingest_proposals((p,), actor="detector")
+    final = svc.get_memory(out[0].id)
+    assert final.payload == {"note": "old", "category": "food"}
+    assert "legacy_key" not in final.payload
+    assert "stale" not in final.payload
+
+
+def test_ingest_proposals_merge_keeps_valid_prior_subset(tmp_path) -> None:
+    """Valid prior fields are retained on merge; only junk gets dropped."""
+    svc = _fresh_memory_service(tmp_path)
+    svc.conn.execute(
+        """
+        INSERT INTO memories (
+            memory_type, scope, subject, confidence, status,
+            payload_json, source, reason, created_at, updated_at
+        )
+        VALUES ('preference', 'core', 'coffee', 0.5, 'candidate',
+                ?, 'manual:seed', 'legacy',
+                datetime('now'), datetime('now'))
+        """,
+        (json.dumps({"note": "keep", "category": "food"}),),
+    )
+    svc.conn.commit()
+    p = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="coffee",
+        confidence=0.6,
+        payload={"value": "decaf"},
+        source="detector:test",
+        reason="merge-test",
+    )
+    out = svc.ingest_proposals((p,), actor="detector")
+    final = svc.get_memory(out[0].id)
+    assert final.payload == {"note": "keep", "category": "food", "value": "decaf"}
+
+
+def test_create_memory_empty_payload_stays_sparse(tmp_path) -> None:
+    """Regression for f2: model_dump used to expand {} into full-null dict."""
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="test",
+        confidence=0.6,
+        payload={},
+        source="manual:user",
+    )
+    assert rec.payload == {}
+
+
+def test_create_memory_single_field_stays_sparse(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="test",
+        confidence=0.6,
+        payload={"note": "hello"},
+        source="manual:user",
+    )
+    assert rec.payload == {"note": "hello"}
+    assert "category" not in rec.payload
+    assert "value" not in rec.payload
+
+
 def test_ingest_proposals_inserts_in_input_order_distinct_subjects(tmp_path) -> None:
     svc = _fresh_memory_service(tmp_path)
     props = [
