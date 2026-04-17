@@ -104,6 +104,44 @@ def mark_running(conn: Connection, job_id: str, *, commit: bool = True) -> None:
     _set_status(conn, job_id, "running", None, commit=commit)
 
 
+def claim_queued_job(conn: Connection, job_id: str) -> bool:
+    """Atomically transition queued -> running; return True iff this caller claimed it.
+
+    Prior ``mark_running`` was an unconditional ``UPDATE`` by id, which meant
+    two concurrent workers sharing the same idempotency key could both:
+
+      1. Submit the job (idempotent, returns same queued row).
+      2. Pass the "status in {running, completed}" early-return gate while
+         status is still queued.
+      3. Both call ``mark_running`` — the loser would silently overwrite the
+         winner's ``completed`` back to ``running``, and both would double-parse
+         + double-batch the source file.
+
+    The claim here commits immediately (single-row UPDATE) so other callers
+    see ``status='running'`` and bail out of their own parse before doing any
+    expensive work. Returns False if the row was not in ``queued`` state at
+    claim time, in which case the caller must re-fetch and respect the
+    current state.
+    """
+    _require_job_row(conn, job_id)
+    cur = conn.execute(
+        """
+        UPDATE jobs
+        SET status = 'running', updated_at = datetime('now')
+        WHERE id = ? AND status = 'queued'
+        """,
+        (job_id,),
+    )
+    claimed = cur.rowcount == 1
+    if claimed:
+        conn.execute(
+            "INSERT INTO job_events (job_id, status, message) VALUES (?, 'running', 'Job claimed')",
+            (job_id,),
+        )
+    conn.commit()
+    return claimed
+
+
 def mark_completed(
     conn: Connection, job_id: str, result: dict[str, object], *, commit: bool = True
 ) -> None:

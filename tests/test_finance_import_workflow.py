@@ -153,3 +153,126 @@ def test_import_workflow_respects_bounded_limits(tmp_path, monkeypatch: pytest.M
     job_row = get_job(service.conn, str(job["id"]))
     assert job_row is not None
     assert job_row["status"] == "failed"
+
+
+def test_import_workflow_second_caller_sees_running_and_does_not_parse(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for f5: two concurrent callers with the same idempotency
+    key must not both parse. The atomic ``claim_queued_job`` makes the
+    "loser" return the current job state without calling parse_source_file.
+    """
+    db_path = tmp_path / "minx.db"
+    service = FinanceService(db_path, tmp_path)
+    source = tmp_path / "stmt.csv"
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n",
+        encoding="utf-8",
+    )
+
+    parse_call_count = {"n": 0}
+
+    def fake_parse(
+        _canonical_path: Path,
+        account_name: str,
+        _kind: str | None,
+        _mapping: dict[str, object] | None = None,
+        *,
+        snapshot_path: Path | None = None,
+        content_hash: str | None = None,
+    ) -> ParsedImportBatch:
+        parse_call_count["n"] += 1
+        assert snapshot_path is not None and content_hash is not None
+        return _minimal_dcu_batch(
+            content_hash=content_hash, source_path=source, account_name=account_name
+        )
+
+    monkeypatch.setattr(import_workflow_module, "parse_source_file", fake_parse)
+
+    first = run_finance_import(service, str(source), account_name="DCU")
+    assert first["status"] == "completed"
+    assert parse_call_count["n"] == 1
+
+    # Second call with the same source+account produces the same
+    # idempotency_key. submit_job returns the completed row -> early return.
+    second = run_finance_import(service, str(source), account_name="DCU")
+    assert second["status"] == "completed"
+    assert parse_call_count["n"] == 1, "second caller must not re-parse"
+    assert second["result"] == first["result"]
+
+
+def test_claim_queued_job_is_atomic_and_second_claim_fails(tmp_path) -> None:
+    """Direct unit test for the claim primitive."""
+    from minx_mcp.jobs import claim_queued_job, submit_job
+
+    db_path = tmp_path / "jobs.db"
+    conn = get_connection(db_path)
+    try:
+        job = submit_job(conn, "finance_import", "system", "src1", "idem1")
+        job_id = str(job["id"])
+        assert job["status"] == "queued"
+        assert claim_queued_job(conn, job_id) is True
+        # Second claim must fail — status is now 'running'
+        assert claim_queued_job(conn, job_id) is False
+        row = conn.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        assert row["status"] == "running"
+    finally:
+        conn.close()
+
+
+def test_import_workflow_loser_of_concurrent_claim_returns_running_without_parse(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulates the exact race: second caller sees queued at submit_job,
+    but a concurrent worker has already claimed it. Without the atomic
+    claim, the second would proceed to parse + silently overwrite status.
+    With the fix, it returns the current (running) state and skips parse.
+    """
+    from minx_mcp.jobs import claim_queued_job
+
+    db_path = tmp_path / "minx.db"
+    service = FinanceService(db_path, tmp_path)
+    source = tmp_path / "stmt.csv"
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n",
+        encoding="utf-8",
+    )
+
+    parse_call_count = {"n": 0}
+
+    def fake_parse(
+        _canonical_path: Path,
+        account_name: str,
+        _kind: str | None,
+        _mapping: dict[str, object] | None = None,
+        *,
+        snapshot_path: Path | None = None,
+        content_hash: str | None = None,
+    ) -> ParsedImportBatch:
+        parse_call_count["n"] += 1
+        assert snapshot_path is not None and content_hash is not None
+        return _minimal_dcu_batch(
+            content_hash=content_hash, source_path=source, account_name=account_name
+        )
+
+    real_claim = claim_queued_job
+
+    def racing_claim(conn: object, job_id: str) -> bool:
+        # Simulate "another worker beat us to it" by claiming on a side
+        # connection BEFORE the real claim runs, then letting the real
+        # claim detect rowcount == 0.
+        side = get_connection(Path(db_path))
+        try:
+            real_claim(side, job_id)
+        finally:
+            side.close()
+        return real_claim(conn, job_id)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(import_workflow_module, "parse_source_file", fake_parse)
+    monkeypatch.setattr(import_workflow_module, "claim_queued_job", racing_claim)
+
+    result = run_finance_import(service, str(source), account_name="DCU")
+    assert result["status"] == "running", (
+        "losing caller should see the other worker's running status, not parse + overwrite"
+    )
+    assert parse_call_count["n"] == 0, "losing caller must not parse"

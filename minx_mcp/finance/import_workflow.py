@@ -20,7 +20,13 @@ from minx_mcp.finance.importers import (
     stream_snapshot_copy_and_hash,
 )
 from minx_mcp.finance.normalization import normalize_merchant
-from minx_mcp.jobs import mark_completed, mark_failed, mark_running, submit_job
+from minx_mcp.jobs import (
+    claim_queued_job,
+    get_job,
+    mark_completed,
+    mark_failed,
+    submit_job,
+)
 from minx_mcp.money import format_decimal_cents
 from minx_mcp.preferences import get_csv_mapping
 
@@ -123,11 +129,26 @@ def run_finance_import(
         if job["status"] in {"completed", "running"}:
             return {"job_id": job["id"], "status": job["status"], "result": job["result"]}
 
+        # Atomically claim the queued job BEFORE the expensive parse. This
+        # closes the race where two concurrent callers with the same
+        # idempotency key both pass the gate above while status=queued, then
+        # both parse + both overwrite each other's status on mark_running.
+        # A losing claimant returns the current job state without parsing.
+        job_id_str = str(job["id"])
+        if not claim_queued_job(host.conn, job_id_str):
+            current = get_job(host.conn, job_id_str) or job
+            return {
+                "job_id": current["id"],
+                "status": current["status"],
+                "result": current.get("result"),
+            }
+
         savepoint_active = False
         try:
-            # Parse before opening the write transaction so slow sources (e.g. PDF via
-            # subprocess) do not hold RESERVED/PENDING locks on the finance DB for the
-            # whole parse window. Job failure handling still runs via this try's except.
+            # Parse AFTER the claim commits so slow sources (e.g. PDF via
+            # subprocess) do not hold RESERVED/PENDING locks on the finance
+            # DB for the whole parse window, and so concurrent callers see
+            # status='running' and bail out of their own parse work.
             parsed = parse_source_file(
                 canonical_source_path,
                 account_name,
@@ -137,7 +158,14 @@ def run_finance_import(
                 content_hash=content_hash,
             )
 
-            mark_running(host.conn, str(job["id"]), commit=False)
+            # Explicit BEGIN IMMEDIATE so the SAVEPOINT below is nested
+            # inside a real transaction. Without this, RELEASE SAVEPOINT on
+            # an implicit outermost savepoint in SQLite commits the
+            # transaction early, which would break rollback if
+            # mark_completed raises (events + inserts would already be
+            # durable). ``conn.in_transaction`` in the except branch
+            # detects the BEGIN IMMEDIATE and rolls it back as needed.
+            host.conn.execute("BEGIN IMMEDIATE")
             host.conn.execute("SAVEPOINT finance_import")
             savepoint_active = True
 
