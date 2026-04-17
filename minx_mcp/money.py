@@ -24,3 +24,10 @@ def format_cents(value: int) -> str:
     sign = "-" if value < 0 else ""
     dollars = Decimal(abs(value)) / 100
     return f"{sign}${dollars:.2f}"
+
+
+def format_decimal_cents(value: int) -> str:
+    """Return a signed two-decimal amount string without a currency symbol (e.g. '-12.34')."""
+    sign = "-" if value < 0 else ""
+    dollars = (Decimal(abs(value)) / 100).quantize(Decimal("0.01"))
+    return f"{sign}{dollars}"

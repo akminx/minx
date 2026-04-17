@@ -6,6 +6,8 @@ from pathlib import Path
 
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.finance.import_models import (
+    MAX_FINANCE_IMPORT_FILE_BYTES,
+    MAX_FINANCE_IMPORT_ROWS,
     GenericCSVMapping,
     ParsedImportBatch,
     ParsedTransaction,
@@ -19,9 +21,17 @@ def parse_generic_csv(
     mapping: dict[str, object] | GenericCSVMapping,
 ) -> ParsedImportBatch:
     resolved_mapping = GenericCSVMapping.from_value(mapping)
+    if path.stat().st_size > MAX_FINANCE_IMPORT_FILE_BYTES:
+        raise InvalidInputError(
+            f"CSV exceeds maximum allowed size ({MAX_FINANCE_IMPORT_FILE_BYTES} bytes)"
+        )
     transactions: list[ParsedTransaction] = []
     with path.open(newline="") as handle:
-        for row in csv.DictReader(handle):
+        for row_num, row in enumerate(csv.DictReader(handle), start=1):
+            if row_num > MAX_FINANCE_IMPORT_ROWS:
+                raise InvalidInputError(
+                    f"CSV exceeds maximum row count ({MAX_FINANCE_IMPORT_ROWS} data rows)"
+                )
             try:
                 raw_date = row[resolved_mapping.date_column]
             except KeyError as exc:

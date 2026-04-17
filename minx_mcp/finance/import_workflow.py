@@ -21,6 +21,7 @@ from minx_mcp.finance.importers import (
 )
 from minx_mcp.finance.normalization import normalize_merchant
 from minx_mcp.jobs import mark_completed, mark_failed, mark_running, submit_job
+from minx_mcp.money import format_decimal_cents
 from minx_mcp.preferences import get_csv_mapping
 
 logger = logging.getLogger(__name__)
@@ -238,7 +239,7 @@ def preview_finance_import(
                     "description": txn.description,
                     "merchant": normalize_merchant(txn.merchant),
                     "raw_merchant": txn.merchant,
-                    "amount": txn.amount_cents / 100.0,
+                    "amount": format_decimal_cents(txn.amount_cents),
                 }
                 for txn in parsed.transactions[:10]
             ],

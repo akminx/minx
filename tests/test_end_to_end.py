@@ -25,7 +25,7 @@ def test_import_to_summary_to_report_flow(tmp_path):
     assert summary["categories"]
     assert isinstance(summary["net_total"], float)
     assert summary["net_total"] == -12.5
-    assert report["summary"]["account_rollups"][0]["total_amount"] == -12.5
+    assert report["summary"]["account_rollups"][0]["total_amount_cents"] == -1250
     assert report["vault_path"].endswith("Finance/monthly-2026-03.md")
     row = service.conn.execute(
         """

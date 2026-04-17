@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from dataclasses import replace
 from pathlib import Path
@@ -7,7 +8,12 @@ from tempfile import TemporaryDirectory
 
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.core.interpretation.import_detection import detect_finance_source_kind
-from minx_mcp.finance.import_models import GenericCSVMapping, ParsedImportBatch
+from minx_mcp.finance.import_models import (
+    MAX_FINANCE_IMPORT_FILE_BYTES,
+    MAX_FINANCE_IMPORT_ROWS,
+    GenericCSVMapping,
+    ParsedImportBatch,
+)
 from minx_mcp.finance.parsers.dcu import parse_dcu_csv, parse_dcu_pdf
 from minx_mcp.finance.parsers.discover import parse_discover_pdf
 from minx_mcp.finance.parsers.generic_csv import parse_generic_csv
@@ -30,13 +36,22 @@ def stream_snapshot_copy_and_hash(source_path: Path, dest_path: Path) -> str:
     Returns the SHA-256 hex digest of the copied bytes. Does not load the full file into memory.
     """
     digest = hashlib.sha256()
+    bytes_written = 0
     with source_path.open("rb") as src, dest_path.open("wb") as dst:
         while True:
             chunk = src.read(_READ_CHUNK)
             if not chunk:
                 break
+            if bytes_written + len(chunk) > MAX_FINANCE_IMPORT_FILE_BYTES:
+                with contextlib.suppress(OSError):
+                    dest_path.unlink(missing_ok=True)
+                raise InvalidInputError(
+                    "Finance import source exceeds maximum allowed size "
+                    f"({MAX_FINANCE_IMPORT_FILE_BYTES} bytes)"
+                )
             digest.update(chunk)
             dst.write(chunk)
+            bytes_written += len(chunk)
     return digest.hexdigest()
 
 
@@ -69,6 +84,13 @@ def _parse_kind_from_snapshot(
     raise InvalidInputError(f"Unsupported finance source kind: {kind}")
 
 
+def _assert_within_file_byte_limit(label: str, byte_length: int) -> None:
+    if byte_length > MAX_FINANCE_IMPORT_FILE_BYTES:
+        raise InvalidInputError(
+            f"{label} exceeds maximum allowed size ({MAX_FINANCE_IMPORT_FILE_BYTES} bytes)"
+        )
+
+
 def parse_source_file(
     path: Path,
     account_name: str,
@@ -85,6 +107,7 @@ def parse_source_file(
     if snapshot_path is not None:
         if content_hash is None:
             raise InvalidInputError("content_hash is required when snapshot_path is set")
+        _assert_within_file_byte_limit("Finance import snapshot", snapshot_path.stat().st_size)
         kind = source_kind or detect_source_kind(snapshot_path)
         result = _parse_kind_from_snapshot(snapshot_path, account_name, kind, mapping)
         _validate_parsed_transactions(result)
@@ -95,6 +118,7 @@ def parse_source_file(
         )
 
     if file_bytes is not None:
+        _assert_within_file_byte_limit("Finance import upload", len(file_bytes))
         if content_hash is None:
             content_hash = hashlib.sha256(file_bytes).hexdigest()
         with TemporaryDirectory() as temp_dir:
@@ -109,6 +133,7 @@ def parse_source_file(
             raw_fingerprint=content_hash,
         )
 
+    _assert_within_file_byte_limit("Finance import source", path.stat().st_size)
     with TemporaryDirectory() as temp_dir:
         sp = Path(temp_dir) / path.name
         content_hash = stream_snapshot_copy_and_hash(path, sp)
@@ -124,6 +149,10 @@ def parse_source_file(
 
 
 def _validate_parsed_transactions(parsed: ParsedImportBatch) -> None:
+    if len(parsed.transactions) > MAX_FINANCE_IMPORT_ROWS:
+        raise InvalidInputError(
+            f"Finance import exceeds maximum row count ({MAX_FINANCE_IMPORT_ROWS} rows)"
+        )
     for txn in parsed.transactions:
         if not isinstance(txn.amount_cents, int):
             raise InvalidInputError("parsed transactions must include integer amount_cents")

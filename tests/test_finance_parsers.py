@@ -12,7 +12,7 @@ from minx_mcp.finance.importers import (
     parse_source_file,
     stream_snapshot_copy_and_hash,
 )
-from minx_mcp.finance.parsers.dcu import parse_dcu_csv
+from minx_mcp.finance.parsers.dcu import _parse_dcu_posted_at, parse_dcu_csv
 from minx_mcp.finance.parsers.generic_csv import parse_generic_csv
 
 
@@ -261,6 +261,18 @@ def test_parse_discover_pdf_4digit_year_passthrough(tmp_path, monkeypatch):
     monkeypatch.setattr("minx_mcp.finance.parsers.discover.extract_text", lambda _: sample)
     parsed = parse_source_file(path, account_name="Discover", source_kind="discover_pdf")
     assert parsed.transactions[0].posted_at == "2026-03-01"
+
+
+def test_dcu_parser_normalizes_posted_at_to_iso(tmp_path) -> None:
+    path = tmp_path / "dcu.csv"
+    path.write_text("Date,Description,Amount\n03/28/2026,HEB,-42.16\n")
+    parsed = parse_dcu_csv(path, "DCU")
+    assert parsed.transactions[0].posted_at == "2026-03-28"
+
+
+def test_dcu_parser_rejects_malformed_date(tmp_path) -> None:
+    with pytest.raises(InvalidInputError, match="invalid or unsupported Date"):
+        _parse_dcu_posted_at("not-a-date")
 
 
 def test_parse_generic_csv_requires_complete_mapping(tmp_path):

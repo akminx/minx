@@ -4,14 +4,27 @@ import csv
 from pathlib import Path
 
 from minx_mcp.contracts import InvalidInputError
-from minx_mcp.finance.import_models import ParsedImportBatch, ParsedTransaction
+from minx_mcp.finance.import_models import (
+    MAX_FINANCE_IMPORT_FILE_BYTES,
+    MAX_FINANCE_IMPORT_ROWS,
+    ParsedImportBatch,
+    ParsedTransaction,
+)
 from minx_mcp.money import parse_dollars_to_cents
 
 
 def parse_robinhood_csv(path: Path, account_name: str) -> ParsedImportBatch:
+    if path.stat().st_size > MAX_FINANCE_IMPORT_FILE_BYTES:
+        raise InvalidInputError(
+            f"Robinhood CSV exceeds maximum allowed size ({MAX_FINANCE_IMPORT_FILE_BYTES} bytes)"
+        )
     transactions: list[ParsedTransaction] = []
     with path.open(newline="") as handle:
-        for row in csv.DictReader(handle):
+        for row_num, row in enumerate(csv.DictReader(handle), start=1):
+            if row_num > MAX_FINANCE_IMPORT_ROWS:
+                raise InvalidInputError(
+                    f"Robinhood CSV exceeds maximum row count ({MAX_FINANCE_IMPORT_ROWS} data rows)"
+                )
             try:
                 description = row["Description"]
                 posted_at = row["Date"]

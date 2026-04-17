@@ -5,6 +5,10 @@ from typing import Any
 
 from minx_mcp.contracts import InvalidInputError
 
+# Shared bounds for finance file imports (keep in sync across parsers and `importers`).
+MAX_FINANCE_IMPORT_ROWS = 100_000
+MAX_FINANCE_IMPORT_FILE_BYTES = 50 * 1024 * 1024
+
 
 @dataclass(frozen=True)
 class ParsedTransaction:

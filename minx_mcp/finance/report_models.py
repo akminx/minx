@@ -5,17 +5,17 @@ from dataclasses import asdict, dataclass
 
 @dataclass(frozen=True)
 class MoneyTotals:
-    inflow: float
-    outflow: float
+    inflow_cents: int
+    outflow_cents: int
 
-    def to_dict(self) -> dict[str, float]:
+    def to_dict(self) -> dict[str, int]:
         return asdict(self)
 
 
 @dataclass(frozen=True)
 class TopCategory:
     category_name: str
-    total_outflow: float
+    total_outflow_cents: int
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -24,7 +24,7 @@ class TopCategory:
 @dataclass(frozen=True)
 class NotableMerchant:
     merchant: str
-    total_outflow: float
+    total_outflow_cents: int
     transaction_count: int
 
     def to_dict(self) -> dict[str, object]:
@@ -34,9 +34,9 @@ class NotableMerchant:
 @dataclass(frozen=True)
 class WeeklyCategoryChange:
     category_name: str
-    current_outflow: float
-    prior_outflow: float
-    delta_outflow: float
+    current_outflow_cents: int
+    prior_outflow_cents: int
+    delta_outflow_cents: int
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -48,7 +48,7 @@ class AnomalyItem:
     transaction_id: int | None
     posted_at: str
     description: str
-    amount: float
+    amount_cents: int
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -59,7 +59,7 @@ class UncategorizedTransaction:
     id: int | None
     posted_at: str
     description: str
-    amount: float
+    amount_cents: int
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -94,7 +94,7 @@ class WeeklyReportSummary:
 @dataclass(frozen=True)
 class AccountRollup:
     account_name: str
-    total_amount: float
+    total_amount_cents: int
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -103,7 +103,7 @@ class AccountRollup:
 @dataclass(frozen=True)
 class CategoryTotal:
     category_name: str
-    total_amount: float
+    total_amount_cents: int
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -112,9 +112,9 @@ class CategoryTotal:
 @dataclass(frozen=True)
 class MonthlyChange:
     account_name: str
-    current_total: float
-    prior_total: float
-    delta_total: float
+    current_total_cents: int
+    prior_total_cents: int
+    delta_total_cents: int
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -123,8 +123,8 @@ class MonthlyChange:
 @dataclass(frozen=True)
 class RecurringChargeHighlight:
     merchant: str
-    current_outflow: float
-    prior_outflow: float
+    current_outflow_cents: int
+    prior_outflow_cents: int
     current_count: int
     prior_count: int
 
@@ -136,7 +136,7 @@ class RecurringChargeHighlight:
 class NewMerchantReviewItem:
     merchant: str
     first_seen_at: str
-    total_amount: float
+    total_amount_cents: int
     kind: str = "new_merchant"
 
     def to_dict(self) -> dict[str, object]:
@@ -147,7 +147,7 @@ class NewMerchantReviewItem:
 class UncategorizedReviewItem:
     posted_at: str
     description: str
-    amount: float
+    amount_cents: int
     kind: str = "uncategorized_transaction"
 
     def to_dict(self) -> dict[str, object]:

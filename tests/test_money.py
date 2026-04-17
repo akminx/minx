@@ -1,7 +1,12 @@
 import pytest
 
 from minx_mcp.contracts import InvalidInputError
-from minx_mcp.money import cents_to_display_dollars, format_cents, parse_dollars_to_cents
+from minx_mcp.money import (
+    cents_to_display_dollars,
+    format_cents,
+    format_decimal_cents,
+    parse_dollars_to_cents,
+)
 
 
 def test_parse_dollars_to_cents_accepts_exact_two_decimal_inputs():
@@ -18,6 +23,11 @@ def test_parse_dollars_to_cents_rejects_more_than_two_decimal_places():
 def test_cents_to_display_dollars_returns_display_floats():
     assert cents_to_display_dollars(1234) == 12.34
     assert cents_to_display_dollars(-4216) == -42.16
+
+
+def test_format_decimal_cents_two_places() -> None:
+    assert format_decimal_cents(1234) == "12.34"
+    assert format_decimal_cents(-4216) == "-42.16"
 
 
 def test_format_cents_returns_currency_string():

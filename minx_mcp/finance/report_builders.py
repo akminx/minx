@@ -17,9 +17,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from sqlite3 import Connection
 from string import Template
-from typing import SupportsFloat, TypeVar
+from typing import Any, TypeVar
 
-from minx_mcp.finance.analytics import find_anomalies, find_uncategorized
 from minx_mcp.finance.report_models import (
     AccountRollup,
     AnomalyItem,
@@ -37,12 +36,84 @@ from minx_mcp.finance.report_models import (
     WeeklyCategoryChange,
     WeeklyReportSummary,
 )
-from minx_mcp.money import cents_to_display_dollars
+from minx_mcp.money import format_cents
+from minx_mcp.preferences import get_finance_anomaly_threshold_cents
 from minx_mcp.time_utils import next_day
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 
 T = TypeVar("T")
+
+
+def _large_uncategorized_anomaly_rows(
+    conn: Connection,
+    period_start: str,
+    end_exclusive: str,
+) -> list[Any]:
+    threshold = get_finance_anomaly_threshold_cents(conn)
+    return list(
+        conn.execute(
+            """
+            SELECT t.id, t.posted_at, t.description, t.amount_cents
+            FROM finance_transactions t
+            LEFT JOIN finance_categories c ON c.id = t.category_id
+            WHERE t.amount_cents <= ?
+              AND COALESCE(c.name, 'Uncategorized') = 'Uncategorized'
+              AND t.posted_at >= ? AND t.posted_at < ?
+            ORDER BY t.amount_cents ASC, t.id ASC
+            """,
+            (threshold, period_start, end_exclusive),
+        ).fetchall()
+    )
+
+
+def _uncategorized_transaction_rows(
+    conn: Connection,
+    period_start: str,
+    end_exclusive: str,
+) -> list[Any]:
+    return list(
+        conn.execute(
+            """
+            SELECT
+                t.id,
+                t.posted_at,
+                t.description,
+                t.amount_cents
+            FROM finance_transactions t
+            LEFT JOIN finance_categories c ON c.id = t.category_id
+            WHERE t.posted_at >= ? AND t.posted_at < ?
+              AND COALESCE(c.name, 'Uncategorized') = 'Uncategorized'
+            ORDER BY t.posted_at ASC, t.id ASC
+            """,
+            (period_start, end_exclusive),
+        ).fetchall()
+    )
+
+
+def _anomaly_items_from_rows(rows: Sequence[Any]) -> list[AnomalyItem]:
+    return [
+        AnomalyItem(
+            kind="large_uncategorized",
+            transaction_id=int(row["id"]),
+            posted_at=str(row["posted_at"]),
+            description=str(row["description"]),
+            amount_cents=int(row["amount_cents"]),
+        )
+        for row in rows
+    ]
+
+
+def _uncategorized_transactions_from_rows(rows: Sequence[Any]) -> list[UncategorizedTransaction]:
+    return [
+        UncategorizedTransaction(
+            id=int(row["id"]),
+            posted_at=str(row["posted_at"]),
+            description=str(row["description"]),
+            amount_cents=int(row["amount_cents"]),
+        )
+        for row in rows
+    ]
 
 
 def build_weekly_report(
@@ -64,13 +135,13 @@ def build_weekly_report(
         (period_start, end_exclusive),
     ).fetchone()
     totals = MoneyTotals(
-        inflow=cents_to_display_dollars(int(totals_row["inflow_cents"])),
-        outflow=cents_to_display_dollars(int(totals_row["outflow_cents"])),
+        inflow_cents=int(totals_row["inflow_cents"]),
+        outflow_cents=int(totals_row["outflow_cents"]),
     )
     top_categories = [
         TopCategory(
             category_name=str(row["category_name"]),
-            total_outflow=cents_to_display_dollars(int(row["total_outflow_cents"])),
+            total_outflow_cents=int(row["total_outflow_cents"]),
         )
         for row in conn.execute(
             """
@@ -90,7 +161,7 @@ def build_weekly_report(
     notable_merchants = [
         NotableMerchant(
             merchant=str(row["merchant"]),
-            total_outflow=cents_to_display_dollars(int(row["total_outflow_cents"])),
+            total_outflow_cents=int(row["total_outflow_cents"]),
             transaction_count=int(row["transaction_count"]),
         )
         for row in conn.execute(
@@ -115,18 +186,16 @@ def build_weekly_report(
     category_changes = [
         WeeklyCategoryChange(
             category_name=category_name,
-            current_outflow=current_categories.get(category_name, 0.0),
-            prior_outflow=prior_categories.get(category_name, 0.0),
-            delta_outflow=round(
-                current_categories.get(category_name, 0.0)
-                - prior_categories.get(category_name, 0.0),
-                2,
-            ),
+            current_outflow_cents=current_categories.get(category_name, 0),
+            prior_outflow_cents=prior_categories.get(category_name, 0),
+            delta_outflow_cents=current_categories.get(category_name, 0)
+            - prior_categories.get(category_name, 0),
         )
         for category_name in sorted(set(current_categories) | set(prior_categories))
     ]
-    category_changes.sort(key=lambda item: (-abs(item.delta_outflow), item.category_name))
+    category_changes.sort(key=lambda item: (-abs(item.delta_outflow_cents), item.category_name))
 
+    unc_rows = _uncategorized_transaction_rows(conn, period_start, end_exclusive)
     return WeeklyReportSummary(
         period_start=period_start,
         period_end=period_end,
@@ -134,10 +203,10 @@ def build_weekly_report(
         top_categories=top_categories,
         notable_merchants=notable_merchants,
         category_changes=category_changes,
-        anomalies=_anomaly_items(find_anomalies(conn, period_start, end_exclusive)),
-        uncategorized_transactions=_uncategorized_transactions(
-            find_uncategorized(conn, period_start, end_exclusive)
+        anomalies=_anomaly_items_from_rows(
+            _large_uncategorized_anomaly_rows(conn, period_start, end_exclusive)
         ),
+        uncategorized_transactions=_uncategorized_transactions_from_rows(unc_rows),
     )
 
 
@@ -152,7 +221,7 @@ def build_monthly_report(
     account_rollups = [
         AccountRollup(
             account_name=str(row["account_name"]),
-            total_amount=cents_to_display_dollars(int(row["total_amount_cents"])),
+            total_amount_cents=int(row["total_amount_cents"]),
         )
         for row in conn.execute(
             """
@@ -169,7 +238,7 @@ def build_monthly_report(
     category_totals = [
         CategoryTotal(
             category_name=str(row["category_name"]),
-            total_amount=cents_to_display_dollars(int(row["total_amount_cents"])),
+            total_amount_cents=int(row["total_amount_cents"]),
         )
         for row in conn.execute(
             """
@@ -190,12 +259,10 @@ def build_monthly_report(
     changes_vs_prior_month = [
         MonthlyChange(
             account_name=account_name,
-            current_total=current_accounts.get(account_name, 0.0),
-            prior_total=prior_accounts.get(account_name, 0.0),
-            delta_total=round(
-                current_accounts.get(account_name, 0.0) - prior_accounts.get(account_name, 0.0),
-                2,
-            ),
+            current_total_cents=current_accounts.get(account_name, 0),
+            prior_total_cents=prior_accounts.get(account_name, 0),
+            delta_total_cents=current_accounts.get(account_name, 0)
+            - prior_accounts.get(account_name, 0),
         )
         for account_name in sorted(set(current_accounts) | set(prior_accounts))
     ]
@@ -214,7 +281,9 @@ def build_monthly_report(
         category_totals=category_totals,
         changes_vs_prior_month=changes_vs_prior_month,
         recurring_charge_highlights=recurring_charge_highlights,
-        anomalies=_anomaly_items(find_anomalies(conn, period_start, end_exclusive)),
+        anomalies=_anomaly_items_from_rows(
+            _large_uncategorized_anomaly_rows(conn, period_start, end_exclusive)
+        ),
         uncategorized_or_new_merchants=_monthly_review_items(
             conn,
             period_start,
@@ -243,7 +312,7 @@ def _category_outflow_map(
     conn: Connection,
     period_start: str,
     end_exclusive: str,
-) -> dict[str, float]:
+) -> dict[str, int]:
     rows = conn.execute(
         """
         SELECT
@@ -256,17 +325,14 @@ def _category_outflow_map(
         """,
         (period_start, end_exclusive),
     ).fetchall()
-    return {
-        str(row["category_name"]): cents_to_display_dollars(int(row["total_outflow_cents"]))
-        for row in rows
-    }
+    return {str(row["category_name"]): int(row["total_outflow_cents"]) for row in rows}
 
 
 def _account_total_map(
     conn: Connection,
     period_start: str,
     end_exclusive: str,
-) -> dict[str, float]:
+) -> dict[str, int]:
     rows = conn.execute(
         """
         SELECT a.name AS account_name, COALESCE(SUM(t.amount_cents), 0) AS total_amount_cents
@@ -277,10 +343,7 @@ def _account_total_map(
         """,
         (period_start, end_exclusive),
     ).fetchall()
-    return {
-        str(row["account_name"]): cents_to_display_dollars(int(row["total_amount_cents"]))
-        for row in rows
-    }
+    return {str(row["account_name"]): int(row["total_amount_cents"]) for row in rows}
 
 
 def _recurring_charge_highlights(
@@ -296,14 +359,14 @@ def _recurring_charge_highlights(
     highlights = [
         RecurringChargeHighlight(
             merchant=merchant,
-            current_outflow=cents_to_display_dollars(current[merchant][1]),
-            prior_outflow=cents_to_display_dollars(prior[merchant][1]),
+            current_outflow_cents=current[merchant][1],
+            prior_outflow_cents=prior[merchant][1],
             current_count=current[merchant][0],
             prior_count=prior[merchant][0],
         )
         for merchant in sorted(set(current) & set(prior))
     ]
-    highlights.sort(key=lambda item: (-item.current_outflow, item.merchant))
+    highlights.sort(key=lambda item: (-item.current_outflow_cents, item.merchant))
     return highlights
 
 
@@ -338,12 +401,12 @@ def _monthly_review_items(
     end_exclusive: str,
 ) -> list[MonthlyReviewItem]:
     items: list[MonthlyReviewItem] = []
-    for row in find_uncategorized(conn, period_start, end_exclusive):
+    for row in _uncategorized_transaction_rows(conn, period_start, end_exclusive):
         items.append(
             UncategorizedReviewItem(
                 posted_at=str(row["posted_at"]),
                 description=str(row["description"]),
-                amount=_as_float(row["amount"]),
+                amount_cents=int(row["amount_cents"]),
             )
         )
 
@@ -372,51 +435,10 @@ def _monthly_review_items(
             NewMerchantReviewItem(
                 merchant=str(row["merchant"]),
                 first_seen_at=str(row["first_seen_at"]),
-                total_amount=cents_to_display_dollars(int(row["total_amount_cents"])),
+                total_amount_cents=int(row["total_amount_cents"]),
             )
         )
     return items
-
-
-def _anomaly_items(items: list[dict[str, object]]) -> list[AnomalyItem]:
-    return [
-        AnomalyItem(
-            kind=str(item["kind"]),
-            transaction_id=(
-                _as_int(item["transaction_id"]) if item.get("transaction_id") is not None else None
-            ),
-            posted_at=str(item["posted_at"]),
-            description=str(item["description"]),
-            amount=_as_float(item["amount"]),
-        )
-        for item in items
-    ]
-
-
-def _uncategorized_transactions(
-    items: list[dict[str, object]],
-) -> list[UncategorizedTransaction]:
-    return [
-        UncategorizedTransaction(
-            id=_as_int(item["id"]) if item.get("id") is not None else None,
-            posted_at=str(item["posted_at"]),
-            description=str(item["description"]),
-            amount=_as_float(item["amount"]),
-        )
-        for item in items
-    ]
-
-
-def _as_float(value: object) -> float:
-    if isinstance(value, int | float):
-        return float(value)
-    raise TypeError(f"Expected numeric value, got {type(value).__name__}")
-
-
-def _as_int(value: object) -> int:
-    if isinstance(value, int):
-        return value
-    raise TypeError(f"Expected int value, got {type(value).__name__}")
 
 
 # ---------------------------------------------------------------------------
@@ -434,33 +456,34 @@ def render_weekly_markdown(
         template,
         period_start=period_start,
         period_end=period_end,
-        inflow=_fmt(summary.totals.inflow),
-        outflow=_fmt(summary.totals.outflow),
+        inflow=_fmt_cents(summary.totals.inflow_cents),
+        outflow=_fmt_cents(summary.totals.outflow_cents),
         top_category_lines=_lines(
             summary.top_categories,
-            lambda i: f"- {i.category_name}: {_fmt(i.total_outflow)}",
+            lambda i: f"- {i.category_name}: {_fmt_cents(i.total_outflow_cents)}",
         ),
         merchant_lines=_lines(
             summary.notable_merchants,
             lambda i: (
-                f"- {i.merchant}: {_fmt(i.total_outflow)} across "
+                f"- {i.merchant}: {_fmt_cents(i.total_outflow_cents)} across "
                 f"{i.transaction_count} transaction(s)"
             ),
         ),
         category_change_lines=_lines(
             summary.category_changes,
             lambda i: (
-                f"- {i.category_name}: current {_fmt(i.current_outflow)}, "
-                f"prior {_fmt(i.prior_outflow)}, delta {_fmt(i.delta_outflow)}"
+                f"- {i.category_name}: current {_fmt_cents(i.current_outflow_cents)}, "
+                f"prior {_fmt_cents(i.prior_outflow_cents)}, "
+                f"delta {_fmt_cents(i.delta_outflow_cents)}"
             ),
         ),
         anomaly_lines=_lines(
             summary.anomalies,
-            lambda i: f"- {i.description}: {_fmt(i.amount)}",
+            lambda i: f"- {i.description}: {_fmt_cents(i.amount_cents)}",
         ),
         uncategorized_lines=_lines(
             summary.uncategorized_transactions,
-            lambda i: f"- {i.posted_at} {i.description}: {_fmt(i.amount)}",
+            lambda i: f"- {i.posted_at} {i.description}: {_fmt_cents(i.amount_cents)}",
         ),
     )
 
@@ -477,28 +500,30 @@ def render_monthly_markdown(
         period_end=period_end,
         account_rollup_lines=_lines(
             summary.account_rollups,
-            lambda i: f"- {i.account_name}: {_fmt(i.total_amount)}",
+            lambda i: f"- {i.account_name}: {_fmt_cents(i.total_amount_cents)}",
         ),
         category_lines=_lines(
             summary.category_totals,
-            lambda i: f"- {i.category_name}: {_fmt(i.total_amount)}",
+            lambda i: f"- {i.category_name}: {_fmt_cents(i.total_amount_cents)}",
         ),
         change_lines=_lines(
             summary.changes_vs_prior_month,
             lambda i: (
-                f"- {i.account_name}: current {_fmt(i.current_total)}, "
-                f"prior {_fmt(i.prior_total)}, delta {_fmt(i.delta_total)}"
+                f"- {i.account_name}: current {_fmt_cents(i.current_total_cents)}, "
+                f"prior {_fmt_cents(i.prior_total_cents)}, "
+                f"delta {_fmt_cents(i.delta_total_cents)}"
             ),
         ),
         recurring_lines=_lines(
             summary.recurring_charge_highlights,
             lambda i: (
-                f"- {i.merchant}: current {_fmt(i.current_outflow)}, prior {_fmt(i.prior_outflow)}"
+                f"- {i.merchant}: current {_fmt_cents(i.current_outflow_cents)}, "
+                f"prior {_fmt_cents(i.prior_outflow_cents)}"
             ),
         ),
         anomaly_lines=_lines(
             summary.anomalies,
-            lambda i: f"- {i.description}: {_fmt(i.amount)}",
+            lambda i: f"- {i.description}: {_fmt_cents(i.amount_cents)}",
         ),
         review_lines=_lines(
             summary.uncategorized_or_new_merchants,
@@ -514,10 +539,8 @@ def _render(template: Template, **kwargs: object) -> str:
         raise ValueError(f"Template has unresolved placeholders: {exc.args[0]}") from exc
 
 
-def _fmt(value: SupportsFloat) -> str:
-    amount = float(value)
-    sign = "-" if amount < 0 else ""
-    return f"{sign}${abs(amount):.2f}"
+def _fmt_cents(cents: int) -> str:
+    return format_cents(cents)
 
 
 def _lines[T](items: Sequence[T], render: Callable[[T], str]) -> str:
@@ -530,6 +553,6 @@ def _fmt_review_item(item: MonthlyReviewItem) -> str:
     if isinstance(item, NewMerchantReviewItem):
         return (
             f"- new merchant {item.merchant} first seen {item.first_seen_at}: "
-            f"{_fmt(item.total_amount)}"
+            f"{_fmt_cents(item.total_amount_cents)}"
         )
-    return f"- uncategorized {item.posted_at} {item.description}: {_fmt(item.amount)}"
+    return f"- uncategorized {item.posted_at} {item.description}: {_fmt_cents(item.amount_cents)}"

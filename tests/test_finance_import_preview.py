@@ -1,6 +1,20 @@
 from minx_mcp.finance.service import FinanceService
 
 
+def test_import_workflow_preview_returns_decimal_string_not_float(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path, import_root=tmp_path)
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B,Withdrawal,-45.20\n"
+    )
+
+    result = service.finance_import_preview(str(source), "DCU")
+    amount = result["preview"]["sample_transactions"][0]["amount"]
+    assert isinstance(amount, str)
+    assert amount == "-45.20"
+    assert not isinstance(amount, float)
+
+
 def test_finance_import_preview_returns_detected_mapping_and_sample(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path, import_root=tmp_path)
     source = tmp_path / "free checking transactions.csv"

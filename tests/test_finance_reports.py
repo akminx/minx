@@ -1,10 +1,69 @@
 from pathlib import Path
 
 from minx_mcp.contracts import InvalidInputError
-from minx_mcp.finance.report_builders import build_monthly_report, build_weekly_report
-from minx_mcp.finance.report_models import MonthlyReportSummary, WeeklyReportSummary
+from minx_mcp.finance.report_builders import (
+    build_monthly_report,
+    build_weekly_report,
+    render_weekly_markdown,
+)
+from minx_mcp.finance.report_models import (
+    AnomalyItem,
+    MoneyTotals,
+    MonthlyReportSummary,
+    NotableMerchant,
+    TopCategory,
+    UncategorizedTransaction,
+    WeeklyCategoryChange,
+    WeeklyReportSummary,
+)
 from minx_mcp.finance.report_orchestration import upsert_report_run
 from minx_mcp.finance.service import FinanceService
+
+
+def test_report_models_store_cents_not_float() -> None:
+    summary = WeeklyReportSummary(
+        period_start="2026-03-01",
+        period_end="2026-03-07",
+        totals=MoneyTotals(inflow_cents=120000, outflow_cents=4216),
+        top_categories=[TopCategory(category_name="Groceries", total_outflow_cents=100)],
+        notable_merchants=[
+            NotableMerchant(merchant="M", total_outflow_cents=200, transaction_count=1)
+        ],
+        category_changes=[
+            WeeklyCategoryChange(
+                category_name="Y",
+                current_outflow_cents=50,
+                prior_outflow_cents=25,
+                delta_outflow_cents=25,
+            )
+        ],
+        anomalies=[
+            AnomalyItem(
+                kind="large_uncategorized",
+                transaction_id=9,
+                posted_at="2026-03-02",
+                description="Z",
+                amount_cents=-900,
+            )
+        ],
+        uncategorized_transactions=[
+            UncategorizedTransaction(
+                id=1,
+                posted_at="2026-03-02",
+                description="U",
+                amount_cents=-1234,
+            )
+        ],
+    )
+    payload = summary.to_dict()
+    assert payload["totals"] == {"inflow_cents": 120000, "outflow_cents": 4216}
+    assert isinstance(payload["totals"]["inflow_cents"], int)
+    assert payload["uncategorized_transactions"][0]["amount_cents"] == -1234
+
+    md = render_weekly_markdown(summary, summary.period_start, summary.period_end)
+    assert "$1200.00" in md
+    assert "$42.16" in md
+    assert "$12.34" in md
 
 
 def test_upsert_report_run_rejects_invalid_status(tmp_path):
@@ -48,7 +107,7 @@ def test_weekly_report_includes_required_sections(tmp_path):
     summary = weekly["summary"]
     report_text = Path(weekly["vault_path"]).read_text()
 
-    assert summary["totals"] == {"inflow": 1200.0, "outflow": 575.2}
+    assert summary["totals"] == {"inflow_cents": 120000, "outflow_cents": 57520}
     assert any(item["category_name"] == "Groceries" for item in summary["top_categories"])
     assert any(item["merchant"] == "Unknown Merchant" for item in summary["notable_merchants"])
     assert any(item["category_name"] == "Groceries" for item in summary["category_changes"])
@@ -129,8 +188,8 @@ def test_weekly_report_aggregates_amount_cents_but_returns_dollars(tmp_path):
     summary = build_weekly_report(service.conn, "2026-03-28", "2026-04-03")
 
     assert isinstance(summary, WeeklyReportSummary)
-    assert summary.totals.inflow == 1200.0
-    assert summary.totals.outflow == 42.16
+    assert summary.totals.inflow_cents == 120000
+    assert summary.totals.outflow_cents == 4216
 
 
 def test_build_monthly_report_returns_typed_summary(tmp_path):
