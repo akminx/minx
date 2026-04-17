@@ -597,7 +597,23 @@ class MealsService(BaseService):
             recipe_id = int(row["id"])
             slug = str(row["slug"])
             relative = str(row["vault_path"])
-            if (root / relative).is_file():
+            # Treat the DB-stored vault_path as untrusted input: an earlier bug
+            # or a direct DB edit could leave a row pointing at ``../etc/...``.
+            # Resolve and verify the candidate stays inside ``root`` before
+            # probing the filesystem, so the reconciler never reads or
+            # reasons about paths outside the vault.
+            orphan_reason: str | None = None
+            try:
+                candidate = (root / relative).resolve()
+            except OSError:
+                orphan_reason = "vault_path_unresolvable"
+                candidate = None
+            if candidate is not None:
+                if not candidate.is_relative_to(root):
+                    orphan_reason = "vault_path_escapes_root"
+                elif not candidate.is_file():
+                    orphan_reason = "vault_file_missing"
+            if orphan_reason is None:
                 continue
             previous = relative
             self.conn.execute(
@@ -619,7 +635,7 @@ class MealsService(BaseService):
                     "recipe_id": recipe_id,
                     "slug": slug,
                     "previous_vault_path": previous,
-                    "reason": "vault_file_missing",
+                    "reason": orphan_reason,
                 },
             )
             if event_id is None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from minx_mcp.contracts import LLMError
 from minx_mcp.core.goal_capture_nl import (
     _build_ambiguous_subject_clarify,
     _build_create_assistant_message,
@@ -39,7 +40,16 @@ async def _capture_with_llm(
     prompt = _render_goal_capture_prompt(message, review_date, finance_api, goals)
     try:
         interpretation = await _run_goal_capture_interpretation(llm, prompt)
+    except LLMError:
+        # LLMError is a contract-level signal (schema violations, structured
+        # decode failures, documented provider failures). Surface it to clients
+        # as LLM_ERROR rather than silently falling back to regex, so callers
+        # can distinguish "LLM produced garbage" from "regex couldn't match".
+        raise
     except Exception as exc:
+        # Unexpected provider/runtime errors (network blips, timeouts from
+        # non-contract layers, etc.) should not take down the whole review;
+        # fall back to deterministic regex and log for operators.
         logger.warning(
             "LLM goal capture failed, falling back to regex: %s: %s",
             type(exc).__name__,

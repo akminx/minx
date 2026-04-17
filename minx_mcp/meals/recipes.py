@@ -55,7 +55,14 @@ _LEADING_AMOUNT_RE = re.compile(
 
 
 def parse_recipe_note(path: Path) -> ParsedRecipe:
-    content = path.read_text(encoding="utf-8")
+    # Read raw bytes first so ``content_hash`` is deterministic across BOM /
+    # newline variations (it reflects the on-disk file). Decode with
+    # ``utf-8-sig`` to transparently strip a UTF-8 BOM that editors such as
+    # Windows Notepad can emit — without this, the leading BOM would prevent
+    # ``---`` frontmatter detection. Mirrors :mod:`minx_mcp.vault_reader`.
+    raw = path.read_bytes()
+    content_hash = hashlib.sha256(raw).hexdigest()
+    content = raw.decode("utf-8-sig")
     frontmatter, body = _split_frontmatter(content)
     metadata = _parse_frontmatter(frontmatter)
     title = str(metadata.get("title") or _title_from_body(body) or path.stem)
@@ -74,21 +81,32 @@ def parse_recipe_note(path: Path) -> ParsedRecipe:
         image_ref=image_ref,
         ingredients=ingredients,
         substitutions=substitutions,
-        content_hash=hashlib.sha256(content.encode()).hexdigest(),
+        content_hash=content_hash,
         notes=notes_text or None,
         nutrition_summary=nutrition_summary,
     )
 
 
 def _split_frontmatter(content: str) -> tuple[str, str]:
-    if not content.startswith("---\n"):
+    # Use ``splitlines()`` so CRLF, LF, and lone-CR files all match the
+    # ``---`` fences identically. The previous byte-level scan (``"---\n"``,
+    # ``"\n---"``) silently failed on Windows-style CRLF files, which caused
+    # frontmatter to be treated as body content.
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
         return "", content
-    end = content.find("\n---", 4)
-    if end == -1:
+    close_idx: int | None = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            close_idx = i
+            break
+    if close_idx is None:
+        # No closing fence — treat whole file as body to stay permissive for
+        # notes that happen to start with ``---`` (e.g. horizontal rules).
         return "", content
-    frontmatter = content[4:end]
-    body = content[end + len("\n---") :]
-    return frontmatter, body.lstrip("\n")
+    frontmatter = "\n".join(lines[1:close_idx])
+    body = "\n".join(lines[close_idx + 1 :])
+    return frontmatter, body
 
 
 def _parse_nutrition_from_frontmatter(frontmatter: str) -> dict[str, object] | None:

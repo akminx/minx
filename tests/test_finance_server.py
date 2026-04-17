@@ -919,7 +919,11 @@ def test_finance_query_tool_writes_audit_log_for_count_transactions(tmp_path):
     ).fetchone()
     assert row is not None
     assert row["tool_name"] == "finance_query"
-    assert "count_transactions" in row["summary"]
+    # Audit log string updated to ``count_spending_transactions`` when the
+    # underlying sensitive_query_count was aligned with
+    # sensitive_query_total_cents (spending-only semantics); the ``count_…``
+    # prefix still disambiguates count intent from sum intent.
+    assert "count_spending_transactions" in row["summary"]
 
 
 def test_finance_query_tool_writes_audit_log_for_list_transactions(tmp_path):

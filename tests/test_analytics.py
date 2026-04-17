@@ -154,6 +154,29 @@ def test_sensitive_query_count_respects_date_filter(tmp_path):
     assert count == 1
 
 
+def test_sensitive_query_count_is_spending_only_and_matches_total(tmp_path):
+    """The count must exclude refunds/credits so it stays symmetric with
+    :func:`sensitive_query_total_cents`. Previously the count included
+    credits while the total excluded them, producing internally
+    inconsistent audit answers for the same filters.
+    """
+    conn = get_connection(tmp_path / "minx.db")
+    _seed_batch(conn)
+    # Three debits (spending) and one credit (refund) for the same merchant.
+    _insert_transaction(conn, posted_at="2026-03-10", merchant="Cafe", amount_cents=-1000)
+    _insert_transaction(conn, posted_at="2026-03-11", merchant="Cafe", amount_cents=-1500)
+    _insert_transaction(conn, posted_at="2026-03-12", merchant="Cafe", amount_cents=-2000)
+    _insert_transaction(conn, posted_at="2026-03-13", merchant="Cafe", amount_cents=+500)
+    conn.commit()
+
+    count = sensitive_query_count(conn, merchant="Cafe")
+    total = sensitive_query_total_cents(conn, merchant="Cafe")
+
+    # 3 debit rows, and a total of 1000 + 1500 + 2000 = 4500 cents of spending.
+    assert count == 3
+    assert total == 4500
+
+
 # ---------------------------------------------------------------------------
 # find_uncategorized
 # ---------------------------------------------------------------------------

@@ -298,6 +298,14 @@ def sensitive_query_total_cents(
     description_contains: str | None = None,
     session_ref: str | None = None,
 ) -> int:
+    """Return total spending (outflow) cents for the filtered window.
+
+    Only transactions with ``amount_cents < 0`` (outflows) are included. The
+    result is returned as a non-negative integer (absolute value of the sum).
+    Companion to :func:`sensitive_query_count`, which applies the same
+    direction filter so the pair always answers ``"how much was spent and
+    across how many transactions?"`` consistently.
+    """
     clauses, params = _build_sensitive_filter_clauses(
         start_date=start_date,
         end_date=end_date,
@@ -333,6 +341,19 @@ def sensitive_query_count(
     description_contains: str | None = None,
     session_ref: str | None = None,
 ) -> int:
+    """Return the count of matching spending transactions (outflows only).
+
+    Mirrors :func:`sensitive_query_total_cents`: only ``amount_cents < 0``
+    rows are counted so the count is consistent with the spending total for
+    the same filters. This also aligns with
+    :meth:`minx_mcp.finance.read_api.FinanceReadAPI.get_filtered_transaction_count`,
+    which applies the same outflow filter via
+    ``_build_filtered_expense_query``. Historically this function counted all
+    transactions (including credits/refunds), which disagreed with the
+    spending total for the same inputs — callers asking "how many Dining Out
+    transactions in this window?" would see refunds inflate the count while
+    the companion total excluded them.
+    """
     clauses, params = _build_sensitive_filter_clauses(
         start_date=start_date,
         end_date=end_date,
@@ -341,7 +362,8 @@ def sensitive_query_count(
         account_name=account_name,
         description_contains=description_contains,
     )
-    where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    clauses.append("t.amount_cents < 0")
+    where_clause = f"WHERE {' AND '.join(clauses)}"
     row = conn.execute(
         f"""
         SELECT COUNT(*) AS total_count
@@ -352,7 +374,9 @@ def sensitive_query_count(
         """,
         params,
     ).fetchone()
-    log_sensitive_access(conn, "finance_query", session_ref, "aggregate intent=count_transactions")
+    log_sensitive_access(
+        conn, "finance_query", session_ref, "aggregate intent=count_spending_transactions"
+    )
     return int(row["total_count"])
 
 

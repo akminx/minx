@@ -563,6 +563,54 @@ def test_reconcile_vault_recipes_emits_recipe_orphaned_event(db_path, tmp_path) 
     assert payload["reason"] == "vault_file_missing"
 
 
+def test_reconcile_vault_recipes_orphans_paths_that_escape_vault_root(
+    db_path, tmp_path
+) -> None:
+    """DB-stored vault_path values that resolve outside the vault root must
+    be treated as orphaned, not probed against the host filesystem.
+
+    Guards against a path-traversal-style footgun: if a row's ``vault_path``
+    contains ``..`` segments (from direct DB edits or a future bug), the
+    reconciler must not end up calling ``is_file()`` on arbitrary files
+    outside the vault.
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    # Create a decoy file outside the vault that the escape path would point
+    # at after normalization. If the guard is broken, the reconciler would
+    # see this as "still synced" and leave the row intact.
+    outside = tmp_path / "outside.md"
+    outside.write_text("# outside the vault\n")
+    svc = MealsService(db_path, vault_root=vault)
+    with svc:
+        svc.conn.execute(
+            """
+            INSERT INTO meals_recipes (vault_path, title, normalized_title, content_hash)
+            VALUES ('../outside.md', 'Outside', 'outside', 'hash1')
+            """
+        )
+        svc.conn.commit()
+        rid = int(svc.conn.execute("SELECT id FROM meals_recipes").fetchone()["id"])
+        result = svc.reconcile_vault_recipes()
+
+    assert result.orphaned == 1
+    assert result.orphaned_recipe_ids == [rid]
+
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT vault_path, vault_synced_at FROM meals_recipes WHERE id = ?", (rid,)
+        ).fetchone()
+        events = query_events(conn, domain="meals", event_type="meals.recipe_orphaned")
+    finally:
+        conn.close()
+    assert row["vault_path"] is None
+    assert row["vault_synced_at"] is None
+    assert len(events) == 1
+    assert events[0].payload["reason"] == "vault_path_escapes_root"
+    assert events[0].payload["previous_vault_path"] == "../outside.md"
+
+
 def test_reconcile_vault_recipes_preserves_recipe_id_for_meal_logs(db_path, tmp_path) -> None:
     vault = tmp_path / "vault"
     note = vault / "Recipes" / "Soup.md"

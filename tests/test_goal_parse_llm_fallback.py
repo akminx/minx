@@ -4,6 +4,7 @@ import logging
 
 import pytest
 
+from minx_mcp.contracts import LLMError
 from minx_mcp.core.goal_parse import capture_goal_message
 
 
@@ -13,6 +14,14 @@ class _FailingLLM:
 
     async def run_json_prompt(self, prompt):
         raise RuntimeError("LLM unavailable")
+
+
+class _ContractFailingLLM:
+    async def run_structured_prompt(self, prompt, result_model):
+        raise LLMError("Interpretation schema validation failed")
+
+    async def run_json_prompt(self, prompt):
+        raise LLMError("Interpretation schema validation failed")
 
 
 class _StubFinanceRead:
@@ -76,6 +85,20 @@ async def test_llm_exception_logs_warning(caplog) -> None:
         "LLM goal capture failed" in r.message and "RuntimeError" in r.message
         for r in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_contract_llm_error_propagates_instead_of_regex_fallback() -> None:
+    """LLMError (schema/decode failures) must surface to clients as LLM_ERROR
+    rather than being silently masked by the regex fallback."""
+    with pytest.raises(LLMError):
+        await capture_goal_message(
+            message="what's for lunch?",
+            review_date="2026-04-12",
+            finance_api=_StubFinanceRead(),
+            goals=[],
+            llm=_ContractFailingLLM(),
+        )
 
 
 @pytest.mark.asyncio
