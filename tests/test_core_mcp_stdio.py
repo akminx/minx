@@ -90,6 +90,8 @@ async def test_core_server_stdio_goal_parse_flow(tmp_path: Path) -> None:
             "memory_reject",
             "memory_expire",
             "get_pending_memory_candidates",
+            "list_snapshot_archives",
+            "get_snapshot_archive",
         ]
 
         captured_create = await session.call_tool(

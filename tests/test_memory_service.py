@@ -337,6 +337,6 @@ def test_confirm_non_candidate_raises(tmp_path) -> None:
         svc.confirm_memory(rec.id)
 
 
-def test_migration_set_includes_013() -> None:
+def test_migration_set_includes_014_snapshot_archives() -> None:
     names = sorted(p.name for p in migration_dir().glob("*.sql"))
-    assert names[-1] == "013_slice6_memory.sql"
+    assert names[-1] == "014_slice6_snapshot_archives.sql"

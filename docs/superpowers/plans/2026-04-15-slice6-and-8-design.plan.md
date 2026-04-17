@@ -13,7 +13,7 @@ todos:
     status: completed
   - id: s6b
     content: "Slice 6b: Snapshot archive table + auto-persist on daily snapshot build"
-    status: pending
+    status: completed
   - id: s6c
     content: "Slice 6c: Vault scanner with frontmatter indexing (extend meals recipe pattern)"
     status: pending

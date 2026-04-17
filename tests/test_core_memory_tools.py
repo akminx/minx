@@ -20,6 +20,8 @@ def test_memory_tools_round_trip(tmp_path: Path) -> None:
         "memory_reject",
         "memory_expire",
         "get_pending_memory_candidates",
+        "list_snapshot_archives",
+        "get_snapshot_archive",
     ):
         assert get_tool(server, name) is not None
 

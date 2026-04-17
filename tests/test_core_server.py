@@ -26,6 +26,8 @@ def test_core_server_registers_slice25_tool_names(tmp_path: Path) -> None:
         "memory_reject",
         "memory_expire",
         "get_pending_memory_candidates",
+        "list_snapshot_archives",
+        "get_snapshot_archive",
     }
     import asyncio
 

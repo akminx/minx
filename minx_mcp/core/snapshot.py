@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import sqlite3
+from contextlib import suppress
+from dataclasses import asdict
+from datetime import date, datetime
+from enum import Enum
 from pathlib import Path
 from sqlite3 import Connection
 
@@ -48,7 +54,7 @@ async def build_daily_snapshot(
         # TODO(slice6-6d): expose memory context in DailySnapshot (persisted via ingest above).
         detector_signals = _sorted_insights(list(detector_run.insights))
         warning = _persist_warning(conn, review_date, detector_signals, force=force)
-        return DailySnapshot(
+        snapshot = DailySnapshot(
             date=review_date,
             timeline=read_models.timeline,
             spending=read_models.spending,
@@ -60,6 +66,8 @@ async def build_daily_snapshot(
             training=read_models.training,
             persistence_warning=warning,
         )
+        _persist_snapshot_archive(conn, review_date, snapshot)
+        return snapshot
 
 
 def _build_snapshot_models(
@@ -191,6 +199,82 @@ def _replace_detector_insights(
     else:
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         conn.commit()
+
+
+def _snapshot_json_default(value: object) -> object:
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, (set, frozenset)):
+        return sorted(value, key=lambda item: (str(type(item)), str(item)))
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, Enum):
+        return value.value
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _serialize_daily_snapshot_for_archive(snapshot: DailySnapshot) -> tuple[str, str]:
+    """Serialize ``DailySnapshot`` to canonical JSON and SHA-256 hex digest of UTF-8 bytes."""
+    payload = asdict(snapshot)
+    text = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_snapshot_json_default,
+    )
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return text, digest
+
+
+def _execute_snapshot_archive_insert(
+    conn: Connection,
+    *,
+    review_date: str,
+    snapshot_json: str,
+    content_hash: str,
+) -> None:
+    """Execute archive INSERT; separated for targeted tests (patching ``Connection.execute`` is not portable)."""
+    conn.execute(
+        """
+        INSERT INTO snapshot_archives (
+            review_date, generated_at, snapshot_json, content_hash, source
+        ) VALUES (?, datetime('now'), ?, ?, ?)
+        """,
+        (review_date, snapshot_json, content_hash, "build_daily_snapshot"),
+    )
+
+
+def _persist_snapshot_archive(conn: Connection, review_date: str, snapshot: DailySnapshot) -> None:
+    snapshot_json, content_hash = _serialize_daily_snapshot_for_archive(snapshot)
+    try:
+        _execute_snapshot_archive_insert(
+            conn,
+            review_date=review_date,
+            snapshot_json=snapshot_json,
+            content_hash=content_hash,
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        with suppress(sqlite3.Error):
+            conn.rollback()
+    except Exception as exc:
+        logger.error(
+            "Snapshot archive persistence failed for %s: %s",
+            review_date,
+            exc,
+            exc_info=True,
+            extra={
+                "domain": "core",
+                "tool": "build_daily_snapshot",
+                "success": False,
+            },
+        )
+        with suppress(sqlite3.Error):
+            conn.rollback()
 
 
 def _insert_detector_insights(
