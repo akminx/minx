@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -16,13 +17,29 @@ from mcp.client.streamable_http import streamable_http_client
 from minx_mcp.db import get_connection
 
 SERVERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    ("minx-core", "minx_mcp.core", ("get_daily_snapshot", "goal_create", "persist_note")),
+    (
+        "minx-core",
+        "minx_mcp.core",
+        (
+            "get_daily_snapshot",
+            "goal_create",
+            "persist_note",
+            "memory_create",
+            "memory_confirm",
+            "memory_expire",
+            "get_pending_memory_candidates",
+        ),
+    ),
     (
         "minx-finance",
         "minx_mcp.finance",
         ("safe_finance_summary", "finance_query", "finance_import"),
     ),
-    ("minx-meals", "minx_mcp.meals", ("meal_log", "nutrition_profile_get", "pantry_list")),
+    (
+        "minx-meals",
+        "minx_mcp.meals",
+        ("meal_log", "nutrition_profile_get", "pantry_list", "recipe_template"),
+    ),
     (
         "minx-training",
         "minx_mcp.training",
@@ -120,6 +137,103 @@ async def test_hermes_http_stack_smoke(tmp_path: Path) -> None:
         assert snapshot["training"] is not None
         assert snapshot["training"]["sessions_logged"] == 1
         assert snapshot["training"]["total_sets"] == 1
+
+        # Slice 6a durable memory lifecycle, end-to-end over real HTTP.
+        # Low-confidence proposals land as candidates; high-confidence ones auto-
+        # promote to active (threshold = 0.8 in memory_service._create_memory).
+        candidate_result = await _call_tool(
+            urls["minx-core"],
+            "memory_create",
+            {
+                "memory_type": "preference",
+                "scope": "core",
+                "subject": "hermes_smoke_timezone",
+                "confidence": 0.5,
+                "payload": {"tz": "UTC"},
+                "source": "hermes-http-smoke",
+                "reason": "stated in smoke test",
+            },
+        )
+        assert candidate_result["success"] is True
+        candidate_mem = candidate_result["data"]["memory"]
+        assert candidate_mem["status"] == "candidate"
+        candidate_id = int(candidate_mem["id"])
+
+        auto_result = await _call_tool(
+            urls["minx-core"],
+            "memory_create",
+            {
+                "memory_type": "preference",
+                "scope": "finance",
+                "subject": "hermes_smoke_weekly_review",
+                "confidence": 0.9,
+                "payload": {"day": "sunday"},
+                "source": "hermes-http-smoke",
+            },
+        )
+        assert auto_result["success"] is True
+        assert auto_result["data"]["memory"]["status"] == "active"
+
+        # Scope filter must exclude the finance-scoped auto-promoted memory even
+        # though it's also fresh; it was never a candidate.
+        pending = await _call_tool(
+            urls["minx-core"],
+            "get_pending_memory_candidates",
+            {"scope": "core", "limit": 50},
+        )
+        assert pending["success"] is True
+        pending_subjects = {m["subject"] for m in pending["data"]["memories"]}
+        assert "hermes_smoke_timezone" in pending_subjects
+        assert "hermes_smoke_weekly_review" not in pending_subjects
+
+        confirm_result = await _call_tool(
+            urls["minx-core"],
+            "memory_confirm",
+            {"memory_id": candidate_id},
+        )
+        assert confirm_result["success"] is True
+        assert confirm_result["data"]["memory"]["status"] == "active"
+
+        # Duplicate (memory_type, scope, subject) against a live row must surface
+        # as a structured CONFLICT envelope, not a transport-level error.
+        duplicate_result = await _call_tool(
+            urls["minx-core"],
+            "memory_create",
+            {
+                "memory_type": "preference",
+                "scope": "core",
+                "subject": "hermes_smoke_timezone",
+                "confidence": 0.9,
+                "payload": {"tz": "UTC"},
+                "source": "hermes-http-smoke",
+            },
+        )
+        assert duplicate_result["success"] is False
+        assert duplicate_result["error_code"] == "CONFLICT"
+
+        expire_result = await _call_tool(
+            urls["minx-core"],
+            "memory_expire",
+            {"memory_id": candidate_id, "reason": "hermes smoke cleanup"},
+        )
+        assert expire_result["success"] is True
+        assert expire_result["data"]["memory"]["status"] == "expired"
+
+        # recipe_template surfaces the packaged markdown scaffold byte-for-byte
+        # through the Meals MCP so the harness can hand it to a user verbatim.
+        recipe_template_result = await _call_tool(
+            urls["minx-meals"],
+            "recipe_template",
+            {},
+        )
+        assert recipe_template_result["success"] is True
+        assert recipe_template_result["data"]["filename"] == "recipe-starter.md"
+        template_text = recipe_template_result["data"]["template"]
+        assert isinstance(template_text, str)
+        assert template_text.startswith("---")
+        assert "## Ingredients" in template_text
+        assert "## Substitutions" in template_text
+        assert "## Notes" in template_text
     finally:
         _terminate_processes(procs)
 
@@ -190,9 +304,7 @@ async def _wait_for_tools(url: str, expected_tools: set[str], timeout: float = 3
                 tool_names = {tool.name for tool in tools_result.tools}
                 if expected_tools.issubset(tool_names):
                     return tool_names
-                raise AssertionError(
-                    f"{url} missing expected tools: {sorted(expected_tools - tool_names)}"
-                )
+                raise AssertionError(f"{url} missing expected tools: {sorted(expected_tools - tool_names)}")
         except Exception as exc:  # noqa: BLE001 - retry until the server is ready
             last_error = exc
             if asyncio.get_running_loop().time() >= deadline:
@@ -203,7 +315,7 @@ async def _wait_for_tools(url: str, expected_tools: set[str], timeout: float = 3
             raise AssertionError(f"timed out waiting for {url}: {last_error}") from last_error
 
 
-async def _call_tool(url: str, name: str, arguments: dict[str, object]) -> object:
+async def _call_tool(url: str, name: str, arguments: dict[str, object]) -> dict[str, Any]:
     async with (
         httpx.AsyncClient(timeout=5.0) as http_client,
         streamable_http_client(
@@ -215,8 +327,9 @@ async def _call_tool(url: str, name: str, arguments: dict[str, object]) -> objec
         await session.initialize()
         result = await session.call_tool(name, arguments)
         assert result.isError is False
-        assert result.structuredContent is not None
-        return result.structuredContent
+        structured = result.structuredContent
+        assert structured is not None
+        return structured
 
 
 def _terminate_processes(procs: list[tuple[str, subprocess.Popen[bytes], Path]]) -> None:
