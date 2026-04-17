@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
-from minx_mcp.contracts import InvalidInputError, NotFoundError
+from minx_mcp.contracts import ConflictError, InvalidInputError, NotFoundError
 from minx_mcp.core.memory_models import MemoryProposal
 from minx_mcp.core.memory_service import MemoryService
 from minx_mcp.db import get_connection, migration_dir
@@ -14,6 +17,104 @@ def _fresh_memory_service(tmp_path) -> MemoryService:
     db_path = tmp_path / "m.db"
     get_connection(db_path).close()
     return MemoryService(db_path)
+
+
+def _proxy_conn_first_memory_id_select(
+    inner: sqlite3.Connection,
+    *,
+    memory_id: int,
+    between: Callable[[], None],
+) -> sqlite3.Connection:
+    """Return a connection proxy that runs ``between`` after the first ``fetchone`` on id-lookup SELECT."""
+
+    class _Proxy:
+        __slots__ = ("_inner",)
+
+        def __init__(self, c: sqlite3.Connection) -> None:
+            self._inner = c
+
+        def execute(self, sql: str, parameters: Any = ()) -> Any:  # noqa: ANN401
+            cur = self._inner.execute(sql, parameters)
+            if (
+                isinstance(sql, str)
+                and "SELECT * FROM memories WHERE id = ?" in sql.strip()
+                and tuple(parameters) == (memory_id,)
+            ):
+
+                class _Cursor:
+                    def __init__(self, base: Any) -> None:  # noqa: ANN401
+                        self._base = base
+                        self._first_fetch = True
+
+                    def fetchone(self) -> Any:  # noqa: ANN401
+                        if self._first_fetch:
+                            self._first_fetch = False
+                            row = self._base.fetchone()
+                            between()
+                            return row
+                        return self._base.fetchone()
+
+                    def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+                        return getattr(self._base, name)
+
+                return _Cursor(cur)
+            return cur
+
+        def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+            return getattr(self._inner, name)
+
+    return _Proxy(inner)  # type: ignore[return-value]
+
+
+def _proxy_conn_first_prior_row_fetch(
+    inner: sqlite3.Connection,
+    *,
+    memory_type: str,
+    scope: str,
+    subject: str,
+    between: Callable[[], None],
+) -> sqlite3.Connection:
+    """Proxy that runs ``between`` after the first ingest prior-row ``fetchone`` for a triple."""
+
+    class _Proxy:
+        __slots__ = ("_inner",)
+
+        def __init__(self, c: sqlite3.Connection) -> None:
+            self._inner = c
+
+        def execute(self, sql: str, parameters: Any = ()) -> Any:  # noqa: ANN401
+            cur = self._inner.execute(sql, parameters)
+            if (
+                isinstance(sql, str)
+                and "FROM memories" in sql
+                and "ORDER BY updated_at DESC, id DESC" in sql
+                and "LIMIT 1" in sql
+                and tuple(parameters) == (memory_type, scope, subject)
+            ):
+
+                class _Cursor:
+                    def __init__(self, base: Any) -> None:  # noqa: ANN401
+                        self._base = base
+                        self._first_fetch = True
+
+                    def fetchone(self) -> Any:  # noqa: ANN401
+                        if self._first_fetch:
+                            self._first_fetch = False
+                            row = self._base.fetchone()
+                            between()
+                            return row
+                        return self._base.fetchone()
+
+                    def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+                        return getattr(self._base, name)
+
+                return _Cursor(cur)
+            return cur
+
+        def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+            return getattr(self._inner, name)
+
+    return _Proxy(inner)  # type: ignore[return-value]
 
 
 def test_create_memory_candidate_vs_active_and_event_trail(tmp_path) -> None:
@@ -832,3 +933,239 @@ def test_ingest_proposals_after_expired_creates_new_row(tmp_path) -> None:
     ).fetchall()
     statuses = [(int(r["id"]), str(r["status"])) for r in rows]
     assert statuses == [(rec.id, "expired"), (out[0].id, "active")]
+
+
+def test_confirm_race_does_not_overwrite_rejection(tmp_path) -> None:
+    db_path = tmp_path / "race.db"
+    get_connection(db_path).close()
+    svc_a = MemoryService(db_path)
+    rec = svc_a.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="race_confirm",
+        confidence=0.4,
+        payload={"k": 1},
+        source="s",
+        actor="user",
+    )
+    conn_b = get_connection(db_path)
+    try:
+        svc_b = MemoryService(
+            db_path,
+            conn=_proxy_conn_first_memory_id_select(
+                conn_b,
+                memory_id=rec.id,
+                between=lambda: svc_a.reject_memory(rec.id, actor="user", reason="no"),
+            ),
+        )
+        with pytest.raises(ConflictError) as excinfo:
+            svc_b.confirm_memory(rec.id, actor="user")
+        assert excinfo.value.data == {"memory_id": rec.id, "expected_status": "candidate"}
+    finally:
+        conn_b.close()
+    final = svc_a.get_memory(rec.id)
+    assert final.status == "rejected"
+    assert final.payload == {"k": 1}
+
+
+def test_reject_memory_pre_read_rejects_non_candidate_sequentially(tmp_path) -> None:
+    """Sequential pre-check coverage: reject on an already-active row raises InvalidInputError.
+
+    Not a race test — both services observe the post-confirm state. For the actual
+    race (both see candidate, one commits between the other's pre-read and UPDATE),
+    see ``test_reject_memory_race_raises_conflict_after_concurrent_confirm``.
+    """
+    db_path = tmp_path / "race_reject.db"
+    get_connection(db_path).close()
+    svc_a = MemoryService(db_path)
+    svc_b = MemoryService(db_path)
+    rec = svc_a.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="race_reject",
+        confidence=0.4,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc_a.confirm_memory(rec.id, actor="user")
+    with pytest.raises(InvalidInputError, match="Only candidate memories can be rejected"):
+        svc_b.reject_memory(rec.id, actor="user", reason="late")
+    assert svc_b.get_memory(rec.id).status == "active"
+
+
+def test_reject_memory_race_raises_conflict_after_concurrent_confirm(tmp_path) -> None:
+    """Real race: svc_b pre-reads candidate, svc_a confirms, svc_b's guarded UPDATE misses.
+
+    Without the ``AND status = ?`` guard on the UPDATE, svc_b would flip an already-active
+    memory to rejected and log a spurious 'rejected' event. With the guard, rowcount is 0
+    and svc_b raises ConflictError with expected_status='candidate', leaving the row active.
+    """
+    db_path = tmp_path / "race_reject_real.db"
+    get_connection(db_path).close()
+    svc_a = MemoryService(db_path)
+    rec = svc_a.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="race_reject_real",
+        confidence=0.4,
+        payload={"k": 1},
+        source="s",
+        actor="user",
+    )
+    def _confirm_between() -> None:
+        svc_a.confirm_memory(rec.id, actor="user")
+
+    conn_b = get_connection(db_path)
+    try:
+        svc_b = MemoryService(
+            db_path,
+            conn=_proxy_conn_first_memory_id_select(
+                conn_b,
+                memory_id=rec.id,
+                between=_confirm_between,
+            ),
+        )
+        with pytest.raises(ConflictError) as excinfo:
+            svc_b.reject_memory(rec.id, actor="user", reason="late")
+        assert excinfo.value.data == {"memory_id": rec.id, "expected_status": "candidate"}
+    finally:
+        conn_b.close()
+    final = svc_a.get_memory(rec.id)
+    assert final.status == "active"
+    assert final.payload == {"k": 1}
+    event_types = [
+        str(r["event_type"])
+        for r in svc_a.conn.execute(
+            "SELECT event_type FROM memory_events WHERE memory_id = ? ORDER BY id",
+            (rec.id,),
+        ).fetchall()
+    ]
+    assert event_types == ["created", "confirmed"]
+
+
+def test_expire_race_does_not_overwrite_rejected(tmp_path) -> None:
+    db_path = tmp_path / "race_expire.db"
+    get_connection(db_path).close()
+    svc_a = MemoryService(db_path)
+    rec = svc_a.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="race_expire",
+        confidence=0.9,
+        payload={"v": 1},
+        source="s",
+        actor="user",
+    )
+    assert rec.status == "active"
+    conn_b = get_connection(db_path)
+    try:
+        svc_b = MemoryService(
+            db_path,
+            conn=_proxy_conn_first_memory_id_select(
+                conn_b,
+                memory_id=rec.id,
+                between=lambda: svc_a.expire_memory(rec.id, actor="system", reason="ttl"),
+            ),
+        )
+        with pytest.raises(ConflictError) as excinfo:
+            svc_b.expire_memory(rec.id, actor="system", reason="late")
+        assert excinfo.value.data == {"memory_id": rec.id, "expected_status": "active"}
+    finally:
+        conn_b.close()
+    assert svc_a.get_memory(rec.id).status == "expired"
+    assert svc_a.get_memory(rec.id).payload == {"v": 1}
+
+
+def test_update_payload_race_does_not_write_to_rejected(tmp_path) -> None:
+    db_path = tmp_path / "race_payload.db"
+    get_connection(db_path).close()
+    svc_a = MemoryService(db_path)
+    rec = svc_a.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="race_payload",
+        confidence=0.5,
+        payload={"orig": 1},
+        source="s",
+        actor="user",
+    )
+    conn_b = get_connection(db_path)
+    try:
+        svc_b = MemoryService(
+            db_path,
+            conn=_proxy_conn_first_memory_id_select(
+                conn_b,
+                memory_id=rec.id,
+                between=lambda: svc_a.reject_memory(rec.id, actor="user", reason="no"),
+            ),
+        )
+        with pytest.raises(ConflictError) as excinfo:
+            svc_b.update_payload(rec.id, payload={"orig": 9, "new": 2}, actor="harness")
+        assert excinfo.value.data == {"memory_id": rec.id, "expected_status": "candidate"}
+    finally:
+        conn_b.close()
+    assert svc_a.get_memory(rec.id).status == "rejected"
+    assert svc_a.get_memory(rec.id).payload == {"orig": 1}
+    last_ev = svc_a.conn.execute(
+        "SELECT event_type FROM memory_events WHERE memory_id = ? ORDER BY id DESC LIMIT 1",
+        (rec.id,),
+    ).fetchone()
+    assert str(last_ev["event_type"]) == "rejected"
+
+
+def test_ingest_merge_does_not_overwrite_rejected(tmp_path) -> None:
+    db_path = tmp_path / "race_ingest.db"
+    get_connection(db_path).close()
+    svc_a = MemoryService(db_path)
+    proposal = MemoryProposal(
+        memory_type="recurring_merchant",
+        scope="finance",
+        subject="merge_race",
+        confidence=0.5,
+        payload={"cadence": "weekly"},
+        source="detector:recurring_merchant",
+        reason="first",
+    )
+    created = svc_a.ingest_proposals((proposal,), actor="detector")
+    assert len(created) == 1
+    mid = created[0].id
+
+    follow_up = MemoryProposal(
+        memory_type="recurring_merchant",
+        scope="finance",
+        subject="merge_race",
+        confidence=0.6,
+        payload={"typical_amount_cents": 500},
+        source="detector:recurring_merchant",
+        reason="second",
+    )
+    conn_b = get_connection(db_path)
+    try:
+        svc_b = MemoryService(
+            db_path,
+            conn=_proxy_conn_first_prior_row_fetch(
+                conn_b,
+                memory_type=follow_up.memory_type,
+                scope=follow_up.scope,
+                subject=follow_up.subject,
+                between=lambda: svc_a.reject_memory(mid, actor="user", reason="no merge"),
+            ),
+        )
+        with pytest.raises(ConflictError) as excinfo:
+            svc_b.ingest_proposals((follow_up,), actor="detector")
+        assert excinfo.value.data == {"memory_id": mid, "expected_status": "candidate"}
+    finally:
+        conn_b.close()
+    row = svc_a.get_memory(mid)
+    assert row.status == "rejected"
+    assert row.payload == {"cadence": "weekly"}
+    assert row.confidence == 0.5
+    ev_types = [
+        str(r["event_type"])
+        for r in svc_a.conn.execute(
+            "SELECT event_type FROM memory_events WHERE memory_id = ? ORDER BY id",
+            (mid,),
+        ).fetchall()
+    ]
+    assert ev_types == ["created", "rejected"]

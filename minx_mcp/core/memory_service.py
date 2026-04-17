@@ -18,6 +18,13 @@ _ALLOWED_ACTORS = frozenset({"system", "detector", "user", "harness", "vault_syn
 _ALLOWED_STATUS = frozenset({"candidate", "active", "rejected", "expired"})
 
 
+def _raise_memory_status_conflict(memory_id: int, expected_status: str) -> None:
+    raise ConflictError(
+        f"memory {memory_id} status changed; expected {expected_status}, row was modified concurrently",
+        data={"memory_id": memory_id, "expected_status": expected_status},
+    )
+
+
 class MemoryService(BaseService):
     """Persist memories and append lifecycle rows to ``memory_events``."""
 
@@ -106,20 +113,25 @@ class MemoryService(BaseService):
         row = self.conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"Memory {memory_id} not found")
-        if str(row["status"]) != "candidate":
+        expected_status = str(row["status"])
+        if expected_status != "candidate":
             raise InvalidInputError("Only candidate memories can be confirmed")
         self.conn.execute("BEGIN IMMEDIATE")
         try:
-            self.conn.execute(
+            cur = self.conn.execute(
                 """
                 UPDATE memories
                 SET status = 'active',
                     last_confirmed_at = datetime('now'),
                     updated_at = datetime('now')
-                WHERE id = ?
+                WHERE id = ? AND status = ?
                 """,
-                (memory_id,),
+                (memory_id, expected_status),
             )
+            if cur.rowcount != 1:
+                if self.conn.in_transaction:
+                    self.conn.rollback()
+                _raise_memory_status_conflict(memory_id, expected_status)
             _insert_event(
                 self.conn,
                 memory_id,
@@ -151,18 +163,23 @@ class MemoryService(BaseService):
         row = self.conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"Memory {memory_id} not found")
-        if str(row["status"]) != "candidate":
+        expected_status = str(row["status"])
+        if expected_status != "candidate":
             raise InvalidInputError("Only candidate memories can be rejected")
         self.conn.execute("BEGIN IMMEDIATE")
         try:
-            self.conn.execute(
+            cur = self.conn.execute(
                 """
                 UPDATE memories
                 SET status = 'rejected', updated_at = datetime('now')
-                WHERE id = ?
+                WHERE id = ? AND status = ?
                 """,
-                (memory_id,),
+                (memory_id, expected_status),
             )
+            if cur.rowcount != 1:
+                if self.conn.in_transaction:
+                    self.conn.rollback()
+                _raise_memory_status_conflict(memory_id, expected_status)
             _insert_event(self.conn, memory_id, "rejected", {"reason": reason}, actor)
             self.conn.commit()
         except Exception:
@@ -204,16 +221,21 @@ class MemoryService(BaseService):
                 "Only active memories can be expired "
                 "(candidates should be rejected; rejected rows are terminal)"
             )
+        expected_status = status_before
         self.conn.execute("BEGIN IMMEDIATE")
         try:
-            self.conn.execute(
+            cur = self.conn.execute(
                 """
                 UPDATE memories
                 SET status = 'expired', updated_at = datetime('now')
-                WHERE id = ?
+                WHERE id = ? AND status = ?
                 """,
-                (memory_id,),
+                (memory_id, expected_status),
             )
+            if cur.rowcount != 1:
+                if self.conn.in_transaction:
+                    self.conn.rollback()
+                _raise_memory_status_conflict(memory_id, expected_status)
             _insert_event(self.conn, memory_id, "expired", {"reason": reason}, actor)
             self.conn.commit()
         except Exception:
@@ -233,19 +255,24 @@ class MemoryService(BaseService):
         row = self.conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"Memory {memory_id} not found")
-        if str(row["status"]) in {"rejected", "expired"}:
+        expected_status = str(row["status"])
+        if expected_status in {"rejected", "expired"}:
             raise InvalidInputError("Cannot update payload for rejected or expired memories")
         payload_json = json.dumps(payload, sort_keys=True)
         self.conn.execute("BEGIN IMMEDIATE")
         try:
-            self.conn.execute(
+            cur = self.conn.execute(
                 """
                 UPDATE memories
                 SET payload_json = ?, updated_at = datetime('now')
-                WHERE id = ?
+                WHERE id = ? AND status = ?
                 """,
-                (payload_json, memory_id),
+                (payload_json, memory_id, expected_status),
             )
+            if cur.rowcount != 1:
+                if self.conn.in_transaction:
+                    self.conn.rollback()
+                _raise_memory_status_conflict(memory_id, expected_status)
             # Event documents the full replacement payload (not a field-level diff).
             _insert_event(
                 self.conn,
@@ -313,17 +340,13 @@ class MemoryService(BaseService):
 
         Concurrency note
         ----------------
-        The per-proposal "latest row" ``SELECT`` runs **before** the write's
-        ``BEGIN IMMEDIATE``. That is safe for the single-user / single-writer
-        SQLite model this codebase targets: detector runs are orchestrated
-        serially inside ``build_daily_snapshot`` on one connection, and writer
-        contention from a second connection would be bounded by SQLite's
-        single-writer lock. If a future design runs detectors concurrently
-        across multiple connections, the read would need to be pulled inside
-        the same ``BEGIN IMMEDIATE`` (or the UPDATE guarded with
-        ``WHERE status = ?``) to avoid a TOCTOU on ``prior_status``. Migration
-        015's partial unique index provides a safety net for duplicate live
-        inserts regardless.
+        The per-proposal "latest row" ``SELECT`` still runs before the merge
+        transaction's ``BEGIN IMMEDIATE``, but the merge ``UPDATE`` is guarded
+        with ``WHERE id = ? AND status = ?`` (the status observed at read time).
+        If another writer changes the row first (for example rejecting between
+        read and write), ``rowcount`` is zero and :class:`ConflictError` is
+        raised instead of merging onto the wrong lifecycle state. Migration
+        015's partial unique index still guards duplicate live inserts.
         """
         _validate_actor(actor)
         out: list[MemoryRecord] = []
@@ -360,6 +383,7 @@ class MemoryService(BaseService):
                 out.append(rec)
                 continue
 
+            assert prior_status is not None
             self.conn.execute("BEGIN IMMEDIATE")
             try:
                 memory_id = int(row["id"])
@@ -372,7 +396,8 @@ class MemoryService(BaseService):
                     new_status = "active"
                     promoted = True
                 payload_json = json.dumps(merged, sort_keys=True)
-                self.conn.execute(
+                expected_status = prior_status
+                cur = self.conn.execute(
                     """
                     UPDATE memories
                     SET confidence = ?,
@@ -380,7 +405,7 @@ class MemoryService(BaseService):
                         reason = ?,
                         status = ?,
                         updated_at = datetime('now')
-                    WHERE id = ?
+                    WHERE id = ? AND status = ?
                     """,
                     (
                         new_confidence,
@@ -388,8 +413,13 @@ class MemoryService(BaseService):
                         proposal.reason,
                         new_status,
                         memory_id,
+                        expected_status,
                     ),
                 )
+                if cur.rowcount != 1:
+                    if self.conn.in_transaction:
+                        self.conn.rollback()
+                    _raise_memory_status_conflict(memory_id, expected_status)
                 _insert_event(
                     self.conn,
                     memory_id,
