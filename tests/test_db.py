@@ -372,7 +372,7 @@ def test_concurrent_bootstrap_succeeds_for_same_db_file(tmp_path):
     assert errors == []
 
 
-def test_built_wheel_includes_packaged_migrations(tmp_path):
+def test_built_wheel_includes_packaged_resources(tmp_path):
     project_root = Path(__file__).resolve().parent.parent
     source_root = tmp_path / "source"
     wheel_dir = tmp_path / "wheelhouse"
@@ -422,6 +422,11 @@ def test_built_wheel_includes_packaged_migrations(tmp_path):
     assert "minx_mcp/schema/migrations/013_slice6_memory.sql" in names
     assert "minx_mcp/schema/migrations/014_slice6_snapshot_archives.sql" in names
     assert "minx_mcp/schema/migrations/015_slice6_memories_unique_live.sql" in names
+
+    # Finance markdown templates ship alongside the package so installed wheels
+    # can render weekly/monthly reports without relying on the repo layout.
+    assert "minx_mcp/finance/templates/finance-weekly-summary.md" in names
+    assert "minx_mcp/finance/templates/finance-monthly-summary.md" in names
 
 
 def test_missing_migrations_preserve_row_factory(tmp_path, monkeypatch):

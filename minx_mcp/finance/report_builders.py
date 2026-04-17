@@ -40,7 +40,7 @@ from minx_mcp.finance.report_models import (
 from minx_mcp.money import cents_to_display_dollars
 from minx_mcp.time_utils import next_day
 
-TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "templates"
+TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 
 T = TypeVar("T")
 

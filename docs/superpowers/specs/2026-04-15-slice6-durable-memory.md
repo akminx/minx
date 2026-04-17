@@ -218,6 +218,27 @@ The harness (Hermes) generates and maintains wiki pages using the LLM. These are
 
 All pages use `[[wikilinks]]` for Obsidian cross-referencing.
 
+### Template scaffolds (ship with phase 6e)
+
+Even though prose is LLM-generated, each page type has a **fixed structural contract** the vault scanner and `replace_section` flow must be able to parse. Ship a scaffold template per page type that the harness fills in via LLM. This:
+
+1. Pins the YAML frontmatter block (`type: minx-memory`, `domain`, `memory_key`, `updated`) so the vault scanner's frontmatter contract is always valid — no brittle LLM-invented structure.
+2. Pins section headings (`## Summary`, `## Linked Memories`, `## History`, etc.) so `VaultWriter.replace_section` targets are deterministic across runs and the bidirectional sync in phase 6f can round-trip user edits without structural drift.
+3. Bounds LLM output, reducing token cost and eliminating "reinvent the layout" noise.
+
+Where the templates live and how they're served:
+
+- **Location:** `minx_mcp/core/templates/wiki/` — ship alongside Core as package data so they travel with the wheel and stay versioned with the scanner/writer contract. Follow the pattern already established by `minx_mcp/finance/templates/` (PEP 503 package data, asserted packed in `tests/test_db.py::test_built_wheel_includes_packaged_resources`).
+- **Discovery (optional):** Publish a `template://wiki/{page_type}` MCP resource so any harness — not just Hermes — can read the canonical scaffolds. This mirrors the `playbook://registry` pattern Slice 8 adopts.
+- **Fill semantics:** Templates use `string.Template` `${placeholder}` syntax (same as finance report templates) for deterministic fields (memory_key, updated timestamp, domain). Free-form body sections are left as `## Heading\n${llm_body}` so the LLM fills bounded regions.
+
+Required scaffolds for phase 6e:
+
+- `wiki/entity.md` — entity pages (Entities/)
+- `wiki/pattern.md` — pattern pages (Patterns/)
+- `wiki/review.md` — daily review summary (Reviews/YYYY-MM-DD.md); also consumed by Slice 8's `daily_review` playbook
+- `wiki/goal.md` — goal context pages (Goals/)
+
 ## 10) Integration Points
 
 - **Read models**: Add `MemoryContext` to the `ReadModels` dataclass in `minx_mcp/core/snapshot_models.py`; populate it inside `minx_mcp/core/read_models.py::build_read_models`. It holds active memories, pending candidates count, and recent memory events.
@@ -241,7 +262,7 @@ All pages use `[[wikilinks]]` for Obsidian cross-referencing.
 | 6b            | Snapshot archive table + auto-persist on snapshot build                                                                             | 1-2 days | 6a                      |
 | 6c            | Vault scanner (frontmatter indexing)                                                                                                | 1-2 days | 6a                      |
 | 6d            | Add `MemoryContext` on `ReadModels` in `snapshot_models.py`, populate in `read_models.py::build_read_models`, wire snapshot builder | 1 day    | 6a                      |
-| 6e            | Wiki page generation for memories (vault write-back, harness side)                                                                  | 1 day    | 6a, 6c                  |
+| 6e            | Wiki page generation for memories + template scaffolds at `minx_mcp/core/templates/wiki/` (entity/pattern/review/goal) + optional `template://wiki/{page_type}` MCP resource | 1-2 days | 6a, 6c                  |
 | 6f            | Bidirectional vault sync (user edits -> memory updates)                                                                             | 1 day    | 6c, 6e                  |
 | 6g (optional) | Semantic search with sqlite-vec                                                                                                     | 2-3 days | 6c proven insufficient  |
 

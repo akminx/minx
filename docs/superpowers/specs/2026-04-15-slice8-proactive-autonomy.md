@@ -178,6 +178,9 @@ The LLM prompt for page generation receives:
 - Recent related insights
 - Existing page content (if updating)
 - Cross-reference candidates (other memories in the same domain)
+- **The canonical page template for that page type** (see Slice 6 §9 — shipped at `minx_mcp/core/templates/wiki/{entity,pattern,review,goal}.md`, optionally exposed as `template://wiki/{page_type}` MCP resource). The LLM fills `${llm_body}` regions inside a pre-structured frontmatter + heading scaffold; it does not invent structure. This keeps the vault scanner's frontmatter contract stable, makes `VaultWriter.replace_section` updates deterministic, and bounds per-run token cost.
+
+The `daily_review` playbook (§5) writes `Minx/Reviews/YYYY-MM-DD.md` using the same `wiki/review.md` scaffold, so daily review notes and wiki-maintenance-driven review updates share one template. Weekly finance reports continue to use the existing `minx_mcp/finance/templates/finance-weekly-summary.md` and `finance-monthly-summary.md` scaffolds — `finance_weekly_report` is a deterministic SQL-backed render, not an LLM fill.
 
 ## 8) Non-Goals (Slice 8)
 

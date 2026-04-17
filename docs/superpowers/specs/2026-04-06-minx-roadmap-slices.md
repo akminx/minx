@@ -225,6 +225,7 @@ Ambient input ingestion (vault polling, journal scanning) remains harness-level 
 - read-model snapshot persistence or equivalent reproducibility mechanism for review/debug history
 - retrieval path that can explain why Minx said something on a given day
 - review pipeline integration for durable memory without collapsing into transcript recall
+- harness-facing wiki page template scaffolds (entity / pattern / review / goal) shipped with Core as packaged resources so LLM-generated vault notes have a stable frontmatter + section structure for the vault scanner and bidirectional sync to rely on — see Slice 6 spec §9
 
 **Delivers:** Minx becomes explainable and durable. Reviews gain long-term context, and future autonomy/dashboard work has a stable foundation to build on.
 
