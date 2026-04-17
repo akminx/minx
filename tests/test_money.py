@@ -64,9 +64,34 @@ def test_parse_dollars_to_cents_strips_leading_dollar_sign() -> None:
 
 
 def test_parse_dollars_to_cents_rejects_trailing_garbage() -> None:
-    with pytest.raises(InvalidInputError, match="unsupported characters"):
+    # Either "thousands grouping" (new, hit first due to space breaking group)
+    # or "unsupported characters" is an acceptable rejection reason; we care
+    # that we DON'T silently strip the comma and accept the body.
+    with pytest.raises(InvalidInputError):
         parse_dollars_to_cents("1,234.56 USD")
 
 
 def test_parse_dollars_to_cents_handles_negative_with_comma() -> None:
     assert parse_dollars_to_cents("-1,234.56") == -123456
+
+
+def test_parse_dollars_to_cents_rejects_malformed_thousands_grouping() -> None:
+    with pytest.raises(InvalidInputError, match="thousands grouping"):
+        parse_dollars_to_cents("1,2,3.45")
+
+
+def test_parse_dollars_to_cents_rejects_european_decimal_comma() -> None:
+    # "1.234,56" would silently parse as $1.23456 under naive comma-strip; reject.
+    with pytest.raises(InvalidInputError):
+        parse_dollars_to_cents("1.234,56")
+
+
+def test_parse_dollars_to_cents_rejects_four_digit_group_before_comma() -> None:
+    # "1234,567.89" is not valid US grouping (leading group must be 1-3 digits).
+    with pytest.raises(InvalidInputError, match="thousands grouping"):
+        parse_dollars_to_cents("1234,567.89")
+
+
+def test_parse_dollars_to_cents_accepts_multi_group_thousands() -> None:
+    assert parse_dollars_to_cents("1,234,567.89") == 123456789
+    assert parse_dollars_to_cents("-1,234,567.89") == -123456789

@@ -7,6 +7,23 @@ from minx_mcp.contracts import InvalidInputError
 
 _AMOUNT_BODY = re.compile(r"-?(?:\d+\.?\d*|\d*\.\d+)")
 
+_US_GROUPED_AMOUNT = re.compile(
+    r"""
+    ^
+    -?
+    (?:
+        \d{1,3}(?:,\d{3})+    # "1,234" or "1,234,567"
+        (?:\.\d+)?            # optional fractional part
+      |
+        \d+(?:\.\d+)?         # ungrouped integer/decimal
+      |
+        \.\d+                 # leading-dot fractional
+    )
+    $
+    """,
+    re.VERBOSE,
+)
+
 
 def parse_dollars_to_cents(value: str) -> int:
     raw = value.strip()
@@ -14,6 +31,10 @@ def parse_dollars_to_cents(value: str) -> int:
         raw = raw.removeprefix("USD ").strip()
     elif raw.startswith("$"):
         raw = raw.removeprefix("$").strip()
+    if "," in raw and not _US_GROUPED_AMOUNT.fullmatch(raw):
+        raise InvalidInputError(
+            "amount uses malformed thousands grouping (expected e.g. '1,234.56')"
+        )
     normalized = raw.replace(",", "")
     if not _AMOUNT_BODY.fullmatch(normalized):
         raise InvalidInputError("amount contains unsupported characters")
