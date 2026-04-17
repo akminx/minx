@@ -7,6 +7,7 @@ from sqlite3 import Connection
 
 from minx_mcp.core.detectors import DETECTORS
 from minx_mcp.core.memory_models import DetectorResult, MemoryProposal
+from minx_mcp.core.memory_service import MemoryService
 from minx_mcp.core.models import (
     DailySnapshot,
     DurabilitySinkFailure,
@@ -42,7 +43,9 @@ async def build_daily_snapshot(
     with scoped_connection(Path(ctx.db_path)) as conn:
         read_models = _build_snapshot_models(conn, review_date, ctx)
         detector_run = _run_detectors(read_models)
-        # TODO(slice6-6a): MemoryService.ingest_proposals(detector_run.memory_proposals, ...)
+        memory_service = MemoryService(Path(ctx.db_path), conn=conn)
+        memory_service.ingest_proposals(detector_run.memory_proposals, actor="detector")
+        # TODO(slice6-6d): expose memory context in DailySnapshot (persisted via ingest above).
         detector_signals = _sorted_insights(list(detector_run.insights))
         warning = _persist_warning(conn, review_date, detector_signals, force=force)
         return DailySnapshot(

@@ -19,6 +19,7 @@ from minx_mcp.core.goal_progress import build_progress_for_goal
 from minx_mcp.core.goals import GoalService
 from minx_mcp.core.history import get_insight_history
 from minx_mcp.core.llm import create_llm
+from minx_mcp.core.memory_service import MemoryService, memory_record_as_dict
 from minx_mcp.core.models import (
     GoalCaptureOption,
     GoalCaptureResult,
@@ -33,7 +34,11 @@ from minx_mcp.core.snapshot import build_daily_snapshot
 from minx_mcp.core.trajectory import get_goal_trajectory
 from minx_mcp.db import scoped_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
-from minx_mcp.validation import resolve_date_or_today
+from minx_mcp.validation import (
+    require_non_empty,
+    require_payload_object,
+    resolve_date_or_today,
+)
 from minx_mcp.vault_writer import VaultWriter
 
 
@@ -203,6 +208,76 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         return wrap_tool_call(
             lambda: _persist_note(config, relative_path, content, overwrite),
             tool_name="persist_note",
+        )
+
+    @mcp.tool(name="memory_list")
+    def memory_list_tool(
+        status: str | None = None,
+        memory_type: str | None = None,
+        limit: int = 100,
+    ) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_list(config, status, memory_type, limit),
+            tool_name="memory_list",
+        )
+
+    @mcp.tool(name="memory_get")
+    def memory_get_tool(memory_id: int) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_get(config, memory_id),
+            tool_name="memory_get",
+        )
+
+    @mcp.tool(name="memory_create")
+    def memory_create_tool(
+        memory_type: str,
+        scope: str,
+        subject: str,
+        confidence: float | int,
+        payload: object,
+        source: str,
+        reason: str = "",
+    ) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_create(
+                config,
+                memory_type,
+                scope,
+                subject,
+                confidence,
+                payload,
+                source,
+                reason,
+            ),
+            tool_name="memory_create",
+        )
+
+    @mcp.tool(name="memory_confirm")
+    def memory_confirm_tool(memory_id: int) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_confirm(config, memory_id),
+            tool_name="memory_confirm",
+        )
+
+    @mcp.tool(name="memory_reject")
+    def memory_reject_tool(memory_id: int, reason: str = "") -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_reject(config, memory_id, reason),
+            tool_name="memory_reject",
+        )
+
+    @mcp.tool(name="memory_expire")
+    def memory_expire_tool(memory_id: int, reason: str = "") -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_expire(config, memory_id, reason),
+            tool_name="memory_expire",
+        )
+
+    @mcp.tool(name="get_pending_memory_candidates")
+    def get_pending_memory_candidates_tool(limit: int = 50) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _get_pending_memory_candidates(config, limit),
+            tool_name="get_pending_memory_candidates",
         )
 
     return mcp
@@ -376,6 +451,125 @@ def _resolve_goal_capture_llm(config: CoreServiceConfig) -> JSONLLMInterface | N
     if not isinstance(configured, JSONLLMInterface):
         return None
     return configured
+
+
+def _memory_list(
+    config: CoreServiceConfig,
+    status: str | None,
+    memory_type: str | None,
+    limit: int,
+) -> dict[str, object]:
+    effective_status = status.strip() if isinstance(status, str) else None
+    if effective_status == "":
+        effective_status = None
+    effective_type = memory_type.strip() if isinstance(memory_type, str) else None
+    if effective_type == "":
+        effective_type = None
+    lim = _coerce_limit(limit, maximum=500)
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        rows = service.list_memories(
+            status=effective_status,
+            memory_type=effective_type,
+            limit=lim,
+        )
+        return {"memories": [memory_record_as_dict(r) for r in rows]}
+
+
+def _memory_get(config: CoreServiceConfig, memory_id: int) -> dict[str, object]:
+    mid = _coerce_memory_id(memory_id)
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        record = service.get_memory(mid)
+        return {"memory": memory_record_as_dict(record)}
+
+
+def _memory_create(
+    config: CoreServiceConfig,
+    memory_type: str,
+    scope: str,
+    subject: str,
+    confidence: float | int,
+    payload: object,
+    source: str,
+    reason: str,
+) -> dict[str, object]:
+    mt = require_non_empty("memory_type", memory_type)
+    sc = require_non_empty("scope", scope)
+    sj = require_non_empty("subject", subject)
+    src = require_non_empty("source", source)
+    body = require_payload_object(payload, field_name="payload")
+    conf = _coerce_confidence(confidence)
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        record = service.create_memory(
+            memory_type=mt,
+            scope=sc,
+            subject=sj,
+            confidence=conf,
+            payload=body,
+            source=src,
+            reason=reason,
+            actor="user",
+        )
+        return {"memory": memory_record_as_dict(record)}
+
+
+def _memory_confirm(config: CoreServiceConfig, memory_id: int) -> dict[str, object]:
+    mid = _coerce_memory_id(memory_id)
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        record = service.confirm_memory(mid, actor="user")
+        return {"memory": memory_record_as_dict(record)}
+
+
+def _memory_reject(config: CoreServiceConfig, memory_id: int, reason: str) -> dict[str, object]:
+    mid = _coerce_memory_id(memory_id)
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        record = service.reject_memory(mid, actor="user", reason=reason)
+        return {"memory": memory_record_as_dict(record)}
+
+
+def _memory_expire(config: CoreServiceConfig, memory_id: int, reason: str) -> dict[str, object]:
+    mid = _coerce_memory_id(memory_id)
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        record = service.expire_memory(mid, actor="user", reason=reason)
+        return {"memory": memory_record_as_dict(record)}
+
+
+def _get_pending_memory_candidates(config: CoreServiceConfig, limit: int) -> dict[str, object]:
+    lim = _coerce_limit(limit, maximum=500)
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        rows = service.list_pending_candidates(limit=lim)
+        return {"memories": [memory_record_as_dict(r) for r in rows]}
+
+
+def _coerce_memory_id(memory_id: int) -> int:
+    if not isinstance(memory_id, int) or isinstance(memory_id, bool):
+        raise InvalidInputError("memory_id must be an integer")
+    if memory_id < 1:
+        raise InvalidInputError("memory_id must be positive")
+    return memory_id
+
+
+def _coerce_confidence(value: float | int) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise InvalidInputError("confidence must be a number")
+    result = float(value)
+    if result < 0 or result > 1:
+        raise InvalidInputError("confidence must be between 0 and 1 inclusive")
+    return result
+
+
+def _coerce_limit(value: int, *, maximum: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise InvalidInputError("limit must be an integer")
+    if value < 1 or value > maximum:
+        raise InvalidInputError(f"limit must be between 1 and {maximum}")
+    return value
 
 
 def _persist_note(

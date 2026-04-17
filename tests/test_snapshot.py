@@ -4,10 +4,43 @@ import pytest
 
 from minx_mcp.core.events import emit_event
 from minx_mcp.core.goals import GoalService
-from minx_mcp.core.memory_models import DetectorResult
+from minx_mcp.core.memory_models import DetectorResult, MemoryProposal
+from minx_mcp.core.memory_service import MemoryService
 from minx_mcp.core.models import GoalCreateInput, InsightCandidate, SnapshotContext
 from minx_mcp.core.snapshot import build_daily_snapshot
 from minx_mcp.db import get_connection
+
+
+@pytest.mark.asyncio
+async def test_build_daily_snapshot_ingest_memories_idempotent(tmp_path, monkeypatch):
+    db_path = tmp_path / "minx.db"
+    get_connection(db_path).close()
+    import minx_mcp.core.snapshot as snapshot_module
+
+    proposal = MemoryProposal(
+        memory_type="t",
+        scope="s",
+        subject="idempotent-subj",
+        confidence=0.55,
+        payload={"a": 1},
+        source="detector:test",
+        reason="r",
+    )
+    monkeypatch.setattr(
+        snapshot_module,
+        "_run_detectors",
+        lambda _read_models: DetectorResult((), (proposal,)),
+    )
+    await build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path))
+    await build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path))
+    svc = MemoryService(db_path)
+    try:
+        rows = svc.conn.execute(
+            "SELECT id FROM memories WHERE memory_type = 't' AND subject = 'idempotent-subj'"
+        ).fetchall()
+    finally:
+        svc.close()
+    assert len(rows) == 1
 
 
 @pytest.mark.asyncio

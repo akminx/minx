@@ -16,6 +16,25 @@ from minx_mcp.core.models import InsightCandidate
 
 
 @dataclass(frozen=True)
+class MemoryRecord:
+    """Row from ``memories`` with JSON payload materialized as a dict."""
+
+    id: int
+    memory_type: str
+    scope: str
+    subject: str
+    confidence: float
+    status: str
+    payload: dict[str, object]
+    source: str
+    reason: str
+    created_at: str
+    updated_at: str
+    last_confirmed_at: str | None
+    expires_at: str | None
+
+
+@dataclass(frozen=True)
 class MemoryProposal:
     """Immutable proposal to create or update a memory (no DB writes here)."""
 

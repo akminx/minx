@@ -19,6 +19,13 @@ def test_core_server_registers_slice25_tool_names(tmp_path: Path) -> None:
         "get_goal_trajectory",
         "persist_note",
         "goal_parse",
+        "memory_list",
+        "memory_get",
+        "memory_create",
+        "memory_confirm",
+        "memory_reject",
+        "memory_expire",
+        "get_pending_memory_candidates",
     }
     import asyncio
 

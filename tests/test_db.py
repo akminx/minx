@@ -54,6 +54,41 @@ def test_database_bootstrap_creates_meals_nutrition_tables(tmp_path):
     assert "meals_nutrition_targets" in names
 
 
+def test_database_bootstrap_creates_memory_tables(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    names = {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    assert "memories" in names
+    assert "memory_events" in names
+
+
+def test_memory_events_cascade_when_parent_memory_deleted(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    conn.execute(
+        """
+        INSERT INTO memories (
+            memory_type, scope, subject, confidence, status, payload_json, source, reason
+        ) VALUES ('t', 's', 'subj', 0.9, 'active', '{}', 'test', '')
+        """
+    )
+    mid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO memory_events (memory_id, event_type, payload_json, actor)
+        VALUES (?, 'created', '{}', 'system')
+        """,
+        (mid,),
+    )
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) AS c FROM memory_events WHERE memory_id = ?", (mid,)).fetchone()["c"] == 1
+    conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
+    conn.commit()
+    assert (
+        conn.execute("SELECT COUNT(*) AS c FROM memory_events WHERE memory_id = ?", (mid,)).fetchone()["c"] == 0
+    )
+
+
 def test_database_bootstrap_creates_training_tables(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     names = {
@@ -390,6 +425,7 @@ def test_built_wheel_includes_packaged_migrations(tmp_path):
     assert "minx_mcp/schema/migrations/010_meals.sql" in names
     assert "minx_mcp/schema/migrations/011_meals_nutrition.sql" in names
     assert "minx_mcp/schema/migrations/012_training.sql" in names
+    assert "minx_mcp/schema/migrations/013_slice6_memory.sql" in names
 
 
 def test_missing_migrations_preserve_row_factory(tmp_path, monkeypatch):

@@ -10,7 +10,7 @@ todos:
     status: completed
   - id: s6a
     content: "Slice 6a: Memory migration, MemoryService, CRUD MCP tools, first 2-3 memory-proposing detectors"
-    status: pending
+    status: completed
   - id: s6b
     content: "Slice 6b: Snapshot archive table + auto-persist on daily snapshot build"
     status: pending

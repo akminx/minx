@@ -93,6 +93,9 @@ class TestDetectorDataclass:
             "core.goal_drift",
             "finance.category_drift",
             "finance.goal_risk",
+            "memory.recurring_merchant",
+            "memory.category_preference",
+            "memory.schedule_pattern",
         }
         assert expected == keys
 

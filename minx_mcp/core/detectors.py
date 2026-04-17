@@ -10,6 +10,11 @@ from minx_mcp.core.goal_detectors import (
     detect_goal_drift,
     detect_goal_finance_risks,
 )
+from minx_mcp.core.memory_detectors import (
+    detect_category_preference,
+    detect_recurring_merchant_pattern,
+    detect_schedule_pattern,
+)
 from minx_mcp.core.memory_models import DetectorResult
 from minx_mcp.core.models import InsightCandidate, OpenLoop, ReadModels
 from minx_mcp.money import format_cents
@@ -259,6 +264,21 @@ DETECTORS: list[Detector] = [
     ),
     Detector(
         key="finance.goal_risk", fn=detect_goal_finance_risks, tags=frozenset({"finance", "goals"})
+    ),
+    Detector(
+        key="memory.recurring_merchant",
+        fn=detect_recurring_merchant_pattern,
+        tags=frozenset({"finance", "memory"}),
+    ),
+    Detector(
+        key="memory.category_preference",
+        fn=detect_category_preference,
+        tags=frozenset({"finance", "memory"}),
+    ),
+    Detector(
+        key="memory.schedule_pattern",
+        fn=detect_schedule_pattern,
+        tags=frozenset({"meals", "memory"}),
     ),
 ]
 
