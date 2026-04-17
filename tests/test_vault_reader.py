@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -136,7 +137,7 @@ def test_read_document_rejects_escape_via_dotdot(tmp_path: Path) -> None:
     (root / "Minx").mkdir(parents=True)
     reader = VaultReader(root, ("Minx",))
     rel = "Minx/../../outside-secret.md"
-    with pytest.raises(InvalidInputError, match="outside allowed vault prefixes"):
+    with pytest.raises(InvalidInputError, match="outside"):
         reader.read_document(rel)
 
 
@@ -192,3 +193,16 @@ def test_iter_documents_skips_missing_sub_prefix_branch(tmp_path: Path) -> None:
     (root / "Minx").mkdir(parents=True)
     reader = VaultReader(root, ("Minx",))
     assert list(reader.iter_documents("Minx/missing")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX symlinks")
+def test_vault_reader_rejects_symlink_escape(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leak.md").write_text("secret", encoding="utf-8")
+    (vault / "Minx").symlink_to(outside, target_is_directory=True)
+    reader = VaultReader(vault, ("Minx",))
+    with pytest.raises(InvalidInputError, match="outside the vault root"):
+        reader.read_document("Minx/leak.md")

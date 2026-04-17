@@ -81,6 +81,44 @@ def test_json_formatter_includes_error_code_when_present():
     assert payload["error_code"] == "INVALID_INPUT"
 
 
+def test_json_formatter_redacts_listed_secret_fields():
+    formatter = JSONFormatter()
+    record = logging.LogRecord(
+        name="minx_mcp",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="ok",
+        args=(),
+        exc_info=None,
+    )
+    record.token = "super-secret-value"  # type: ignore[attr-defined]
+    record._secret_fields = ["token"]  # type: ignore[attr-defined]
+
+    payload = json.loads(formatter.format(record))
+    assert payload["token"] == "[REDACTED]"
+    assert "super-secret-value" not in json.dumps(payload)
+
+
+def test_json_formatter_truncates_very_long_messages():
+    formatter = JSONFormatter()
+    long_msg = "x" * 5000
+    record = logging.LogRecord(
+        name="minx_mcp",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg=long_msg,
+        args=(),
+        exc_info=None,
+    )
+
+    payload = json.loads(formatter.format(record))
+    assert len(payload["msg"]) <= 4096
+    assert payload["msg"].endswith("…[truncated]")
+    assert "x" * 100 in payload["msg"]
+
+
 def test_json_formatter_includes_exception_details_when_exc_info_present():
     formatter = JSONFormatter()
     try:

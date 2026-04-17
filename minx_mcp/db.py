@@ -28,6 +28,32 @@ from pathlib import Path
 from sqlite3 import Connection
 
 _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# ``ALTER TABLE ... ADD COLUMN`` trailing fragment only (no identifiers here).
+_COLUMN_SQL_FRAGMENT_RE = re.compile(
+    r"(?is)^(?:TEXT|INTEGER|REAL|BLOB|NUMERIC)"
+    r"(?:\s+NOT\s+NULL)?"
+    r"(?:\s+DEFAULT\s+(?:"
+    r"NULL|"
+    r"TRUE|FALSE|"
+    r"CURRENT_TIMESTAMP|CURRENT_TIME|CURRENT_DATE|"
+    r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|"
+    r"'(?:''|[^'])*'"
+    r"))?"
+    r"\s*$"
+)
+
+
+def _validate_column_sql_fragment(column_sql: str) -> None:
+    stripped = column_sql.strip()
+    if not stripped:
+        raise ValueError("column_sql must not be empty")
+    if ";" in stripped or "--" in stripped:
+        raise ValueError("column_sql must not contain SQL comments or statement separators")
+    if _COLUMN_SQL_FRAGMENT_RE.fullmatch(stripped) is None:
+        raise ValueError(
+            "column_sql must be an allowed SQLite type fragment "
+            "(TEXT/INTEGER/REAL/BLOB/NUMERIC, optional NOT NULL, optional DEFAULT <literal>)"
+        )
 
 
 def migration_dir() -> Path:
@@ -146,6 +172,7 @@ def add_column_if_missing(
     names = {_column_name_from_pragma_row(row) for row in columns}
     if column_name in names:
         return False
+    _validate_column_sql_fragment(column_sql)
     conn.execute(f"ALTER TABLE {table_identifier} ADD COLUMN {column_identifier} {column_sql}")
     return True
 

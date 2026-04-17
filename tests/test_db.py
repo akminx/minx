@@ -213,6 +213,34 @@ def test_add_column_if_missing_rejects_invalid_identifiers(tmp_path):
         )
 
 
+def test_add_column_rejects_disallowed_type_fragment(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "bad_fragment.db"))
+    conn.execute("CREATE TABLE sample_table (id INTEGER PRIMARY KEY)")
+
+    with pytest.raises(ValueError, match="column_sql"):
+        add_column_if_missing(
+            conn,
+            table_name="sample_table",
+            column_name="evil",
+            column_sql="TEXT; DROP TABLE sample_table;--",
+        )
+
+
+def test_add_column_if_missing_accepts_integer_not_null_default(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "typed_column.db"))
+    conn.execute("CREATE TABLE sample_table (id INTEGER PRIMARY KEY)")
+
+    assert (
+        add_column_if_missing(
+            conn,
+            table_name="sample_table",
+            column_name="score",
+            column_sql="INTEGER NOT NULL DEFAULT 0",
+        )
+        is True
+    )
+
+
 def test_add_column_if_missing_raises_for_unknown_table(tmp_path):
     conn = sqlite3.connect(str(tmp_path / "missing_table.db"))
 

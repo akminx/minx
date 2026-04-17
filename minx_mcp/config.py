@@ -4,6 +4,23 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+_DEFAULT_HTTP_PORT = 8000
+
+
+def _parse_http_port_env() -> int:
+    raw = os.environ.get("MINX_HTTP_PORT")
+    if raw is None:
+        return _DEFAULT_HTTP_PORT
+    stripped = raw.strip()
+    if not stripped:
+        raise ValueError("MINX_HTTP_PORT is set but empty; unset it or provide a decimal integer")
+    try:
+        return int(stripped, 10)
+    except ValueError as exc:
+        raise ValueError(
+            f"MINX_HTTP_PORT must be a decimal integer, got {stripped!r} (from environment)"
+        ) from exc
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -27,6 +44,6 @@ def get_settings() -> Settings:
         staging_path=Path(os.environ.get("MINX_STAGING_PATH", home / ".minx" / "staging")),
         liteparse_bin=os.environ.get("MINX_LITEPARSE_BIN", "lit"),
         http_host=os.environ.get("MINX_HTTP_HOST", "127.0.0.1"),
-        http_port=int(os.environ.get("MINX_HTTP_PORT", "8000")),
+        http_port=_parse_http_port_env(),
         default_transport=os.environ.get("MINX_DEFAULT_TRANSPORT", "stdio"),
     )

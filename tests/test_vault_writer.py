@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,18 @@ def test_write_markdown_avoids_direct_write_to_target_path(tmp_path, monkeypatch
 
     assert path == target
     assert path.read_text() == "new"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX symlinks")
+def test_vault_writer_rejects_symlink_escape(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (vault / "Finance").symlink_to(outside, target_is_directory=True)
+    writer = VaultWriter(vault, ("Finance",))
+    with pytest.raises(InvalidInputError, match="outside the vault root"):
+        writer.write_markdown("Finance/leak.md", "nope")
 
 
 def test_replace_section_avoids_direct_write_to_target_path(tmp_path, monkeypatch):

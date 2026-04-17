@@ -269,9 +269,13 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
         )
 
     @mcp.tool(name="memory_expire")
-    def memory_expire_tool(memory_id: int, reason: str = "") -> ToolResponse:
+    def memory_expire_tool(
+        memory_id: int,
+        reason: str = "",
+        actor: str = "system",
+    ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: _memory_expire(config, memory_id, reason),
+            lambda: _memory_expire(config, memory_id, reason, actor),
             tool_name="memory_expire",
         )
 
@@ -552,11 +556,16 @@ def _memory_reject(config: CoreServiceConfig, memory_id: int, reason: str) -> di
         return {"memory": memory_record_as_dict(record)}
 
 
-def _memory_expire(config: CoreServiceConfig, memory_id: int, reason: str) -> dict[str, object]:
+def _memory_expire(
+    config: CoreServiceConfig,
+    memory_id: int,
+    reason: str,
+    actor: str = "system",
+) -> dict[str, object]:
     mid = _coerce_memory_id(memory_id)
     with scoped_connection(Path(config.db_path)) as conn:
         service = MemoryService(Path(config.db_path), conn=conn)
-        record = service.expire_memory(mid, actor="user", reason=reason)
+        record = service.expire_memory(mid, actor=actor, reason=reason)
         return {"memory": memory_record_as_dict(record)}
 
 

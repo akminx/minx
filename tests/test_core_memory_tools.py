@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from minx_mcp.core.server import create_core_server
@@ -64,6 +65,40 @@ def test_memory_tools_round_trip(tmp_path: Path) -> None:
     exp = get_tool(server, "memory_expire").fn(mid, "done")
     assert exp["success"] is True
     assert exp["data"]["memory"]["status"] == "expired"
+
+
+def test_memory_expire_tool_uses_system_actor_by_default(tmp_path: Path) -> None:
+    db_path = tmp_path / "actor.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    create_fn = get_tool(server, "memory_create").fn
+    expire_fn = get_tool(server, "memory_expire").fn
+
+    created = create_fn(
+        "preference",
+        "core",
+        "actor_test_subject",
+        0.9,
+        {"k": "v"},
+        "user",
+        "",
+    )
+    assert created["success"] is True
+    mid = int(created["data"]["memory"]["id"])
+
+    expired = expire_fn(mid, "ttl cleanup")
+    assert expired["success"] is True
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT actor FROM memory_events WHERE memory_id = ? AND event_type = 'expired' ORDER BY id DESC LIMIT 1",
+            (mid,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row[0] == "system"
 
 
 def test_memory_create_duplicate_live_triple_returns_conflict(tmp_path: Path) -> None:

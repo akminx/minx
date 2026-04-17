@@ -45,6 +45,7 @@ class VaultReader:
         self._allowed_prefixes = allowed_prefixes
 
     def read_document(self, relative_path: str) -> VaultDocument:
+        vault_physical = _vault_root_physical(self._vault_root)
         resolved = _resolve_vault_relative(
             self._vault_root,
             self._allowed_prefixes,
@@ -60,7 +61,7 @@ class VaultReader:
             text = raw.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
             raise InvalidInputError(f"Vault file is not valid UTF-8: {resolved}") from exc
-        rel = resolved.relative_to(self._vault_root.resolve()).as_posix()
+        rel = resolved.relative_to(vault_physical).as_posix()
         frontmatter, body = _parse_markdown_with_frontmatter(text, resolved)
         return VaultDocument(
             relative_path=rel,
@@ -70,19 +71,27 @@ class VaultReader:
         )
 
     def iter_documents(self, sub_prefix: str = "") -> Iterator[VaultDocument]:
-        vault = self._vault_root.resolve()
-        bases = _iter_walk_bases(vault, self._allowed_prefixes, sub_prefix)
+        vault = _vault_root_physical(self._vault_root)
+        bases = _iter_walk_bases(self._vault_root, self._allowed_prefixes, sub_prefix)
         md_paths: list[Path] = []
         for base in bases:
             if not base.exists():
                 continue
             for path in base.rglob("*.md"):
-                if path.is_file():
-                    md_paths.append(path)
+                if not path.is_file():
+                    continue
+                physical = path.resolve()
+                if not physical.is_relative_to(vault):
+                    raise InvalidInputError("vault path resolves outside the vault root")
+                md_paths.append(path)
         md_paths.sort(key=lambda p: p.resolve().relative_to(vault).as_posix())
         for path in md_paths:
             rel = path.resolve().relative_to(vault).as_posix()
             yield self.read_document(rel)
+
+
+def _vault_root_physical(vault_root: Path) -> Path:
+    return vault_root.resolve(strict=False)
 
 
 def _resolve_vault_relative(
@@ -96,9 +105,11 @@ def _resolve_vault_relative(
     if not normalized.parts or normalized.parts[0] not in allowed_prefixes:
         raise InvalidInputError("outside allowed vault prefixes")
 
-    vault_resolved = vault_root.resolve()
-    allowed_root = (vault_resolved / normalized.parts[0]).resolve()
-    resolved = (vault_resolved / normalized).resolve()
+    vault_physical = _vault_root_physical(vault_root)
+    resolved = (vault_physical / normalized).resolve()
+    if not resolved.is_relative_to(vault_physical):
+        raise InvalidInputError("vault path resolves outside the vault root")
+    allowed_root = (vault_physical / normalized.parts[0]).resolve()
     try:
         resolved.relative_to(allowed_root)
     except ValueError as exc:
@@ -106,15 +117,18 @@ def _resolve_vault_relative(
     return resolved
 
 
-def _iter_walk_bases(vault: Path, allowed_prefixes: tuple[str, ...], sub_prefix: str) -> list[Path]:
+def _iter_walk_bases(vault_root: Path, allowed_prefixes: tuple[str, ...], sub_prefix: str) -> list[Path]:
+    vault_physical = _vault_root_physical(vault_root)
     trimmed = sub_prefix.replace("\\", "/").strip("/")
     if not trimmed:
-        return [vault / prefix for prefix in allowed_prefixes]
+        return [vault_physical / prefix for prefix in allowed_prefixes]
     rel = Path(trimmed)
     if not rel.parts or rel.parts[0] not in allowed_prefixes:
         raise InvalidInputError("outside allowed vault prefixes")
-    base = (vault / rel).resolve()
-    allowed_root = (vault / rel.parts[0]).resolve()
+    base = (vault_physical / rel).resolve()
+    if not base.is_relative_to(vault_physical):
+        raise InvalidInputError("vault path resolves outside the vault root")
+    allowed_root = (vault_physical / rel.parts[0]).resolve()
     try:
         base.relative_to(allowed_root)
     except ValueError as exc:

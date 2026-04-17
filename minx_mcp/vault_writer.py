@@ -92,9 +92,11 @@ class VaultWriter:
         if not normalized.parts or normalized.parts[0] not in self.allowed_roots:
             raise InvalidInputError("outside allowed vault roots")
 
-        vault_root = self.vault_root.resolve()
-        allowed_root = (vault_root / normalized.parts[0]).resolve()
-        resolved = (vault_root / normalized).resolve()
+        vault_physical = self.vault_root.resolve(strict=False)
+        resolved = (vault_physical / normalized).resolve()
+        if not resolved.is_relative_to(vault_physical):
+            raise InvalidInputError("vault path resolves outside the vault root")
+        allowed_root = (vault_physical / normalized.parts[0]).resolve()
         try:
             resolved.relative_to(allowed_root)
         except ValueError as exc:
