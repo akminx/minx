@@ -7,8 +7,10 @@ Design notes (where the durable-memory spec is ambiguous vs this slice):
   windows. Cadence is inferred from the mean spacing between sorted week indices (1 → weekly,
   ~2 → biweekly, ≥2.8 → monthly). ``typical_amount_cents`` is the median of per-window spend
   totals across hit windows. Confidence: total transaction count across the four windows
-  (from ``MerchantSpending.transaction_count``) drives 0.65–0.9 (3 tx → 0.65, 4 → 0.72,
-  5 → 0.78, 6+ → 0.9), capped by pattern strength.
+  (  from ``MerchantSpending.transaction_count``) drives 0.65–0.9 (3 tx → 0.65, 4 → 0.72,
+  5 → 0.80, 6+ → 0.90). Note: 0.80 is the auto-promote threshold used by
+  ``MemoryService``, so five-transaction merchants are intentionally auto-promoted to
+  ``active`` on first ingest. Final confidence is capped at 0.95.
 
 * ``detect_category_preference`` uses trailing 30 days of categorized outflows; dominant
   category must be ≥40% of outflow. Confidence scales from 0.72 to 0.88 by share (40% → 0.72,

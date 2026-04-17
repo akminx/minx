@@ -340,3 +340,164 @@ def test_confirm_non_candidate_raises(tmp_path) -> None:
 def test_migration_set_includes_014_snapshot_archives() -> None:
     names = sorted(p.name for p in migration_dir().glob("*.sql"))
     assert names[-1] == "014_slice6_snapshot_archives.sql"
+
+
+def test_reject_memory_only_accepts_candidate(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    active = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="a",
+        confidence=0.9,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    assert active.status == "active"
+    with pytest.raises(InvalidInputError, match="Only candidate memories can be rejected"):
+        svc.reject_memory(active.id, actor="user", reason="too late")
+    still = svc.get_memory(active.id)
+    assert still.status == "active"
+
+    candidate = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="b",
+        confidence=0.3,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.reject_memory(candidate.id, actor="user", reason="not interested")
+    with pytest.raises(InvalidInputError, match="Only candidate memories can be rejected"):
+        svc.reject_memory(candidate.id, actor="user")
+
+    expired = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="c",
+        confidence=0.9,
+        payload={},
+        source="s",
+        actor="user",
+    )
+    svc.expire_memory(expired.id, actor="system")
+    with pytest.raises(InvalidInputError, match="Only candidate memories can be rejected"):
+        svc.reject_memory(expired.id, actor="user")
+
+
+def test_ingest_proposals_suppressed_by_prior_rejection(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    first = MemoryProposal(
+        memory_type="recurring_merchant",
+        scope="finance",
+        subject="starbucks",
+        confidence=0.4,
+        payload={"cadence": "weekly"},
+        source="detector:recurring_merchant",
+        reason="first sight",
+    )
+    out1 = svc.ingest_proposals((first,), actor="detector")
+    assert len(out1) == 1
+    svc.reject_memory(out1[0].id, actor="user", reason="not recurring")
+
+    again = MemoryProposal(
+        memory_type="recurring_merchant",
+        scope="finance",
+        subject="starbucks",
+        confidence=0.85,
+        payload={"cadence": "weekly", "typical_amount_cents": 500},
+        source="detector:recurring_merchant",
+        reason="strong signal",
+    )
+    out2 = svc.ingest_proposals((again,), actor="detector")
+    assert out2 == []
+    rows = svc.conn.execute(
+        """
+        SELECT status, COUNT(*) AS c FROM memories
+        WHERE memory_type = 'recurring_merchant'
+          AND scope = 'finance'
+          AND subject = 'starbucks'
+        GROUP BY status
+        """,
+    ).fetchall()
+    counts = {str(r["status"]): int(r["c"]) for r in rows}
+    assert counts == {"rejected": 1}
+    events = svc.conn.execute(
+        "SELECT event_type FROM memory_events WHERE memory_id = ? ORDER BY id",
+        (out1[0].id,),
+    ).fetchall()
+    event_types = [str(r["event_type"]) for r in events]
+    assert event_types == ["created", "rejected"]
+
+
+def test_ingest_proposals_mixed_with_and_without_rejection(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    a = MemoryProposal(
+        memory_type="t",
+        scope="s",
+        subject="suppressed",
+        confidence=0.5,
+        payload={},
+        source="d",
+        reason="",
+    )
+    created = svc.ingest_proposals((a,), actor="detector")
+    svc.reject_memory(created[0].id, actor="user")
+
+    proposals = [
+        MemoryProposal(
+            memory_type="t",
+            scope="s",
+            subject="suppressed",
+            confidence=0.9,
+            payload={},
+            source="d",
+            reason="",
+        ),
+        MemoryProposal(
+            memory_type="t",
+            scope="s",
+            subject="fresh",
+            confidence=0.6,
+            payload={},
+            source="d",
+            reason="",
+        ),
+    ]
+    out = svc.ingest_proposals(proposals, actor="detector")
+    assert [r.subject for r in out] == ["fresh"]
+
+
+def test_ingest_proposals_after_expired_creates_new_row(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="t",
+        scope="s",
+        subject="cycled",
+        confidence=0.9,
+        payload={"v": 1},
+        source="s",
+        actor="user",
+    )
+    svc.expire_memory(rec.id, actor="system", reason="ttl")
+
+    proposal = MemoryProposal(
+        memory_type="t",
+        scope="s",
+        subject="cycled",
+        confidence=0.85,
+        payload={"v": 2},
+        source="d",
+        reason="new cycle",
+    )
+    out = svc.ingest_proposals((proposal,), actor="detector")
+    assert len(out) == 1
+    assert out[0].id != rec.id
+    assert out[0].status == "active"
+    assert out[0].payload == {"v": 2}
+    rows = svc.conn.execute(
+        "SELECT id, status FROM memories WHERE memory_type='t' AND scope='s' AND subject='cycled' ORDER BY id",
+    ).fetchall()
+    statuses = [(int(r["id"]), str(r["status"])) for r in rows]
+    assert statuses == [(rec.id, "expired"), (out[0].id, "active")]

@@ -136,14 +136,18 @@ class MemoryService(BaseService):
         actor: str = "user",
         reason: str = "",
     ) -> MemoryRecord:
+        """Reject a pending candidate.
+
+        Only memories in the ``candidate`` status may be rejected; ``active`` memories
+        have already been confirmed (explicitly or via auto-promotion) and cannot be
+        demoted through this path. To remove an active memory, use :meth:`expire_memory`.
+        """
         _validate_actor(actor)
         row = self.conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"Memory {memory_id} not found")
-        if str(row["status"]) == "rejected":
-            raise InvalidInputError("Memory is already rejected")
-        if str(row["status"]) == "expired":
-            raise InvalidInputError("Cannot reject an expired memory")
+        if str(row["status"]) != "candidate":
+            raise InvalidInputError("Only candidate memories can be rejected")
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             self.conn.execute(
@@ -251,6 +255,28 @@ class MemoryService(BaseService):
         *,
         actor: str = "detector",
     ) -> list[MemoryRecord]:
+        """Ingest detector proposals with dedupe, merge, and auto-promote.
+
+        For each proposal, the most recent row for ``(memory_type, scope, subject)``
+        is consulted and one of four paths is taken:
+
+        * **Candidate or active prior**: shallow-merge payload (new keys win),
+          ``confidence = max(prior, new)``, overwrite ``reason``, emit
+          ``payload_updated``. If the merged confidence crosses 0.8 from candidate,
+          promote to ``active`` and emit ``promoted`` after the update.
+        * **Rejected prior**: the proposal is **silently suppressed** — no DB write,
+          no event, and the proposal is **omitted from the returned list**. This
+          honors the spec's "rejected means don't pester the user again" contract;
+          detectors must not re-introduce user-rejected memories.
+        * **Expired prior**: treated as no prior row. Expiry is TTL-driven, so
+          re-proposing after expiry represents new evidence and a fresh lifecycle.
+        * **No prior row**: insert a new memory as ``active`` if ``confidence >= 0.8``
+          else ``candidate``; emit ``created`` (and ``promoted`` if auto-promoted).
+
+        Returns the records that were created or updated, in input order. Suppressed
+        (rejected-prior) proposals are excluded; callers that need to observe which
+        inputs were dropped can diff by ``(memory_type, scope, subject)``.
+        """
         _validate_actor(actor)
         out: list[MemoryRecord] = []
         for proposal in proposals:
@@ -258,14 +284,18 @@ class MemoryService(BaseService):
                 """
                 SELECT * FROM memories
                 WHERE memory_type = ? AND scope = ? AND subject = ?
-                  AND status IN ('candidate', 'active')
                 ORDER BY updated_at DESC, id DESC
                 LIMIT 1
                 """,
                 (proposal.memory_type, proposal.scope, proposal.subject),
             ).fetchone()
-            if row is None:
-                _validate_confidence(proposal.confidence)
+            _validate_confidence(proposal.confidence)
+            prior_status = str(row["status"]) if row is not None else None
+
+            if prior_status == "rejected":
+                continue
+
+            if row is None or prior_status == "expired":
                 status: str = "active" if proposal.confidence >= 0.8 else "candidate"
                 rec = self._insert_memory_and_events(
                     memory_type=require_non_empty("memory_type", proposal.memory_type),
@@ -281,14 +311,13 @@ class MemoryService(BaseService):
                 )
                 out.append(rec)
                 continue
-            _validate_confidence(proposal.confidence)
+
             self.conn.execute("BEGIN IMMEDIATE")
             try:
                 memory_id = int(row["id"])
                 prior_payload = _parse_payload_json(str(row["payload_json"]))
                 merged: dict[str, object] = {**prior_payload, **dict(proposal.payload)}
                 new_confidence = max(float(row["confidence"]), float(proposal.confidence))
-                prior_status = str(row["status"])
                 new_status = prior_status
                 promoted = False
                 if new_confidence >= 0.8 and prior_status == "candidate":
