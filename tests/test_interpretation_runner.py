@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from minx_mcp.contracts import LLMError
 from minx_mcp.core.interpretation.models import GoalCaptureInterpretation
 from minx_mcp.core.interpretation.runner import run_interpretation
 from minx_mcp.core.llm import LLMProviderError
@@ -17,6 +18,12 @@ class _BadLLM:
     async def run_json_prompt(self, prompt: str) -> str:
         assert prompt == "test"
         return '{"intent":"unknown"}'
+
+
+class _MalformedJsonLLM:
+    async def run_json_prompt(self, prompt: str) -> str:
+        assert prompt == "test"
+        return "{not-json"
 
 
 class _StructuredPromptLLM:
@@ -54,8 +61,8 @@ async def test_run_interpretation_parses_typed_json_result() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_interpretation_raises_on_schema_mismatch() -> None:
-    with pytest.raises(RuntimeError, match="schema"):
+async def test_runner_wraps_schema_validation_failure_in_llm_error() -> None:
+    with pytest.raises(LLMError, match="schema"):
         await run_interpretation(
             llm=_BadLLM(),
             prompt="test",
@@ -70,7 +77,7 @@ async def test_run_interpretation_does_not_log_validation_error_input_values(cap
             assert prompt == "test"
             return '{"intent":"create","confidence":"show me everything at Whole Foods last month"}'
 
-    with pytest.raises(RuntimeError, match="schema"):
+    with pytest.raises(LLMError, match="schema"):
         await run_interpretation(
             llm=_EchoingLLM(),
             prompt="test",
@@ -105,3 +112,13 @@ async def test_run_interpretation_falls_back_to_json_prompt_when_structured_prom
 
     assert result.intent == "create"
     assert result.confidence == 0.93
+
+
+@pytest.mark.asyncio
+async def test_runner_wraps_bad_llm_json_in_llm_error() -> None:
+    with pytest.raises(LLMError, match="schema"):
+        await run_interpretation(
+            llm=_MalformedJsonLLM(),
+            prompt="test",
+            result_model=GoalCaptureInterpretation,
+        )

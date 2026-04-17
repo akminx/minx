@@ -6,7 +6,10 @@ import pytest
 from minx_mcp.contracts import (
     INTERNAL_ERROR,
     INVALID_INPUT,
+    LLM_ERROR,
     InvalidInputError,
+    LLMError,
+    MinxContractError,
     fail,
     ok,
     wrap_async_tool_call,
@@ -43,6 +46,28 @@ def test_wrap_tool_call_converts_contract_error_to_failure_envelope():
         "data": None,
         "error": "bad input",
         "error_code": INVALID_INPUT,
+    }
+
+
+def test_llm_error_has_correct_code():
+    assert LLMError().code == LLM_ERROR
+
+
+def test_llm_error_is_a_minx_contract_error():
+    assert issubclass(LLMError, MinxContractError)
+
+
+def test_wrap_tool_call_converts_llm_error_to_failure_envelope():
+    def raise_llm_error():
+        raise LLMError("model unavailable")
+
+    result = wrap_tool_call(raise_llm_error)
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "error": "model unavailable",
+        "error_code": LLM_ERROR,
     }
 
 

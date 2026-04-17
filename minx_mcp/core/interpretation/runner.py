@@ -5,6 +5,7 @@ from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ValidationError
 
+from minx_mcp.contracts import InvalidInputError, LLMError
 from minx_mcp.core.interpretation.logging import log_interpretation_failure
 from minx_mcp.core.llm import LLMProviderError
 from minx_mcp.core.models import JSONLLMInterface
@@ -34,7 +35,7 @@ async def run_interpretation[T: BaseModel](
             raise
         except (TypeError, json.JSONDecodeError, ValidationError) as exc:
             _log_schema_validation_failure(prompt=prompt, result_model=result_model, error=exc)
-            raise RuntimeError("Interpretation schema validation failed") from exc
+            raise LLMError("Interpretation schema validation failed") from exc
         except Exception as exc:
             prompt_summary = f"model={result_model.__name__} prompt_len={len(prompt)}"
             log_interpretation_failure(
@@ -45,7 +46,7 @@ async def run_interpretation[T: BaseModel](
             raise
 
     if not isinstance(llm, JSONLLMInterface):
-        raise RuntimeError(
+        raise InvalidInputError(
             "Interpretation LLM must implement run_json_prompt or run_structured_prompt"
         )
 
@@ -54,7 +55,7 @@ async def run_interpretation[T: BaseModel](
         return _validate_interpretation_payload(payload, result_model)
     except (TypeError, json.JSONDecodeError, ValidationError) as exc:
         _log_schema_validation_failure(prompt=prompt, result_model=result_model, error=exc)
-        raise RuntimeError("Interpretation schema validation failed") from exc
+        raise LLMError("Interpretation schema validation failed") from exc
     except Exception as exc:
         prompt_summary = f"model={result_model.__name__} prompt_len={len(prompt)}"
         log_interpretation_failure(

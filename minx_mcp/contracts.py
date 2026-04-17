@@ -9,6 +9,7 @@ INVALID_INPUT = "INVALID_INPUT"
 NOT_FOUND = "NOT_FOUND"
 CONFLICT = "CONFLICT"
 INTERNAL_ERROR = "INTERNAL_ERROR"
+LLM_ERROR = "LLM_ERROR"
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,22 @@ class NotFoundError(MinxContractError):
 class ConflictError(MinxContractError):
     def __init__(self, message: str, data: Any | None = None) -> None:
         super().__init__(message, CONFLICT, data)
+
+
+class LLMError(MinxContractError):
+    """Raised when an LLM provider call, response shape, or schema validation fails.
+
+    Maps to ``error_code = "LLM_ERROR"``. Clients should treat this as
+    potentially-transient: retry with backoff, fall back to a deterministic
+    path, or surface a user-visible "AI subsystem unavailable" message.
+    It is *not* ``INTERNAL_ERROR``, which means an unexpected bug on the
+    server side.
+    """
+
+    code = LLM_ERROR
+
+    def __init__(self, message: str = "LLM error", data: Any | None = None) -> None:
+        super().__init__(message, LLM_ERROR, data)
 
 
 def ok(data: Any) -> ToolResponse:

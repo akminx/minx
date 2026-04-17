@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from minx_mcp.config import get_settings
+from minx_mcp.contracts import LLMError
 from minx_mcp.core.models import (
     DailyTimeline,
     GoalProgress,
@@ -22,10 +23,6 @@ from minx_mcp.db import get_connection
 from minx_mcp.preferences import get_preference
 
 logger = logging.getLogger(__name__)
-
-
-class LLMError(RuntimeError):
-    """Base exception for handled LLM-layer failures."""
 
 
 class LLMProviderError(LLMError):
