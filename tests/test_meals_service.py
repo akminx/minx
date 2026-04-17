@@ -64,6 +64,92 @@ def test_log_meal_emits_nutrition_day_updated_after_commit(db_path) -> None:
     assert day_events[0].payload["calories"] == 700
 
 
+def test_log_meal_rolls_back_if_nutrition_day_event_fails_to_emit(db_path, monkeypatch) -> None:
+    original_emit = meals_service_module.emit_event
+
+    def emit_shim(*args, **kwargs):
+        if kwargs.get("event_type") == "nutrition.day_updated":
+            raise RuntimeError("simulated bus failure")
+        return original_emit(*args, **kwargs)
+
+    monkeypatch.setattr(meals_service_module, "emit_event", emit_shim)
+    svc = MealsService(db_path)
+    with pytest.raises(RuntimeError, match="simulated bus failure"), svc:
+        set_preference(svc.conn, "core", "timezone", "UTC")
+        svc.log_meal(
+            occurred_at="2026-04-12T12:00:00Z",
+            meal_kind="lunch",
+            summary="should roll back",
+            protein_grams=10.0,
+            calories=100,
+        )
+
+    conn = get_connection(db_path)
+    try:
+        meal_rows = conn.execute("SELECT COUNT(*) FROM meals_meal_entries").fetchone()[0]
+        logged = query_events(conn, domain="meals", event_type="meal.logged")
+        day = query_events(conn, domain="meals", event_type="nutrition.day_updated")
+    finally:
+        conn.close()
+    assert meal_rows == 0
+    assert len(logged) == 0
+    assert len(day) == 0
+
+
+def test_log_meal_commits_meal_and_day_event_atomically(db_path) -> None:
+    svc = MealsService(db_path)
+    with svc:
+        set_preference(svc.conn, "core", "timezone", "UTC")
+        entry = svc.log_meal(
+            occurred_at="2026-04-12T12:00:00Z",
+            meal_kind="lunch",
+            summary="Salad",
+            protein_grams=30.0,
+            calories=500,
+        )
+
+    assert entry.id > 0
+    conn = get_connection(db_path)
+    try:
+        persisted = conn.execute(
+            "SELECT COUNT(*) FROM meals_meal_entries WHERE id = ?",
+            (entry.id,),
+        ).fetchone()[0]
+        logged = query_events(conn, domain="meals", event_type="meal.logged")
+        day = query_events(conn, domain="meals", event_type="nutrition.day_updated")
+    finally:
+        conn.close()
+    assert persisted == 1
+    assert len(logged) == 1
+    assert len(day) == 1
+
+
+def test_log_meal_day_event_reflects_current_meal(db_path) -> None:
+    svc = MealsService(db_path)
+    with svc:
+        set_preference(svc.conn, "core", "timezone", "UTC")
+        svc.log_meal(
+            occurred_at="2026-04-12T12:00:00Z",
+            meal_kind="lunch",
+            summary="Bowl",
+            protein_grams=42.5,
+            calories=620,
+            carbs_grams=45.0,
+            fat_grams=18.0,
+        )
+
+    conn = get_connection(db_path)
+    try:
+        day_events = query_events(conn, domain="meals", event_type="nutrition.day_updated")
+    finally:
+        conn.close()
+    assert len(day_events) == 1
+    payload = day_events[0].payload
+    assert payload["meal_count"] == 1
+    assert payload["protein_grams"] == 42.5
+    assert payload["calories"] == 620
+
+
 def test_nutrition_day_updated_aggregates_multiple_meals_in_local_day(db_path) -> None:
     """Two meals logged on the same local day must roll up into one updated event per log.
 

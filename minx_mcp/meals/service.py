@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import logging
+import secrets
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,7 +36,6 @@ from minx_mcp.time_utils import (
     utc_now_isoformat,
 )
 
-_logger = logging.getLogger(__name__)
 EVENT_SOURCE = "meals.service"
 VALID_MEAL_KINDS = {"breakfast", "lunch", "dinner", "snack", "other"}
 VALID_ACTIVITY_LEVELS = set(ACTIVITY_MULTIPLIERS)
@@ -92,7 +91,7 @@ class MealsService(BaseService):
                 f"invalid meal_kind {meal_kind!r}; must be one of breakfast, lunch, dinner, snack, other"
             )
         items = food_items or []
-        savepoint = "meals_log_meal"
+        savepoint = f"log_meal_{secrets.token_hex(4)}"
         self.conn.execute(f"SAVEPOINT {savepoint}")
         try:
             cursor = self.conn.execute(
@@ -133,14 +132,13 @@ class MealsService(BaseService):
             )
             if event_id is None:
                 raise RuntimeError("meal.logged event emission failed")
+            _emit_nutrition_day_updated(self.conn, occurred_at=occurred_at)
             entry = self._get_meal_entry(meal_id)
         except Exception:
             self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
             self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             raise
         self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
-        self.conn.commit()
-        _emit_nutrition_day_updated(self.conn, occurred_at=occurred_at)
         self.conn.commit()
         return entry
 
@@ -729,10 +727,7 @@ def _emit_nutrition_day_updated(conn: Connection, *, occurred_at: str) -> None:
         },
     )
     if event_id is None:
-        _logger.warning(
-            "nutrition.day_updated emission returned no event_id",
-            extra={"date": day, "meal_count": len(rows), "domain": "meals"},
-        )
+        raise RuntimeError("nutrition.day_updated event emission failed")
 
 
 def _vault_child_path(vault_root: Path, relative_path: str) -> Path:
