@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 
+import minx_mcp.core.snapshot as snapshot_module
 from minx_mcp.core.events import emit_event
 from minx_mcp.core.goals import GoalService
 from minx_mcp.core.memory_models import DetectorResult, MemoryProposal
@@ -11,11 +15,18 @@ from minx_mcp.core.snapshot import build_daily_snapshot
 from minx_mcp.db import get_connection
 
 
+def _archive_count(db_path) -> int:
+    conn = get_connection(db_path)
+    try:
+        return int(conn.execute("SELECT COUNT(*) AS c FROM snapshot_archives").fetchone()["c"])
+    finally:
+        conn.close()
+
+
 @pytest.mark.asyncio
 async def test_build_daily_snapshot_ingest_memories_idempotent(tmp_path, monkeypatch):
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
-    import minx_mcp.core.snapshot as snapshot_module
 
     proposal = MemoryProposal(
         memory_type="t",
@@ -107,8 +118,6 @@ async def test_build_daily_snapshot_returns_persistence_warning_when_detector_wr
     conn.commit()
     conn.close()
 
-    import minx_mcp.core.snapshot as snapshot_module
-
     monkeypatch.setattr(
         snapshot_module,
         "_insert_detector_insights",
@@ -131,8 +140,6 @@ async def test_build_daily_snapshot_refreshes_existing_detector_rows_on_rerun(
 ):
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
-
-    import minx_mcp.core.snapshot as snapshot_module
 
     monkeypatch.setattr(
         snapshot_module,
@@ -241,3 +248,104 @@ def _read_persisted_insights(db_path):
         ).fetchall()
     finally:
         conn.close()
+
+
+@pytest.mark.asyncio
+async def test_build_daily_snapshot_does_not_block_event_loop_under_gather(tmp_path, monkeypatch):
+    db_path = tmp_path / "minx.db"
+    get_connection(db_path).close()
+
+    original = snapshot_module._build_snapshot_models
+
+    def slow_build(*args, **kwargs):
+        time.sleep(0.25)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(snapshot_module, "_build_snapshot_models", slow_build)
+
+    t0 = time.perf_counter()
+    await asyncio.gather(
+        build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path)),
+        asyncio.sleep(0.2),
+    )
+    elapsed = time.perf_counter() - t0
+
+    # If sync SQLite work blocked the event loop, this would be ~0.45s (0.25 + 0.2).
+    assert elapsed < 0.42
+    assert elapsed >= 0.19
+
+
+@pytest.mark.asyncio
+async def test_build_daily_snapshot_minimal_seeded_return_shape_unchanged(tmp_path):
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    _seed_goal(conn)
+    _seed_transaction(
+        conn,
+        posted_at="2026-03-15",
+        merchant="Cafe",
+        amount_cents=-6800,
+        category_name="Dining Out",
+    )
+    emit_event(
+        conn,
+        event_type="finance.transactions_imported",
+        domain="finance",
+        occurred_at="2026-03-15T12:00:00Z",
+        entity_ref="job:1",
+        source="tests",
+        payload={
+            "account_name": "DCU",
+            "account_id": 1,
+            "job_id": "job-1",
+            "transaction_count": 1,
+            "total_cents": -6800,
+            "source_kind": "csv",
+        },
+    )
+    conn.commit()
+    conn.close()
+
+    snapshot = await build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path))
+
+    assert snapshot.date == "2026-03-15"
+    assert snapshot.timeline.date == "2026-03-15"
+    assert snapshot.spending.date == "2026-03-15"
+    assert snapshot.open_loops.date == "2026-03-15"
+    assert isinstance(snapshot.goal_progress, list)
+    assert isinstance(snapshot.signals, list)
+    assert isinstance(snapshot.attention_items, list)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_continues_when_memory_ingest_raises(tmp_path, monkeypatch, caplog):
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    _seed_goal(conn)
+    _seed_transaction(
+        conn,
+        posted_at="2026-03-15",
+        merchant="Cafe",
+        amount_cents=-6800,
+        category_name="Dining Out",
+    )
+    conn.commit()
+    conn.close()
+
+    def boom(self, proposals, *, actor="detector"):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(snapshot_module.MemoryService, "ingest_proposals", boom)
+
+    with caplog.at_level("WARNING", logger="minx_mcp.core.snapshot"):
+        snapshot = await build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path))
+
+    assert snapshot.date == "2026-03-15"
+    assert isinstance(snapshot.goal_progress, list)
+    assert isinstance(snapshot.signals, list)
+    assert snapshot.persistence_warning is None
+    assert any(
+        "Memory proposal ingestion failed" in r.getMessage() and "boom" in r.getMessage()
+        for r in caplog.records
+    )
+    assert _archive_count(db_path) == 1

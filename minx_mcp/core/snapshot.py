@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -46,11 +47,29 @@ async def build_daily_snapshot(
     *,
     force: bool = False,
 ) -> DailySnapshot:
+    return await asyncio.to_thread(
+        _build_daily_snapshot_sync,
+        review_date,
+        ctx,
+        force=force,
+    )
+
+
+def _build_daily_snapshot_sync(
+    review_date: str,
+    ctx: SnapshotContext,
+    *,
+    force: bool = False,
+) -> DailySnapshot:
     with scoped_connection(Path(ctx.db_path)) as conn:
         read_models = _build_snapshot_models(conn, review_date, ctx)
         detector_run = _run_detectors(read_models)
         memory_service = MemoryService(Path(ctx.db_path), conn=conn)
-        memory_service.ingest_proposals(detector_run.memory_proposals, actor="detector")
+        _ingest_memory_proposals_best_effort(
+            review_date,
+            memory_service,
+            detector_run.memory_proposals,
+        )
         # TODO(slice6-6d): expose memory context in DailySnapshot (persisted via ingest above).
         detector_signals = _sorted_insights(list(detector_run.insights))
         warning = _persist_warning(conn, review_date, detector_signals, force=force)
@@ -68,6 +87,26 @@ async def build_daily_snapshot(
         )
         _persist_snapshot_archive(conn, review_date, snapshot)
         return snapshot
+
+
+def _ingest_memory_proposals_best_effort(
+    review_date: str,
+    memory_service: MemoryService,
+    proposals: tuple[MemoryProposal, ...],
+) -> None:
+    try:
+        memory_service.ingest_proposals(proposals, actor="detector")
+    except Exception as exc:
+        logger.warning(
+            "Memory proposal ingestion failed for %s: %s",
+            review_date,
+            exc,
+            extra={
+                "domain": "core",
+                "tool": "build_daily_snapshot",
+                "success": False,
+            },
+        )
 
 
 def _build_snapshot_models(
