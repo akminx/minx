@@ -15,6 +15,7 @@ from minx_mcp.contracts import (
 from minx_mcp.core.interpretation.finance_query import interpret_finance_query
 from minx_mcp.core.llm import create_llm
 from minx_mcp.core.models import JSONLLMInterface
+from minx_mcp.db import scoped_connection
 from minx_mcp.finance.importers import SUPPORTED_SOURCE_KINDS
 from minx_mcp.money import cents_to_display_dollars
 from minx_mcp.validation import (
@@ -49,6 +50,40 @@ SAFE_TOOLS = [
 SENSITIVE_TOOLS = ["sensitive_finance_query", "finance_query"]
 MAX_SENSITIVE_QUERY_LIMIT = 500
 SUPPORTED_RULE_MATCH_KINDS = {"merchant_contains"}
+
+
+class _ScopingFinanceQueryReadAPI:
+    """Read-only name lists for finance_query interpretation (no open handle across LLM await)."""
+
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = db_path
+
+    def list_transaction_category_names(self) -> list[str]:
+        with scoped_connection(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT name FROM finance_categories ORDER BY name ASC"
+            ).fetchall()
+            return [str(row["name"]) for row in rows]
+
+    def list_spending_merchant_names(self) -> list[str]:
+        with scoped_connection(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT merchant
+                FROM finance_transactions
+                WHERE amount_cents < 0
+                  AND COALESCE(TRIM(merchant), '') != ''
+                ORDER BY merchant ASC
+                """
+            ).fetchall()
+            return [str(row["merchant"]) for row in rows]
+
+    def list_account_names(self) -> list[str]:
+        with scoped_connection(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT name FROM finance_accounts ORDER BY name ASC"
+            ).fetchall()
+            return [str(row["name"]) for row in rows]
 
 
 class FinanceServiceLike(Protocol):
@@ -468,12 +503,11 @@ async def _finance_query(
     effective_review_date = resolve_date_or_today(review_date, field_name="review_date")
     resolved_llm = _resolve_finance_query_llm(service, llm)
 
-    # Interpret with LLM outside the connection context — the LLM call
-    # may block for up to 30s and does not need the DB connection held open.
+    read_api = _ScopingFinanceQueryReadAPI(service.db_path)
     plan = await interpret_finance_query(
         message=effective_message,
         review_date=effective_review_date,
-        finance_api=service,
+        finance_api=read_api,
         llm=resolved_llm,
     )
     if plan.needs_clarification:

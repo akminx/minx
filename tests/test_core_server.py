@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from minx_mcp.core import server as core_server_module
 from minx_mcp.core.events import emit_event
+from minx_mcp.core.models import GoalCaptureResult
 from minx_mcp.core.server import create_core_server
 from minx_mcp.db import get_connection
 from tests.helpers import MinxTestConfig, get_tool
@@ -113,6 +115,87 @@ def test_get_insight_history_tool_wraps_history_result(tmp_path: Path) -> None:
 
     assert result["success"] is True
     assert result["data"]["insights"][0]["summary"] == "Spike"
+
+
+@pytest.mark.asyncio
+async def test_goal_parse_does_not_hold_db_connection_across_llm_await(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "minx.db"
+    get_connection(db_path).close()
+    config = _TestConfig(db_path, tmp_path / "vault")
+    called = {"n": 0}
+
+    async def fake_parse_goal_input(*args: object, **kwargs: object) -> GoalCaptureResult:
+        called["n"] += 1
+        second = get_connection(config.db_path)
+        try:
+            second.execute("BEGIN IMMEDIATE")
+            second.execute("ROLLBACK")
+        finally:
+            second.close()
+        return GoalCaptureResult(result_type="no_match", assistant_message="probe ok")
+
+    monkeypatch.setattr(core_server_module, "parse_goal_input", fake_parse_goal_input)
+    server = create_core_server(config)
+    goal_parse = get_tool(server, "goal_parse").fn
+
+    result = await goal_parse(message="save fifty dollars monthly on groceries", review_date=None)
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "no_match"
+    assert result["data"]["assistant_message"] == "probe ok"
+    assert called["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_goal_parse_persists_result_after_llm_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """goal_parse does not mutate goals; ensure a seeded goal survives the handler."""
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    conn.execute(
+        """
+        INSERT INTO goals (
+            goal_type, title, status, metric_type, target_value, period, domain,
+            filters_json, starts_on, ends_on, notes, created_at, updated_at
+        ) VALUES (
+            'spending_cap', 'Coffee Cap', 'active', 'sum_below', 4000, 'monthly', 'finance',
+            '{"category_names":[],"merchant_names":["Starbucks"],"account_names":[]}',
+            '2026-03-01', NULL, NULL, datetime('now'), datetime('now')
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+    config = _TestConfig(db_path, tmp_path / "vault")
+
+    async def fake_parse_goal_input(*args: object, **kwargs: object) -> GoalCaptureResult:
+        return GoalCaptureResult(
+            result_type="update",
+            action="goal_update",
+            goal_id=1,
+            payload={"status": "paused"},
+            assistant_message="Paused.",
+        )
+
+    monkeypatch.setattr(core_server_module, "parse_goal_input", fake_parse_goal_input)
+    server = create_core_server(config)
+    goal_parse = get_tool(server, "goal_parse").fn
+
+    result = await goal_parse(message="pause my coffee goal", review_date="2026-03-15")
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "update"
+    assert result["data"]["goal_id"] == 1
+    verify = get_connection(db_path)
+    try:
+        row = verify.execute("SELECT id, title FROM goals WHERE id = 1").fetchone()
+    finally:
+        verify.close()
+    assert row is not None
+    assert row["title"] == "Coffee Cap"
 
 
 def test_get_goal_trajectory_tool_returns_invalid_input_for_bad_date(tmp_path: Path) -> None:

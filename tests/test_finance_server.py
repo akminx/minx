@@ -4,7 +4,10 @@ import json
 import pytest
 from mcp.server.fastmcp import FastMCP
 
+from minx_mcp.core.query_models import FinanceQueryFilters, FinanceQueryPlan
+from minx_mcp.db import get_connection
 from minx_mcp.finance import __main__ as finance_main
+from minx_mcp.finance import server as finance_server_module
 from minx_mcp.finance.server import SAFE_TOOLS, SENSITIVE_TOOLS, create_finance_server
 from minx_mcp.finance.service import FinanceService
 from tests.helpers import call_tool_sync as _call_tool_sync
@@ -349,6 +352,46 @@ def test_sensitive_finance_query_tool_accepts_filters(tmp_path):
         "error": None,
         "error_code": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_finance_query_does_not_hold_db_connection_across_llm_await(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    called = {"n": 0}
+
+    async def fake_interpret_finance_query(*args: object, **kwargs: object) -> FinanceQueryPlan:
+        called["n"] += 1
+        second = get_connection(service.db_path)
+        try:
+            second.execute("BEGIN IMMEDIATE")
+            second.execute("ROLLBACK")
+        finally:
+            second.close()
+        return FinanceQueryPlan(
+            intent="list_transactions",
+            filters=FinanceQueryFilters(
+                start_date="2026-03-01",
+                end_date="2026-03-31",
+            ),
+            confidence=0.9,
+        )
+
+    monkeypatch.setattr(
+        finance_server_module,
+        "interpret_finance_query",
+        fake_interpret_finance_query,
+    )
+    server = create_finance_server(service, llm=_StubFinanceQueryLLM("{}"))
+    finance_query = get_tool(server, "finance_query").fn
+
+    result = await finance_query("show me transactions in March", "2026-03-31")
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "query"
+    assert result["data"]["intent"] == "list_transactions"
+    assert called["n"] == 1
 
 
 def test_finance_query_tool_executes_validated_query_plan(tmp_path):

@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from mcp.server.fastmcp import FastMCP
 
@@ -23,6 +23,7 @@ from minx_mcp.core.history import get_insight_history
 from minx_mcp.core.llm import create_llm
 from minx_mcp.core.memory_service import MemoryService, memory_record_as_dict
 from minx_mcp.core.models import (
+    FinanceReadInterface,
     GoalCaptureOption,
     GoalCaptureResult,
     GoalCreateInput,
@@ -374,6 +375,103 @@ def _goal_archive(config: CoreServiceConfig, goal_id: int) -> dict[str, object]:
         return {"goal": _goal_record_to_dict(goal)}
 
 
+class _ScopingFinanceReadAPI:
+    """FinanceReadInterface backed by short-lived connections (no handle across awaits)."""
+
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = db_path
+
+    def _with_api(self, fn):
+        with scoped_connection(self._db_path) as conn:
+            return fn(FinanceReadAPI(conn))
+
+    def get_spending_summary(self, start_date: str, end_date: str):
+        return self._with_api(lambda api: api.get_spending_summary(start_date, end_date))
+
+    def get_uncategorized(self, start_date: str, end_date: str):
+        return self._with_api(lambda api: api.get_uncategorized(start_date, end_date))
+
+    def get_import_job_issues(self):
+        return self._with_api(lambda api: api.get_import_job_issues())
+
+    def list_account_names(self) -> list[str]:
+        return self._with_api(lambda api: api.list_account_names())
+
+    def get_period_comparison(
+        self,
+        current_start: str,
+        current_end: str,
+        prior_start: str,
+        prior_end: str,
+    ):
+        return self._with_api(
+            lambda api: api.get_period_comparison(
+                current_start, current_end, prior_start, prior_end
+            )
+        )
+
+    def list_goal_category_names(self) -> list[str]:
+        return self._with_api(lambda api: api.list_goal_category_names())
+
+    def list_spending_merchant_names(self) -> list[str]:
+        return self._with_api(lambda api: api.list_spending_merchant_names())
+
+    def get_filtered_spending_total(
+        self,
+        start_date: str,
+        end_date: str,
+        *,
+        category_names: list[str] | None = None,
+        merchant_names: list[str] | None = None,
+        account_names: list[str] | None = None,
+    ) -> int:
+        return self._with_api(
+            lambda api: api.get_filtered_spending_total(
+                start_date,
+                end_date,
+                category_names=category_names,
+                merchant_names=merchant_names,
+                account_names=account_names,
+            )
+        )
+
+    def get_filtered_transaction_count(
+        self,
+        start_date: str,
+        end_date: str,
+        *,
+        category_names: list[str] | None = None,
+        merchant_names: list[str] | None = None,
+        account_names: list[str] | None = None,
+    ) -> int:
+        return self._with_api(
+            lambda api: api.get_filtered_transaction_count(
+                start_date,
+                end_date,
+                category_names=category_names,
+                merchant_names=merchant_names,
+                account_names=account_names,
+            )
+        )
+
+    def get_income_summary(self, start_date: str, end_date: str):
+        return self._with_api(lambda api: api.get_income_summary(start_date, end_date))
+
+    def get_net_flow(self, start_date: str, end_date: str) -> int:
+        return self._with_api(lambda api: api.get_net_flow(start_date, end_date))
+
+
+class _ScopingGoalService:
+    """Minimal GoalService surface for goal_parse; each call uses its own connection."""
+
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = db_path
+
+    def get_goal(self, goal_id: int):
+        with scoped_connection(self._db_path) as conn:
+            return GoalService(conn).get_goal(goal_id)
+
+
 async def _goal_parse(
     config: CoreServiceConfig,
     message: str | None,
@@ -389,6 +487,7 @@ async def _goal_parse(
             raise InvalidInputError("message must be at most 500 characters")
 
     effective_review_date = _resolve_review_date(review_date)
+    llm = _resolve_goal_capture_llm(config)
     with scoped_connection(config.db_path) as conn:
         goal_service = GoalService(conn)
         active_goals = goal_service.list_active_goals(effective_review_date)
@@ -398,17 +497,19 @@ async def _goal_parse(
             if _goal_is_available_on(goal, effective_review_date)
         ]
         goals = active_goals + paused_goals
-        llm = _resolve_goal_capture_llm(config)
-        result = await parse_goal_input(
-            review_date=effective_review_date,
-            finance_api=FinanceReadAPI(conn),
-            goal_service=goal_service,
-            goals=goals,
-            message=normalized_message,
-            structured_input=structured_input,
-            llm=llm,
-        )
-        return _goal_parse_result_to_dict(result)
+
+    finance_api = _ScopingFinanceReadAPI(config.db_path)
+    scoped_goal_service = _ScopingGoalService(config.db_path)
+    result = await parse_goal_input(
+        review_date=effective_review_date,
+        finance_api=cast(FinanceReadInterface, finance_api),
+        goal_service=cast(GoalService, scoped_goal_service),
+        goals=goals,
+        message=normalized_message,
+        structured_input=structured_input,
+        llm=llm,
+    )
+    return _goal_parse_result_to_dict(result)
 
 
 def _resolve_review_date(review_date: str | None) -> str:
