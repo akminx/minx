@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import signal
 import subprocess
 import sys
 import time
 from typing import TextIO
+
+logger = logging.getLogger(__name__)
 
 
 def _env_port(name: str, default: int) -> int:
@@ -119,7 +122,12 @@ def _terminate_all(procs: list[subprocess.Popen[bytes]]) -> None:
         if proc.poll() is None:
             proc.terminate()
     for proc in procs:
-        proc.wait(timeout=5)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.warning("process did not terminate; killing pid=%s", proc.pid)
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 def main() -> None:

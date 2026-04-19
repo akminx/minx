@@ -181,6 +181,40 @@ def test_list_memories_no_default_status_filter(tmp_path) -> None:
     assert active_only[0].subject == "act"
 
 
+def test_list_memories_omits_expired_active_rows_when_status_is_none(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    active = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="fresh",
+        confidence=0.9,
+        payload={},
+        source="test",
+        actor="user",
+    )
+    expired = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="stale",
+        confidence=0.9,
+        payload={},
+        source="test",
+        actor="user",
+    )
+    svc.conn.execute(
+        """
+        UPDATE memories
+        SET expires_at = ?, updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        ((datetime.now(UTC) - timedelta(days=1)).isoformat(), expired.id),
+    )
+    svc.conn.commit()
+
+    assert [row.id for row in svc.list_memories(status=None)] == [active.id]
+    assert [row.id for row in svc.list_memories(status="active")] == [active.id]
+
+
 def test_get_memory_not_found(tmp_path) -> None:
     svc = _fresh_memory_service(tmp_path)
     with pytest.raises(NotFoundError):
@@ -545,7 +579,8 @@ def test_migration_set_includes_015_memories_unique_live() -> None:
     assert "015_slice6_memories_unique_live.sql" in names
     assert "016_memory_ttl_and_event_check.sql" in names
     assert "017_recipes_vault_synced_at.sql" in names
-    assert names[-1] == "017_recipes_vault_synced_at.sql"
+    assert "018_vault_index.sql" in names
+    assert names[-1] == "018_vault_index.sql"
 
 
 def test_unique_index_rejects_duplicate_live_triple(tmp_path) -> None:
@@ -1393,7 +1428,7 @@ def test_prune_expired_memories_respects_explicit_now_argument(tmp_path) -> None
     assert svc.conn.execute("SELECT 1 FROM memories WHERE id = ?", (rec.id,)).fetchone() is None
 
 
-def test_memory_events_check_narrowed_rejects_vault_synced(tmp_path) -> None:
+def test_memory_events_check_allows_vault_synced_after_slice6c(tmp_path) -> None:
     svc = _fresh_memory_service(tmp_path)
     rec = svc.create_memory(
         memory_type="t",
@@ -1404,15 +1439,14 @@ def test_memory_events_check_narrowed_rejects_vault_synced(tmp_path) -> None:
         source="s",
         actor="user",
     )
-    with pytest.raises(sqlite3.IntegrityError):
-        svc.conn.execute(
-            """
-            INSERT INTO memory_events (memory_id, event_type, payload_json, actor, created_at)
-            VALUES (?, 'vault_synced', '{}', 'system', datetime('now'))
-            """,
-            (rec.id,),
-        )
-    svc.conn.rollback()
+    svc.conn.execute(
+        """
+        INSERT INTO memory_events (memory_id, event_type, payload_json, actor, created_at)
+        VALUES (?, 'vault_synced', '{}', 'vault_sync', datetime('now'))
+        """,
+        (rec.id,),
+    )
+    svc.conn.commit()
 
 
 def test_create_memory_rejects_invalid_payload(tmp_path) -> None:
@@ -1458,6 +1492,8 @@ def test_ingest_proposals_skips_invalid_payloads_and_logs_warning(tmp_path, capl
     assert "bad_subj" in caplog.text
     assert "preference" in caplog.text
     assert "detector:test" in caplog.text
+    assert len(out.failures) == 1
+    assert out.failures[0].subject == "bad_subj"
 
 
 def test_update_payload_rejects_invalid_payload_with_reread_type(tmp_path) -> None:

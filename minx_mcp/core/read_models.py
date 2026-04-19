@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from sqlite3 import Connection
 from typing import Any
 
@@ -21,6 +21,7 @@ from minx_mcp.core.models import (
 from minx_mcp.finance.read_api import FinanceReadAPI
 from minx_mcp.money import format_cents
 from minx_mcp.preferences import get_preference
+from minx_mcp.time_utils import resolve_timezone_name
 
 
 def build_daily_timeline(conn: Connection, review_date: str) -> DailyTimeline:
@@ -178,11 +179,13 @@ def build_read_models(
 def _resolve_timezone_name(conn: Connection) -> str:
     configured = get_preference(conn, "core", "timezone", None)
     if isinstance(configured, str) and configured:
-        return configured
+        return resolve_timezone_name(conn)
     return _get_machine_local_timezone_name()
 
 
 def _get_machine_local_timezone_name() -> str:
+    from datetime import datetime
+
     tzinfo = datetime.now().astimezone().tzinfo
     key = getattr(tzinfo, "key", None)
     if isinstance(key, str) and key:

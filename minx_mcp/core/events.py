@@ -4,8 +4,9 @@ This module owns DOMAIN TIMELINE events: user-facing behavioral signals
 (`finance.transaction_posted`, `meals.meal_logged`, etc.) with registered Pydantic
 payload models and versioned upcasters. It is NOT the memory audit trail. Slice 6's
 `memory_events` table records memory-lifecycle operations (`created`, `confirmed`,
-`rejected`, `expired`, `vault_synced`) as plain SQLite rows keyed by memory_id. Do
-not route memory-lifecycle events through `emit_event`; they belong in `memory_events`.
+`rejected`, `expired`, `payload_updated`, `vault_synced`) as plain SQLite rows keyed
+by memory_id. Do not route memory-lifecycle events through `emit_event`; they belong
+in `memory_events` (see migration 018).
 """
 
 from __future__ import annotations
@@ -113,6 +114,8 @@ def emit_event(
     payload: dict[str, Any],
     schema_version: int = 1,
     sensitivity: str = "normal",
+    *,
+    strict: bool = False,
 ) -> int | None:
     try:
         model = PAYLOAD_MODELS.get(event_type)
@@ -155,29 +158,62 @@ def emit_event(
     except UnknownEventTypeError:
         raise
     except ValidationError as exc:
-        logger.warning(
-            "Event payload validation failed for %s: %s",
+        logger.error(
+            "event emission dropped for %s: validation failed",
             event_type,
-            exc,
+            extra=_event_drop_extra(event_type, domain, entity_ref, exc),
         )
+        if strict:
+            raise
         return None
     except sqlite3.IntegrityError as exc:
         logger.error(
-            "Event emission integrity error for %s (possible schema or constraint violation): %s",
+            "event emission dropped for %s: integrity error",
             event_type,
-            exc,
+            extra=_event_drop_extra(event_type, domain, entity_ref, exc),
         )
+        if strict:
+            raise
         return None
     except sqlite3.DatabaseError as exc:
         logger.exception(
-            "Event emission DB error for %s (possible DB corruption): %s",
+            "event emission dropped for %s: database error",
             event_type,
-            exc,
+            extra=_event_drop_extra(event_type, domain, entity_ref, exc),
         )
+        if strict:
+            raise
         return None
     except Exception:
-        logger.exception("Event emission unexpected error for %s", event_type)
+        logger.exception(
+            "event emission dropped for %s: unexpected error",
+            event_type,
+            extra={
+                "event_type": event_type,
+                "domain": domain,
+                "entity_ref": entity_ref,
+                "error_type": "unexpected",
+                "error_code": "UNEXPECTED",
+            },
+        )
+        if strict:
+            raise
         return None
+
+
+def _event_drop_extra(
+    event_type: str,
+    domain: str,
+    entity_ref: str | None,
+    exc: Exception,
+) -> dict[str, object | None]:
+    return {
+        "event_type": event_type,
+        "domain": domain,
+        "entity_ref": entity_ref,
+        "error_type": type(exc).__name__,
+        "error_code": type(exc).__name__.upper(),
+    }
 
 
 def query_events(

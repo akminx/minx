@@ -61,6 +61,32 @@ def test_database_bootstrap_creates_memory_tables(tmp_path):
     }
     assert "memories" in names
     assert "memory_events" in names
+    assert "vault_index" in names
+
+
+def test_memory_events_accept_vault_synced_after_slice6c_migration(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    conn.execute(
+        """
+        INSERT INTO memories (
+            memory_type, scope, subject, confidence, status, payload_json, source, reason
+        ) VALUES ('preference', 'core', 'timezone', 0.9, 'active', '{}', 'test', '')
+        """
+    )
+    memory_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO memory_events (memory_id, event_type, payload_json, actor)
+        VALUES (?, 'vault_synced', '{"change": "update"}', 'vault_sync')
+        """,
+        (memory_id,),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT event_type, actor FROM memory_events WHERE memory_id = ?",
+        (memory_id,),
+    ).fetchone()
+    assert dict(row) == {"event_type": "vault_synced", "actor": "vault_sync"}
 
 
 def test_memory_events_cascade_when_parent_memory_deleted(tmp_path):
@@ -450,6 +476,9 @@ def test_built_wheel_includes_packaged_resources(tmp_path):
     assert "minx_mcp/schema/migrations/013_slice6_memory.sql" in names
     assert "minx_mcp/schema/migrations/014_slice6_snapshot_archives.sql" in names
     assert "minx_mcp/schema/migrations/015_slice6_memories_unique_live.sql" in names
+    assert "minx_mcp/schema/migrations/016_memory_ttl_and_event_check.sql" in names
+    assert "minx_mcp/schema/migrations/017_recipes_vault_synced_at.sql" in names
+    assert "minx_mcp/schema/migrations/018_vault_index.sql" in names
 
     # Finance markdown templates ship alongside the package so installed wheels
     # can render weekly/monthly reports without relying on the repo layout.
@@ -460,6 +489,125 @@ def test_built_wheel_includes_packaged_resources(tmp_path):
     # (and the minx-meals ``recipe_template`` tool) can serve it without relying
     # on the repo layout.
     assert "minx_mcp/meals/templates/recipe-starter.md" in names
+
+    assert "minx_mcp/core/templates/wiki/entity.md" in names
+    assert "minx_mcp/core/templates/wiki/pattern.md" in names
+    assert "minx_mcp/core/templates/wiki/review.md" in names
+    assert "minx_mcp/core/templates/wiki/goal.md" in names
+
+
+# Issue 8c regression: migration 018 applied to a pre-6c DB preserves existing rows
+# and the new vault_synced event type becomes valid.
+def test_migration_018_applied_to_pre_6c_db_preserves_memory_events_and_adds_vault_index(tmp_path):
+    """Apply migrations up through 017 manually, seed memory_events rows, then let
+    apply_migrations run 018 and verify rows are preserved and vault_synced is accepted."""
+    migrations = migration_dir()
+    db_path = tmp_path / "pre6c.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+
+    pre_6c_migrations = [
+        "001_platform.sql",
+        "002_finance.sql",
+        "003_finance_views.sql",
+        "004_finance_amount_cents.sql",
+        "005_core.sql",
+        "006_finance_report_lifecycle.sql",
+        "007_core_goals.sql",
+        "008_finance_phase2.sql",
+        "009_cleanup.sql",
+        "010_meals.sql",
+        "011_meals_nutrition.sql",
+        "012_training.sql",
+        "013_slice6_memory.sql",
+        "014_slice6_snapshot_archives.sql",
+        "015_slice6_memories_unique_live.sql",
+        "016_memory_ttl_and_event_check.sql",
+        "017_recipes_vault_synced_at.sql",
+    ]
+    for name in pre_6c_migrations:
+        conn.executescript((migrations / name).read_text())
+
+    # Create the _migrations table and record the pre-6c migrations.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS _migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+            checksum TEXT
+        )
+        """
+    )
+    for name in pre_6c_migrations:
+        import hashlib
+        content = (migrations / name).read_text(encoding="utf-8")
+        checksum = hashlib.sha256(content.encode()).hexdigest()
+        conn.execute(
+            "INSERT INTO _migrations (name, checksum) VALUES (?, ?)",
+            (name, checksum),
+        )
+
+    # Seed a memory and two pre-existing memory_events rows.
+    conn.execute(
+        """
+        INSERT INTO memories (
+            memory_type, scope, subject, confidence, status, payload_json, source, reason
+        ) VALUES ('preference', 'core', 'legacy_pref', 0.9, 'active', '{}', 'test', '')
+        """
+    )
+    mid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "INSERT INTO memory_events (memory_id, event_type, payload_json, actor) VALUES (?, 'created', '{}', 'system')",
+        (mid,),
+    )
+    conn.execute(
+        "INSERT INTO memory_events (memory_id, event_type, payload_json, actor)"
+        " VALUES (?, 'promoted', '{}', 'detector')",
+        (mid,),
+    )
+    conn.commit()
+    conn.close()
+
+    # Now apply 018 (and later) via get_connection which calls apply_migrations.
+    migrated = get_connection(db_path)
+
+    # All pre-existing rows must be preserved.
+    event_rows = migrated.execute(
+        "SELECT event_type FROM memory_events WHERE memory_id = ? ORDER BY id", (mid,)
+    ).fetchall()
+    assert len(event_rows) == 2
+    assert event_rows[0]["event_type"] == "created"
+    assert event_rows[1]["event_type"] == "promoted"
+
+    # vault_index table must exist.
+    tables = {
+        row["name"]
+        for row in migrated.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    assert "vault_index" in tables
+
+    # vault_synced is now a valid event_type after 018.
+    migrated.execute(
+        "INSERT INTO memory_events (memory_id, event_type, payload_json, actor)"
+        " VALUES (?, 'vault_synced', '{}', 'vault_sync')",
+        (mid,),
+    )
+    migrated.commit()
+    row = migrated.execute(
+        "SELECT event_type FROM memory_events WHERE memory_id = ? AND event_type = 'vault_synced'",
+        (mid,),
+    ).fetchone()
+    assert row is not None
+    assert row["event_type"] == "vault_synced"
+
+
+# Issue 9 regression: wiki template __init__.py files exist so they are recognized as packages.
+def test_wiki_template_packages_have_init_py() -> None:
+    import minx_mcp.core.templates
+    import minx_mcp.core.templates.wiki
+
+    assert hasattr(minx_mcp.core.templates, "__file__")
+    assert hasattr(minx_mcp.core.templates.wiki, "__file__")
 
 
 def test_missing_migrations_preserve_row_factory(tmp_path, monkeypatch):
@@ -523,4 +671,3 @@ def test_unreadable_migration_rolls_back_and_restores_connection(tmp_path, monke
     assert "_migrations" not in names
     assert conn.row_factory is original_row_factory
     assert not conn.in_transaction
-

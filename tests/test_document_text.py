@@ -35,3 +35,31 @@ def test_document_text_caps_stderr_in_error_message(
     assert "LiteParse failed" in msg
 
     assert any("LiteParse stderr (full)" in rec.message for rec in caplog.records)
+
+
+def test_litparse_stderr_redacts_secret_shapes_at_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(document_text, "_resolve_liteparse_binary", lambda _raw: "/bin/false")
+
+    def fake_run(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.CalledProcessError(
+            1,
+            "/bin/false",
+            stderr="Authorization: Bearer supersecrettoken12345\napi_key=sk-test-secret",
+        )
+
+    monkeypatch.setattr(document_text.subprocess, "run", fake_run)
+
+    caplog.set_level(logging.WARNING)
+    path = tmp_path / "doc.pdf"
+    path.write_bytes(b"%PDF-1.4")
+
+    with pytest.raises(RuntimeError):
+        document_text.extract_text(path)
+
+    assert "supersecrettoken" not in caplog.text
+    assert "sk-test-secret" not in caplog.text
+    assert "[REDACTED]" in caplog.text

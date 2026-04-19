@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from sqlite3 import Connection, IntegrityError, Row
 
 from minx_mcp.contracts import NotFoundError
 
 STUCK_JOB_TIMEOUT_MINUTES = 30
+logger = logging.getLogger(__name__)
 
 
 def _require_job_row(conn: Connection, job_id: str) -> None:
@@ -195,7 +197,19 @@ def _set_status(
 
 
 def _row_to_job(row: Row) -> dict[str, object | None]:
-    result = json.loads(row["result_json"]) if row["result_json"] else None
+    result: object | None
+    if row["result_json"]:
+        try:
+            result = json.loads(row["result_json"])
+        except json.JSONDecodeError as exc:
+            logger.error(
+                "job result_json is corrupt for job_id=%s",
+                row["id"],
+                extra={"job_id": row["id"], "error_type": type(exc).__name__},
+            )
+            result = {"error": "corrupt_result_json"}
+    else:
+        result = None
     return {
         "id": row["id"],
         "job_type": row["job_type"],

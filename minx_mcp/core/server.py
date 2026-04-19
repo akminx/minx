@@ -8,6 +8,7 @@ from typing import Protocol, cast
 
 from mcp.server.fastmcp import FastMCP
 
+from minx_mcp.audit import log_sensitive_access
 from minx_mcp.contracts import (
     ConflictError,
     InvalidInputError,
@@ -35,6 +36,7 @@ from minx_mcp.core.models import (
 )
 from minx_mcp.core.snapshot import build_daily_snapshot
 from minx_mcp.core.trajectory import get_goal_trajectory
+from minx_mcp.core.vault_scanner import VaultScanner
 from minx_mcp.db import scoped_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
 from minx_mcp.validation import (
@@ -43,6 +45,7 @@ from minx_mcp.validation import (
     resolve_date_or_today,
     validate_iso_date,
 )
+from minx_mcp.vault_reader import VaultReader
 from minx_mcp.vault_writer import VaultWriter
 
 
@@ -211,6 +214,37 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
             lambda: _persist_note(config, relative_path, content, overwrite),
             tool_name="persist_note",
         )
+
+    @mcp.tool(name="vault_replace_section")
+    def vault_replace_section(
+        relative_path: str,
+        heading: str,
+        body: str,
+    ) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _vault_replace_section(config, relative_path, heading, body),
+            tool_name="vault_replace_section",
+        )
+
+    @mcp.tool(name="vault_scan")
+    def vault_scan(dry_run: bool = False) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _vault_scan(config, dry_run),
+            tool_name="vault_scan",
+        )
+
+    _WIKI_TEMPLATE_DIR = Path(__file__).parent / "templates" / "wiki"
+    _WIKI_TEMPLATE_NAMES = ["entity", "pattern", "review", "goal"]
+
+    @mcp.resource("wiki-templates://list")
+    def wiki_templates_list() -> str:
+        return json.dumps(_WIKI_TEMPLATE_NAMES)
+
+    @mcp.resource("wiki-templates://{name}")
+    def wiki_template(name: str) -> str:
+        if name not in _WIKI_TEMPLATE_NAMES:
+            raise InvalidInputError(f"unknown wiki template: {name!r}")
+        return (_WIKI_TEMPLATE_DIR / f"{name}.md").read_text(encoding="utf-8")
 
     @mcp.tool(name="memory_list")
     def memory_list_tool(
@@ -593,8 +627,9 @@ def _memory_list(
     lim = _coerce_limit(limit, maximum=500)
     with scoped_connection(Path(config.db_path)) as conn:
         service = MemoryService(Path(config.db_path), conn=conn)
+        service.prune_expired_memories()
+        conn.commit()
         if effective_status == "active":
-            service.prune_expired_memories()
             rows = service.list_active_memories(
                 memory_type=effective_type,
                 scope=effective_scope,
@@ -688,6 +723,7 @@ def _get_pending_memory_candidates(
     with scoped_connection(Path(config.db_path)) as conn:
         service = MemoryService(Path(config.db_path), conn=conn)
         service.prune_expired_memories()
+        conn.commit()
         rows = service.list_pending_candidates(scope=effective_scope, limit=lim)
         return {"memories": [memory_record_as_dict(r) for r in rows]}
 
@@ -819,3 +855,32 @@ def _persist_note(
         raise ConflictError("note already exists", data={"path": str(resolved)})
     writer.write_markdown(relative_path, content)
     return {"path": str(resolved), "overwritten" if existed else "created": True}
+
+
+def _vault_replace_section(
+    config: CoreServiceConfig,
+    relative_path: str,
+    heading: str,
+    body: str,
+) -> dict[str, object]:
+    writer = VaultWriter(config.vault_path, ("Minx",))
+    resolved = writer.replace_section(relative_path, heading, body)
+    return {"path": str(resolved)}
+
+
+def _vault_scan(config: CoreServiceConfig, dry_run: bool = False) -> dict[str, object]:
+    with scoped_connection(Path(config.db_path)) as conn:
+        log_sensitive_access(
+            conn,
+            "vault_scan",
+            None,
+            f"vault_scan dry_run={dry_run}",
+        )
+        service = MemoryService(Path(config.db_path), conn=conn)
+        scanner = VaultScanner(
+            conn,
+            VaultReader(config.vault_path, ("Minx",)),
+            service,
+            scope_prefix="Minx",
+        )
+        return {"report": scanner.scan(dry_run=dry_run).as_dict()}

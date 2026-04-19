@@ -83,6 +83,8 @@ async def test_core_server_stdio_goal_parse_flow(tmp_path: Path) -> None:
             "get_insight_history",
             "get_goal_trajectory",
             "persist_note",
+            "vault_replace_section",
+            "vault_scan",
             "memory_list",
             "memory_get",
             "memory_create",

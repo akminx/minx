@@ -13,12 +13,15 @@ from pathlib import Path
 from sqlite3 import Connection
 
 from minx_mcp.core.detectors import DETECTORS
-from minx_mcp.core.memory_models import DetectorResult, MemoryProposal
+from minx_mcp.core.memory_models import DetectorResult, MemoryProposal, MemoryRecord
 from minx_mcp.core.memory_service import MemoryService
 from minx_mcp.core.models import (
     DailySnapshot,
     DurabilitySinkFailure,
     InsightCandidate,
+    MemoryContext,
+    MemoryContextItem,
+    MemoryEventItem,
     PersistenceWarning,
     ReadModels,
     SnapshotContext,
@@ -65,14 +68,21 @@ def _build_daily_snapshot_sync(
         read_models = _build_snapshot_models(conn, review_date, ctx)
         detector_run = _run_detectors(read_models)
         memory_service = MemoryService(Path(ctx.db_path), conn=conn)
-        _ingest_memory_proposals_best_effort(
+        memory_ingest_warning = _ingest_memory_proposals_best_effort(
             review_date,
             memory_service,
             detector_run.memory_proposals,
         )
-        # TODO(slice6-6d): expose memory context in DailySnapshot (persisted via ingest above).
+        memory_context, memory_warning = _build_memory_context_best_effort(memory_service)
         detector_signals = _sorted_insights(list(detector_run.insights))
         warning = _persist_warning(conn, review_date, detector_signals, force=force)
+        if warning is None:
+            warning = memory_ingest_warning or memory_warning
+        attention_items = _build_attention_items(read_models, detector_signals)
+        if memory_context.pending_candidate_count:
+            attention_items.append(
+                f"{memory_context.pending_candidate_count} memory candidates need review."
+            )
         snapshot = DailySnapshot(
             date=review_date,
             timeline=read_models.timeline,
@@ -80,22 +90,94 @@ def _build_daily_snapshot_sync(
             open_loops=read_models.open_loops,
             goal_progress=read_models.goal_progress,
             signals=detector_signals,
-            attention_items=_build_attention_items(read_models, detector_signals),
+            attention_items=attention_items,
             nutrition=read_models.nutrition,
             training=read_models.training,
             persistence_warning=warning,
+            memory_context=memory_context,
         )
         _persist_snapshot_archive(conn, review_date, snapshot)
         return snapshot
+
+
+def _build_memory_context_best_effort(
+    memory_service: MemoryService,
+) -> tuple[MemoryContext, PersistenceWarning | None]:
+    try:
+        active_memories = memory_service.list_active_memories(limit=100)
+        pending = memory_service.list_pending_candidates(limit=500)
+        events = _list_recent_memory_events(memory_service.conn)
+        return (
+            MemoryContext(
+                active=[_memory_context_item(memory) for memory in active_memories],
+                pending_candidate_count=len(pending),
+                recent_events=events,
+            ),
+            None,
+        )
+    except Exception as exc:
+        logger.warning("Memory context build failed: %s", exc)
+        return (
+            MemoryContext(active=[], pending_candidate_count=0, recent_events=[]),
+            PersistenceWarning(
+                sink="memory_context",
+                message="Memory context build failed; snapshot omitted memory state.",
+            ),
+        )
+
+
+def _memory_context_item(memory: MemoryRecord) -> MemoryContextItem:
+    return MemoryContextItem(
+        id=memory.id,
+        memory_type=memory.memory_type,
+        scope=memory.scope,
+        subject=memory.subject,
+        confidence=memory.confidence,
+        payload=memory.payload,
+        source=memory.source,
+        reason=memory.reason,
+        updated_at=memory.updated_at,
+    )
+
+
+def _list_recent_memory_events(conn: Connection, *, limit: int = 50) -> list[MemoryEventItem]:
+    rows = conn.execute(
+        """
+        SELECT id, memory_id, event_type, actor, created_at, payload_json
+        FROM memory_events
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        MemoryEventItem(
+            id=int(row["id"]),
+            memory_id=int(row["memory_id"]),
+            event_type=str(row["event_type"]),
+            actor=str(row["actor"]),
+            created_at=str(row["created_at"]),
+            payload=_parse_event_payload(str(row["payload_json"])),
+        )
+        for row in rows
+    ]
+
+
+def _parse_event_payload(raw: str) -> dict[str, object]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _ingest_memory_proposals_best_effort(
     review_date: str,
     memory_service: MemoryService,
     proposals: tuple[MemoryProposal, ...],
-) -> None:
+) -> PersistenceWarning | None:
     try:
-        memory_service.ingest_proposals(proposals, actor="detector")
+        report = memory_service.ingest_proposals(proposals, actor="detector")
     except Exception as exc:
         logger.warning(
             "Memory proposal ingestion failed for %s: %s",
@@ -107,6 +189,21 @@ def _ingest_memory_proposals_best_effort(
                 "success": False,
             },
         )
+        return PersistenceWarning(
+            sink="memory_proposals",
+            message="Memory proposal ingestion failed; snapshot memory state may be incomplete.",
+        )
+    if report.failures:
+        failed = ", ".join(
+            f"{failure.memory_type}:{failure.scope}:{failure.subject}"
+            for failure in report.failures[:5]
+        )
+        suffix = "" if len(report.failures) <= 5 else f" (+{len(report.failures) - 5} more)"
+        return PersistenceWarning(
+            sink="memory_proposals",
+            message=f"Memory proposal ingestion skipped invalid proposals: {failed}{suffix}.",
+        )
+    return None
 
 
 def _build_snapshot_models(

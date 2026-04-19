@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from minx_mcp.base_service import BaseService
@@ -25,6 +26,7 @@ from minx_mcp.vault_writer import VaultWriter
 MAX_SENSITIVE_QUERY_LIMIT = 500
 
 EVENT_SOURCE = "finance.service"
+logger = logging.getLogger(__name__)
 
 
 class FinanceService(BaseService):
@@ -82,22 +84,29 @@ class FinanceService(BaseService):
 
         stored_rules = self.conn.execute(
             """
-            SELECT r.pattern, r.match_kind, r.category_id
+            SELECT r.pattern, r.match_kind, r.category_id, r.priority
             FROM finance_category_rules r
             ORDER BY r.priority ASC, r.id ASC
             """
         ).fetchall()
-        rules = [
-            Rule(
-                stage="categorize",
-                priority=0,
-                kind="categorize_merchant",
-                match=str(rule["pattern"]),
-                value=str(rule["category_id"]),
+        rules: list[Rule] = []
+        for rule in stored_rules:
+            match_kind = str(rule["match_kind"])
+            if match_kind != "merchant_contains":
+                logger.warning(
+                    "skipping unhandled finance category rule match_kind=%s",
+                    match_kind,
+                )
+                continue
+            rules.append(
+                Rule(
+                    stage="categorize",
+                    priority=int(rule["priority"]),
+                    kind="categorize_merchant",
+                    match=str(rule["pattern"]),
+                    value=str(rule["category_id"]),
+                )
             )
-            for rule in stored_rules
-            if rule["match_kind"] == "merchant_contains"
-        ]
         if not rules:
             if commit:
                 self.conn.commit()

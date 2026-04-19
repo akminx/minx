@@ -55,6 +55,48 @@ async def test_build_daily_snapshot_ingest_memories_idempotent(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_build_daily_snapshot_identical_memory_proposals_do_not_churn_archive(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "minx.db"
+    get_connection(db_path).close()
+
+    proposal = MemoryProposal(
+        memory_type="preference",
+        scope="finance",
+        subject="card-choice",
+        confidence=0.55,
+        payload={"value": "debit"},
+        source="detector:test",
+        reason="same evidence",
+    )
+    monkeypatch.setattr(
+        snapshot_module,
+        "_run_detectors",
+        lambda _read_models: DetectorResult((), (proposal,)),
+    )
+
+    await build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path))
+    await build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path))
+
+    conn = get_connection(db_path)
+    try:
+        payload_updates = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM memory_events
+                WHERE event_type = 'payload_updated'
+                """
+            ).fetchone()["c"]
+        )
+    finally:
+        conn.close()
+    assert payload_updates == 0
+    assert _archive_count(db_path) == 1
+
+
+@pytest.mark.asyncio
 async def test_build_daily_snapshot_returns_structured_data_and_persists_detector_signals(tmp_path):
     db_path = tmp_path / "minx.db"
     conn = get_connection(db_path)
@@ -132,6 +174,32 @@ async def test_build_daily_snapshot_returns_persistence_warning_when_detector_wr
     assert snapshot.persistence_warning is not None
     assert snapshot.persistence_warning.sink == "detector_insights"
     assert _read_persisted_insights(db_path) == []
+
+
+@pytest.mark.asyncio
+async def test_build_daily_snapshot_surfaces_memory_ingest_failures(tmp_path, monkeypatch):
+    db_path = tmp_path / "minx.db"
+    get_connection(db_path).close()
+    bad = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="bad",
+        confidence=0.9,
+        payload={"not_a_field": "nope"},
+        source="detector:test",
+        reason="invalid",
+    )
+    monkeypatch.setattr(
+        snapshot_module,
+        "_run_detectors",
+        lambda _read_models: DetectorResult((), (bad,)),
+    )
+
+    snapshot = await build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path))
+
+    assert snapshot.persistence_warning is not None
+    assert snapshot.persistence_warning.sink == "memory_proposals"
+    assert "bad" in snapshot.persistence_warning.message
 
 
 @pytest.mark.asyncio
@@ -343,7 +411,8 @@ async def test_snapshot_continues_when_memory_ingest_raises(tmp_path, monkeypatc
     assert snapshot.date == "2026-03-15"
     assert isinstance(snapshot.goal_progress, list)
     assert isinstance(snapshot.signals, list)
-    assert snapshot.persistence_warning is None
+    assert snapshot.persistence_warning is not None
+    assert snapshot.persistence_warning.sink == "memory_proposals"
     assert any(
         "Memory proposal ingestion failed" in r.getMessage() and "boom" in r.getMessage()
         for r in caplog.records

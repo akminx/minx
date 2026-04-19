@@ -105,6 +105,36 @@ class LLMReviewResult:
 
 
 @dataclass(frozen=True)
+class MemoryContextItem:
+    id: int
+    memory_type: str
+    scope: str
+    subject: str
+    confidence: float
+    payload: dict[str, object]
+    source: str
+    reason: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class MemoryEventItem:
+    id: int
+    memory_id: int
+    event_type: str
+    actor: str
+    created_at: str
+    payload: dict[str, object]
+
+
+@dataclass(frozen=True)
+class MemoryContext:
+    active: list[MemoryContextItem]
+    pending_candidate_count: int
+    recent_events: list[MemoryEventItem]
+
+
+@dataclass(frozen=True)
 class PersistenceWarning:
     sink: str
     message: str
@@ -122,6 +152,7 @@ class DailySnapshot:
     nutrition: NutritionSnapshot | None = None
     training: TrainingSnapshot | None = None
     persistence_warning: PersistenceWarning | None = None
+    memory_context: MemoryContext | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +177,9 @@ __all__ = [
     "DurabilitySinkFailure",
     "InsightCandidate",
     "LLMReviewResult",
+    "MemoryContext",
+    "MemoryContextItem",
+    "MemoryEventItem",
     "NutritionSnapshot",
     "OpenLoop",
     "OpenLoopsSnapshot",

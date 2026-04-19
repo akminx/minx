@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from sqlite3 import Connection
@@ -26,6 +27,34 @@ _ALLOWED_ACTORS = frozenset({"system", "detector", "user", "harness", "vault_syn
 _ALLOWED_STATUS = frozenset({"candidate", "active", "rejected", "expired"})
 
 REJECTED_MEMORY_TTL_DAYS = 30
+
+
+@dataclass(frozen=True)
+class MemoryProposalFailure:
+    memory_type: str
+    scope: str
+    subject: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class IngestProposalsReport:
+    succeeded: list[MemoryRecord]
+    failures: list[MemoryProposalFailure]
+
+    def __iter__(self):
+        return iter(self.succeeded)
+
+    def __len__(self) -> int:
+        return len(self.succeeded)
+
+    def __getitem__(self, index: int) -> MemoryRecord:
+        return self.succeeded[index]
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, list):
+            return self.succeeded == other
+        return super().__eq__(other)
 
 
 def _utc_reference_iso(now: datetime | None = None) -> str:
@@ -108,9 +137,9 @@ class MemoryService(BaseService):
                 raise InvalidInputError(f"status must be one of {sorted(_ALLOWED_STATUS)}")
             clauses.append("status = ?")
             params.append(status)
-            if status == "active":
-                clauses.append("(expires_at IS NULL OR expires_at > ?)")
-                params.append(_utc_reference_iso(None))
+        if status != "expired":
+            clauses.append("(expires_at IS NULL OR expires_at > ?)")
+            params.append(_utc_reference_iso(None))
         if memory_type is not None:
             clauses.append("memory_type = ?")
             params.append(require_non_empty("memory_type", memory_type))
@@ -356,7 +385,12 @@ class MemoryService(BaseService):
         )
 
     def prune_expired_memories(self, now: datetime | None = None) -> int:
-        """Delete rejected memories whose expires_at is in the past. Returns count pruned."""
+        """Delete rejected memories whose expires_at is in the past. Returns count pruned.
+
+        Callers are responsible for committing the surrounding transaction.
+        This method does NOT call conn.commit() so it can be composed safely inside
+        an outer transaction (scoped_connection pattern).
+        """
         reference_iso = _utc_reference_iso(now)
         cur = self.conn.execute(
             "DELETE FROM memories "
@@ -365,7 +399,6 @@ class MemoryService(BaseService):
             "AND expires_at <= ?",
             (reference_iso,),
         )
-        self.conn.commit()
         return int(cur.rowcount or 0)
 
     def ingest_proposals(
@@ -373,7 +406,7 @@ class MemoryService(BaseService):
         proposals: Iterable[MemoryProposal],
         *,
         actor: str = "detector",
-    ) -> list[MemoryRecord]:
+    ) -> IngestProposalsReport:
         """Ingest detector proposals with dedupe, merge, and auto-promote.
 
         For each proposal, the most recent row for ``(memory_type, scope, subject)``
@@ -408,6 +441,7 @@ class MemoryService(BaseService):
         """
         _validate_actor(actor)
         out: list[MemoryRecord] = []
+        failures: list[MemoryProposalFailure] = []
         for proposal in proposals:
             row = self.conn.execute(
                 """
@@ -428,7 +462,7 @@ class MemoryService(BaseService):
                 validated_payload = validate_memory_payload(
                     proposal.memory_type, dict(proposal.payload)
                 )
-            except InvalidInputError:
+            except InvalidInputError as exc:
                 logger.warning(
                     "skipping memory proposal with invalid payload: memory_type=%r "
                     "scope=%r subject=%r source=%r",
@@ -436,6 +470,14 @@ class MemoryService(BaseService):
                     proposal.scope,
                     proposal.subject,
                     proposal.source,
+                )
+                failures.append(
+                    MemoryProposalFailure(
+                        memory_type=proposal.memory_type,
+                        scope=proposal.scope,
+                        subject=proposal.subject,
+                        reason=str(exc),
+                    )
                 )
                 continue
 
@@ -478,6 +520,16 @@ class MemoryService(BaseService):
                     new_status = "active"
                     promoted = True
                 payload_json = json.dumps(merged, sort_keys=True)
+                stored_payload_json = json.dumps(prior_payload, sort_keys=True)
+                if (
+                    payload_json == stored_payload_json
+                    and new_confidence == float(row["confidence"])
+                    and new_status == prior_status
+                    and proposal.reason == str(row["reason"])
+                ):
+                    self.conn.commit()
+                    out.append(self.get_memory(int(row["id"])))
+                    continue
                 expected_status = prior_status
                 cur = self.conn.execute(
                     """
@@ -517,7 +569,7 @@ class MemoryService(BaseService):
                     self.conn.rollback()
                 raise
             out.append(self.get_memory(int(row["id"])))
-        return out
+        return IngestProposalsReport(succeeded=out, failures=failures)
 
     def _insert_memory_and_events(
         self,

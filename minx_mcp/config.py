@@ -22,6 +22,18 @@ def _parse_http_port_env() -> int:
         ) from exc
 
 
+def _parse_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value")
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -32,6 +44,7 @@ class Settings:
     http_host: str
     http_port: int
     default_transport: str
+    vault_scan_on_snapshot: bool
 
 
 def get_settings() -> Settings:
@@ -46,4 +59,5 @@ def get_settings() -> Settings:
         http_host=os.environ.get("MINX_HTTP_HOST", "127.0.0.1"),
         http_port=_parse_http_port_env(),
         default_transport=os.environ.get("MINX_DEFAULT_TRANSPORT", "stdio"),
+        vault_scan_on_snapshot=_parse_bool_env("MINX_VAULT_SCAN_ON_SNAPSHOT", False),
     )

@@ -44,7 +44,7 @@ def _apply_rule(txn: dict[str, object], rule: Rule) -> dict[str, object]:
         return txn
 
     if rule.kind == "categorize_merchant":
-        if match_key and match_key in merchant_key:
+        if match_key and match_key in merchant_key and txn.get("category_name") is None:
             txn["category_name"] = rule.value
         return txn
 

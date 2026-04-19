@@ -37,6 +37,21 @@ def test_job_status_transitions_are_persisted(tmp_path):
     assert stored["result"]["inserted"] == 3
 
 
+def test_row_to_job_returns_error_payload_on_corrupt_result_json(tmp_path, caplog):
+    conn = get_connection(tmp_path / "minx.db")
+    job = submit_job(conn, "finance_import", "test", "/tmp/a.csv", "corrupt-result")
+    conn.execute(
+        "UPDATE jobs SET result_json = ? WHERE id = ?",
+        ("{bad json", job["id"]),
+    )
+    conn.commit()
+
+    stored = get_job(conn, job["id"])
+
+    assert stored["result"] == {"error": "corrupt_result_json"}
+    assert str(job["id"]) in caplog.text
+
+
 def test_stuck_job_recovery_records_single_failure_event(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
 

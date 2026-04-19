@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 
 import pytest
@@ -26,6 +27,27 @@ class _FakeProcess:
         del timeout
         self.waited = True
         return self.returncode or 0
+
+
+class _HungTerminateProcess(_FakeProcess):
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.killed = False
+        self.wait_calls = 0
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        self.wait_calls += 1
+        if self.wait_calls == 1:
+            raise subprocess.TimeoutExpired("fake", 5)
+        return self.returncode or -9
 
 
 def test_launcher_builds_distinct_http_commands_for_all_servers() -> None:
@@ -126,3 +148,13 @@ def test_launcher_nonzero_child_exit_terminates_peers(monkeypatch) -> None:
     assert exit_code == 1
     assert peer.terminated is True
     assert peer.waited is True
+
+
+def test_terminate_all_escalates_to_kill_on_timeout() -> None:
+    process = _HungTerminateProcess()
+
+    launcher._terminate_all([process])
+
+    assert process.terminated is True
+    assert process.killed is True
+    assert process.wait_calls == 2

@@ -171,6 +171,24 @@ def test_emit_event_returns_none_and_logs_on_payload_validation_failure(tmp_path
     assert "finance.report_generated" in caplog.text
 
 
+def test_emit_event_strict_re_raises_payload_validation_failure(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+
+    with pytest.raises(Exception, match="Input should be"):
+        emit_event(
+            conn,
+            event_type="finance.report_generated",
+            domain="finance",
+            occurred_at="2026-01-15T18:30:00Z",
+            entity_ref="report-1",
+            source="finance.service",
+            payload=_report_payload(report_type="daily"),
+            strict=True,
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+
+
 def test_emit_event_returns_none_and_logs_on_unexpected_insert_failure(tmp_path, caplog):
     conn = get_connection(tmp_path / "minx.db")
 

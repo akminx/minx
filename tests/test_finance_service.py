@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,57 @@ def test_apply_category_rules_uses_normalized_merchant_matching(tmp_path):
     tx = service.sensitive_finance_query(limit=1)["transactions"][0]
     assert tx["merchant"] == "Joe's Cafe"
     assert tx["category_name"] == "Dining Out"
+
+
+def test_apply_category_rules_respects_priority_ordering(tmp_path):
+    source = tmp_path / "free checking transactions.csv"
+    source.write_text(
+        "Date,Description,Transaction Type,Amount\n2026-03-02,H-E-B Cafe,Withdrawal,-45.20\n"
+    )
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    service.finance_import(str(source), account_name="DCU")
+    groceries_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    dining_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Dining Out'"
+    ).fetchone()["id"]
+    service.conn.executemany(
+        """
+        INSERT INTO finance_category_rules (category_id, match_kind, pattern, priority)
+        VALUES (?, 'merchant_contains', ?, ?)
+        """,
+        [
+            (dining_id, "H-E-B", 100),
+            (groceries_id, "H-E-B", 5),
+        ],
+    )
+    service.conn.commit()
+
+    service.apply_category_rules()
+
+    tx = service.sensitive_finance_query(limit=1)["transactions"][0]
+    assert tx["category_name"] == "Groceries"
+
+
+def test_apply_category_rules_warns_on_unhandled_match_kind(tmp_path, caplog):
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    groceries_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    service.conn.execute(
+        """
+        INSERT INTO finance_category_rules (category_id, match_kind, pattern, priority)
+        VALUES (?, 'description_contains', 'H-E-B', 10)
+        """,
+        (groceries_id,),
+    )
+    service.conn.commit()
+
+    with caplog.at_level(logging.WARNING):
+        service.apply_category_rules()
+
+    assert "description_contains" in caplog.text
 
 
 def test_safe_summary_and_sensitive_query_are_separate(tmp_path):

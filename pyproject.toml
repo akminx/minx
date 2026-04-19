@@ -37,6 +37,8 @@ include = ["minx_mcp*"]
 "minx_mcp.schema.migrations" = ["*.sql"]
 "minx_mcp.finance.templates" = ["*.md"]
 "minx_mcp.meals.templates" = ["*.md"]
+"minx_mcp.core.templates" = []
+"minx_mcp.core.templates.wiki" = ["*.md"]
 
 [tool.mypy]
 python_version = "3.12"

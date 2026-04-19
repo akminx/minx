@@ -28,8 +28,8 @@ def _redact_sensitive_substrings(text: str) -> str:
     def _kv_sub(m: re.Match[str]) -> str:
         return f"{m.group('prefix')}[REDACTED]"
 
-    out = _SECRET_KV_RE.sub(_kv_sub, text)
-    out = _BEARER_TOKEN_RE.sub(_kv_sub, out)
+    out = _BEARER_TOKEN_RE.sub(_kv_sub, text)
+    out = _SECRET_KV_RE.sub(_kv_sub, out)
     return out
 
 
