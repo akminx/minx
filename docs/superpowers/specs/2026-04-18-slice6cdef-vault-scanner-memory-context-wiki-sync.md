@@ -1,12 +1,12 @@
 # Slice 6c-6f: Vault Scanner, Memory Context, Wiki Primitives, Vault Reconciliation
 
-**Date:** 2026-04-18  
-**Status:** Revised after Slice 6c implementation, review, and 6d-6f usability pass  
-**Depends on:** Slice 6a-6b shipped: durable memory schema/tools, memory events, snapshot archives  
-**Related docs:**  
-- `docs/superpowers/specs/2026-04-15-slice6-durable-memory.md`  
-- `docs/superpowers/specs/2026-04-17-slice6-memory-implementation-design.md`  
-- `docs/superpowers/plans/2026-04-17-slice6c-vault-scanner.md`  
+**Date:** 2026-04-18
+**Status:** Revised after Slice 6c implementation, review, and 6d-6f usability pass
+**Depends on:** Slice 6a-6b shipped: durable memory schema/tools, memory events, snapshot archives
+**Related docs:**
+- `docs/superpowers/specs/2026-04-15-slice6-durable-memory.md`
+- `docs/superpowers/specs/2026-04-17-slice6-memory-implementation-design.md`
+- `docs/superpowers/plans/2026-04-17-slice6c-vault-scanner.md`
 
 ## 1) Goal
 
@@ -88,6 +88,8 @@ Core does not infer structured payloads from body prose in 6f. Hermes may read t
 - Reserved keys are `type`, `scope`, `domain`, `memory_key`, `memory_type`, `subject`, `memory_id`, `updated`, `sync_base_updated_at`, `payload_json`, and `value_json`.
 - `value_json` is a temporary legacy alias for `payload_json`.
 
+Frontmatter parsing note: the custom frontmatter parser in `VaultReader` returns JSON-object values (e.g. `payload_json: {"a": "b"}`) as raw strings, not dicts. Scanner/reconciler code must `json.loads` them explicitly before validating as a payload; `_parse_memory_payload` already handles both dict and string forms. Consumers that read `vault_index.metadata_json` should be aware that `payload_json` within it is stored as an embedded JSON string rather than a nested object — this is cosmetic but worth knowing when querying the index.
+
 ## 5) Slice 6c: Vault Scanner
 
 ### 5.1 Schema
@@ -138,7 +140,9 @@ class VaultScanner:
 
 The scanner:
 
-1. Walks `Minx/` with `VaultReader.iter_documents("Minx")`. It must not bypass `VaultReader`.
+1. Walks `Minx/` in two phases, both routed through `VaultReader` (no direct filesystem access):
+   - Phase 1a: enumerate markdown paths via `VaultReader.iter_markdown_paths("Minx")`.
+   - Phase 1b: read each path via `VaultReader.read_document`. A per-file read failure (invalid UTF-8, malformed frontmatter, etc.) emits a warning and skips that file but does **not** mark the walk incomplete. Only a failure from path enumeration itself fails the walk and suppresses orphan cleanup.
 2. Indexes every readable markdown note into `vault_index`.
 3. Uses `content_hash` as the fast path. Hash match updates only `last_scanned_at`.
 4. Upserts changed/new rows with `vault_path`, `note_type`, `scope`, `content_hash`, `metadata_json`, and optional `memory_id`.
@@ -154,7 +158,7 @@ The scanner:
     - candidate path: `confirmed`, `payload_updated`, `vault_synced`
     - active update path: `payload_updated`, `vault_synced`
 13. Emits orphan `vault_synced` only when the orphaned index row references an active memory whose `source='vault_sync'`.
-14. Deletes orphan `vault_index` rows only after a complete vault walk. If the walk fails, orphan cleanup is skipped to avoid wiping the index from one bad note.
+14. Deletes orphan `vault_index` rows only after a complete vault walk. "Complete" means path enumeration succeeded; per-file read failures warn and skip without blocking orphan cleanup. If path enumeration fails, orphan cleanup is skipped to avoid wiping the index from a transient filesystem error.
 15. Runs in one write transaction; `dry_run=True` rolls back after computing the report.
 
 ### 5.4 MCP Surface
@@ -334,7 +338,7 @@ Resolution order:
 
 1. If `memory_id` is present, load that row. It must match `memory_key`, `scope`, `memory_type`, and `subject`.
 2. If `memory_id` is absent, resolve by `memory_key` to a live `(scope, memory_type, subject)` row.
-3. If no live row exists, check the latest row for the same `(scope, memory_type, subject)`.
+3. If no live row exists, check the latest row for the same `(scope, memory_type, subject)`. "Latest" is defined as `ORDER BY updated_at DESC, id DESC LIMIT 1` — `id DESC` is the deterministic tie-breaker when two rows share an `updated_at` at the DB's second granularity.
 4. If the latest row is rejected or expired, warn with `kind='terminal_state'` and skip. Do not recreate a fresh live row for a terminal memory just because the note has no `memory_id`.
 5. If no row exists at all, create a new active memory only when the note has valid identity and valid payload.
 6. If `memory_id` points to no row, warn with `kind='missing_memory'` and skip. Do not silently recreate a stale ID.
@@ -344,16 +348,16 @@ Successful resolution repairs `vault_index.memory_id` for that note when needed.
 
 ### 8.3 Conflict Policy
 
-For notes generated from SQLite, 6f requires `sync_base_updated_at`.
+For notes generated from SQLite, 6f requires `sync_base_updated_at`. The policy distinguishes **active-row edits** (destructive: overwriting a live memory payload) from **candidate confirmations** (additive: promoting a detector-proposed memory the user has clearly accepted by templating it into the vault).
 
 Before applying a vault edit:
 
-- If the target DB row is active or candidate and `row.updated_at == sync_base_updated_at` as an exact string comparison, the edit may apply.
-- If `row.updated_at != sync_base_updated_at`, reconciliation must not overwrite SQLite. It reports a `kind='conflict'` warning containing `memory_id`, `memory_key`, `db_updated_at`, and `sync_base_updated_at`.
-- If `sync_base_updated_at` is absent on a note with `memory_id`, reconciliation warns and skips. Hermes can ask the user whether to refresh the note or force an explicit tool update.
-- For vault-authored notes without `memory_id`, conflict policy falls back to `memory_key` plus terminal-state guard.
-- If a note has no `memory_id`, matches an existing live row, and has `sync_base_updated_at`, use the exact-string conflict policy.
-- If a note has no `memory_id`, matches an existing live row, and lacks `sync_base_updated_at`, only apply automatically when the existing row has `source='vault_sync'`. If the existing row has any other source, warn with `kind='conflict'` and skip because the note has no version field proving it was based on the current row.
+- **Active target, `sync_base_updated_at` present:** if `row.updated_at == sync_base_updated_at` as an exact string comparison, the edit may apply. If they differ, reconciliation must not overwrite SQLite. It reports a `kind='conflict'` warning containing `memory_id`, `memory_key`, `db_updated_at`, and `sync_base_updated_at`.
+- **Active target, `sync_base_updated_at` absent on a note with `memory_id`:** reconciliation warns and skips. Hermes can ask the user whether to refresh the note or force an explicit tool update.
+- **Candidate target:** detector-proposed candidates may be materialized into vault notes before they carry a `sync_base_updated_at`, so confirmation is allowed without the version field. If `sync_base_updated_at` is present, it must still match exactly; a mismatch is still a `kind='conflict'`. Candidate confirmations transition the row to active via the §8.5 state policy.
+- **Vault-authored note (no `memory_id`), matches an existing live row with `sync_base_updated_at`:** use the exact-string conflict policy as for active targets.
+- **Vault-authored note (no `memory_id`), matches an existing live row without `sync_base_updated_at`:** only apply automatically when the existing row has `source='vault_sync'`. If the existing row has any other source, warn with `kind='conflict'` and skip because the note has no version field proving it was based on the current row.
+- **Vault-authored note (no `memory_id`), no matching row:** falls through to the `kind='terminal_state'` guard (§8.2) and then to the §8.5 creation path.
 
 This avoids ambiguous file modification timestamps and uses the version field Core can verify.
 

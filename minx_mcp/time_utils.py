@@ -53,7 +53,7 @@ def local_calendar_date_for_utc_timestamp(occurred_at: str, timezone_name: str) 
 def _validate_timezone_name(name: str) -> str:
     try:
         ZoneInfo(name)
-    except ZoneInfoNotFoundError as exc:
+    except (ZoneInfoNotFoundError, ValueError) as exc:
         raise InvalidInputError("Invalid timezone preference") from exc
     return name
 

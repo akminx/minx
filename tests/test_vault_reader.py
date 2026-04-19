@@ -206,6 +206,23 @@ def test_iter_documents_skips_missing_sub_prefix_branch(tmp_path: Path) -> None:
     assert list(reader.iter_documents("Minx/missing")) == []
 
 
+def test_iter_document_paths_yields_sorted_relative_paths(tmp_path: Path) -> None:
+    root = tmp_path / "vault"
+    _write_bytes(root / "Minx" / "z.md", b"z")
+    _write_bytes(root / "Minx" / "a" / "inner.md", b"i")
+    _write_bytes(root / "Minx" / "b.md", b"b")
+    (root / "Minx" / "skip.txt").write_text("t", encoding="utf-8")
+    reader = VaultReader(root, ("Minx",))
+
+    assert list(reader.iter_markdown_paths()) == [
+        "Minx/a/inner.md",
+        "Minx/b.md",
+        "Minx/z.md",
+    ]
+
+    assert list(reader.iter_markdown_paths("Minx/a")) == ["Minx/a/inner.md"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="requires POSIX symlinks")
 def test_vault_reader_rejects_symlink_escape(tmp_path: Path) -> None:
     vault = tmp_path / "vault"

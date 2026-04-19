@@ -25,6 +25,10 @@ _RESERVED_MEMORY_KEYS = {
     "subject",
     "memory_id",
     "updated",
+    "tags",
+    "title",
+    "id",
+    "created",
     "payload_json",
     "value_json",
     "sync_base_updated_at",
@@ -61,9 +65,10 @@ class _MemorySyncResult:
 
     Attributes:
         memory_id: Set when a memory was successfully synced (created or updated).
-            None on ingest error (preserve prior memory_id) or terminal skip (clear memory_id).
+            None when sync failed or skipped.
         clear_memory_id: True when memory_id should be set to NULL in vault_index
-            (terminal state encountered — rejected/expired).  False means preserve existing.
+            because the note no longer identifies a live syncable memory. False
+            means preserve the existing pointer.
     """
 
     memory_id: int | None
@@ -90,7 +95,7 @@ class VaultScanner:
         warnings: list[str] = []
 
         # Phase 1: pure file walk — no DB writes, no transaction held.
-        walk_complete, documents = self._walk_vault(warnings)
+        walk_complete, documents, skipped_paths = self._walk_vault(warnings)
 
         if dry_run:
             # Compute report against a rolled-back transaction so no state persists.
@@ -101,6 +106,7 @@ class VaultScanner:
                 self._conn.execute("SAVEPOINT vault_scan")
             try:
                 self._index_documents(scan_token, documents, counts, warnings)
+                self._touch_skipped_paths(scan_token, skipped_paths)
                 if walk_complete:
                     self._delete_orphans(scan_token, counts, warnings)
             finally:
@@ -118,6 +124,7 @@ class VaultScanner:
                 self._conn.execute("SAVEPOINT vault_scan")
             try:
                 self._index_documents(scan_token, documents, counts, warnings)
+                self._touch_skipped_paths(scan_token, skipped_paths)
                 if walk_complete:
                     self._delete_orphans(scan_token, counts, warnings)
             except Exception:
@@ -161,13 +168,27 @@ class VaultScanner:
     def _walk_vault(
         self,
         warnings: list[str],
-    ) -> tuple[bool, list[VaultDocument]]:
-        """Phase 1: read all vault documents without holding any DB lock."""
+    ) -> tuple[bool, list[VaultDocument], set[str]]:
+        """Phase 1: read all vault documents without holding any DB lock.
+
+        Per-file read errors warn and skip that file but do not fail the walk;
+        only failures enumerating the vault tree itself mark the walk incomplete
+        and suppress orphan cleanup.
+        """
+        documents: list[VaultDocument] = []
         try:
-            return True, list(self._vault_reader.iter_documents(self._scope_prefix))
-        except InvalidInputError as exc:
+            paths = list(self._vault_reader.iter_markdown_paths(self._scope_prefix))
+        except (InvalidInputError, OSError) as exc:
             warnings.append(f"{self._scope_prefix}: vault walk failed: {exc}")
-            return False, []
+            return False, [], set()
+        skipped_paths: set[str] = set()
+        for relative_path in paths:
+            try:
+                documents.append(self._vault_reader.read_document(relative_path))
+            except (InvalidInputError, OSError) as exc:
+                warnings.append(f"{relative_path}: vault walk skipped: {exc}")
+                skipped_paths.add(relative_path)
+        return True, documents, skipped_paths
 
     def _index_documents(
         self,
@@ -180,11 +201,11 @@ class VaultScanner:
         for doc in documents:
             counts.scanned += 1
             prior = self._conn.execute(
-                "SELECT id, content_hash FROM vault_index WHERE vault_path = ?",
+                "SELECT id, content_hash, memory_id FROM vault_index WHERE vault_path = ?",
                 (doc.relative_path,),
             ).fetchone()
             note_type = _optional_str(doc.frontmatter.get("type"))
-            scope = _optional_str(doc.frontmatter.get("domain") or doc.frontmatter.get("scope"))
+            scope = _parse_note_scope(doc.frontmatter)
             metadata_json = json.dumps(doc.frontmatter, sort_keys=True)
             memory_id: int | None = None
             changed = prior is None or str(prior["content_hash"]) != doc.content_hash
@@ -197,11 +218,43 @@ class VaultScanner:
                 if memory_id is not None:
                     counts.memory_syncs += 1
             elif prior is not None:
-                linked = self._conn.execute(
-                    "SELECT memory_id FROM vault_index WHERE vault_path = ?",
-                    (doc.relative_path,),
-                ).fetchone()
-                memory_id = int(linked["memory_id"]) if linked and linked["memory_id"] is not None else None
+                memory_id = int(prior["memory_id"]) if prior["memory_id"] is not None else None
+                if memory_id is not None and note_type != "minx-memory":
+                    warnings.append(
+                        f"{doc.relative_path}: note type is not minx-memory; "
+                        "cleared stale vault_index pointer"
+                    )
+                    clear_memory_id = True
+                    if not changed:
+                        counts.updated += 1
+                        self._conn.execute(
+                            """
+                            UPDATE vault_index
+                            SET last_scanned_at = ?,
+                                memory_id = NULL
+                            WHERE vault_path = ?
+                            """,
+                            (scan_token, doc.relative_path),
+                        )
+                        continue
+                elif not changed and memory_id is not None:
+                    terminal_status = _terminal_memory_status(self._conn, memory_id)
+                    if terminal_status is not None:
+                        warnings.append(
+                            f"{doc.relative_path}: terminal memory {memory_id} "
+                            f"has status={terminal_status}; cleared stale vault_index pointer"
+                        )
+                        counts.updated += 1
+                        self._conn.execute(
+                            """
+                            UPDATE vault_index
+                            SET last_scanned_at = ?,
+                                memory_id = NULL
+                            WHERE vault_path = ?
+                            """,
+                            (scan_token, doc.relative_path),
+                        )
+                        continue
 
             if prior is None:
                 counts.indexed += 1
@@ -225,7 +278,7 @@ class VaultScanner:
             elif changed:
                 counts.updated += 1
                 if clear_memory_id:
-                    # Terminal memory: explicitly null out the stale pointer.
+                    # The current note no longer identifies a live syncable memory.
                     self._conn.execute(
                         """
                         UPDATE vault_index
@@ -313,6 +366,14 @@ class VaultScanner:
                     )
         self._conn.execute("DELETE FROM vault_index WHERE last_scanned_at != ?", (scan_token,))
 
+    def _touch_skipped_paths(self, scan_token: str, skipped_paths: set[str]) -> None:
+        """Prevent known-existing but unreadable files from being orphaned."""
+        for relative_path in sorted(skipped_paths):
+            self._conn.execute(
+                "UPDATE vault_index SET last_scanned_at = ? WHERE vault_path = ?",
+                (scan_token, relative_path),
+            )
+
     def _sync_memory_note(self, doc: VaultDocument, warnings: list[str]) -> _MemorySyncResult:
         try:
             scope, memory_type, subject = _parse_memory_identity(doc.frontmatter)
@@ -320,8 +381,9 @@ class VaultScanner:
             payload = validate_memory_payload(memory_type, payload)
         except InvalidInputError as exc:
             warnings.append(f"{doc.relative_path}: invalid minx-memory frontmatter: {exc}")
-            # Ingest error: preserve the existing memory_id pointer in vault_index.
-            return _MemorySyncResult(memory_id=None, clear_memory_id=False)
+            # Current file no longer satisfies the sync contract. Do not leave
+            # vault_index pointing at a memory that this note no longer identifies.
+            return _MemorySyncResult(memory_id=None, clear_memory_id=True)
 
         row = self._conn.execute(
             """
@@ -351,7 +413,7 @@ class VaultScanner:
                 """
                 UPDATE memories
                 SET status = 'active',
-                    confidence = MAX(confidence, 1.0),
+                    confidence = 1.0,
                     payload_json = ?,
                     source = 'vault_sync',
                     updated_at = datetime('now'),
@@ -365,7 +427,7 @@ class VaultScanner:
                     f"{doc.relative_path}: concurrent status change on memory_id={memory_id}"
                     f" (expected status=candidate); skipped"
                 )
-                return _MemorySyncResult(memory_id=None, clear_memory_id=False)
+                return _MemorySyncResult(memory_id=None, clear_memory_id=True)
             self._insert_memory_event(memory_id, "confirmed", {"reason": "vault note exists"})
             self._insert_memory_event(
                 memory_id,
@@ -394,7 +456,7 @@ class VaultScanner:
                 f"{doc.relative_path}: concurrent status change on memory_id={memory_id}"
                 f" (expected status=active); skipped"
             )
-            return _MemorySyncResult(memory_id=None, clear_memory_id=False)
+            return _MemorySyncResult(memory_id=None, clear_memory_id=True)
         self._insert_memory_event(memory_id, "payload_updated", {"payload": payload})
         self._insert_memory_event(memory_id, "vault_synced", _vault_event_payload(doc, "update"))
         return _MemorySyncResult(memory_id=memory_id)
@@ -446,7 +508,7 @@ class VaultScanner:
 
 
 def _parse_memory_identity(frontmatter: dict[str, object]) -> tuple[str, str, str]:
-    scope = _required_str(frontmatter, "domain", fallback_key="scope")
+    scope = _parse_note_scope(frontmatter, strict_alias_match=True, required=True)
     memory_type = _required_str(frontmatter, "memory_type")
     memory_key = _required_str(frontmatter, "memory_key")
     parts = memory_key.split(".", 2)
@@ -454,7 +516,7 @@ def _parse_memory_identity(frontmatter: dict[str, object]) -> tuple[str, str, st
         raise InvalidInputError("memory_key must have format {scope}.{memory_type}.{subject}")
     key_scope, key_memory_type, key_subject = (p.strip() for p in parts)
     if key_scope != scope:
-        raise InvalidInputError("memory_key scope does not match domain")
+        raise InvalidInputError("memory_key scope does not match note scope")
     if key_memory_type != memory_type:
         raise InvalidInputError("memory_key memory_type does not match memory_type")
     subject = _optional_str(frontmatter.get("subject"))
@@ -500,6 +562,38 @@ def _optional_str(value: Any) -> str | None:
     if value is None:
         return None
     return value if isinstance(value, str) else str(value)
+
+
+def _parse_note_scope(
+    frontmatter: dict[str, object],
+    *,
+    strict_alias_match: bool = False,
+    required: bool = False,
+) -> str | None:
+    scope = _optional_str(frontmatter.get("scope"))
+    domain = _optional_str(frontmatter.get("domain"))
+    scope_text = scope.strip() if scope is not None else ""
+    domain_text = domain.strip() if domain is not None else ""
+
+    if scope_text:
+        if strict_alias_match and domain_text and domain_text != scope_text:
+            raise InvalidInputError("scope and domain must match")
+        return scope_text
+    if domain_text:
+        return domain_text
+    if not required:
+        return None
+    raise InvalidInputError("scope is required")
+
+
+def _terminal_memory_status(conn: Connection, memory_id: int) -> str | None:
+    row = conn.execute("SELECT status FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    if row is None:
+        return None
+    status = str(row["status"])
+    if status in {"rejected", "expired"}:
+        return status
+    return None
 
 
 def _vault_event_payload(doc: VaultDocument, change: str) -> dict[str, object]:

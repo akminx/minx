@@ -1,8 +1,8 @@
 # Slice 6 Durable Memory: Implementation Design
 
-**Date:** 2026-04-17  
-**Status:** Approved for implementation planning  
-**Depends on:** Slices 1-4 foundations, consolidation/code-quality hardening  
+**Date:** 2026-04-17
+**Status:** Approved for implementation planning
+**Depends on:** Slices 1-4 foundations, consolidation/code-quality hardening
 **Supersedes:** Broad Slice 6 design details in `2026-04-15-slice6-durable-memory.md` where this document is more specific
 
 ## 1) Goal

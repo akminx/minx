@@ -74,11 +74,10 @@ class VaultReader:
             content_hash=content_hash,
         )
 
-    def iter_documents(self, sub_prefix: str = "") -> Iterator[VaultDocument]:
+    def iter_markdown_paths(self, sub_prefix: str = "") -> Iterator[str]:
         vault = _vault_root_physical(self._vault_root)
-        bases = _iter_walk_bases(self._vault_root, self._allowed_prefixes, sub_prefix)
         md_paths: list[Path] = []
-        for base in bases:
+        for base in _iter_walk_bases(self._vault_root, self._allowed_prefixes, sub_prefix):
             if not base.exists():
                 continue
             for path in base.rglob("*.md"):
@@ -87,11 +86,14 @@ class VaultReader:
                 physical = path.resolve()
                 if not physical.is_relative_to(vault):
                     raise InvalidInputError("vault path resolves outside the vault root")
-                md_paths.append(path)
-        md_paths.sort(key=lambda p: p.resolve().relative_to(vault).as_posix())
+                md_paths.append(physical)
+        md_paths.sort(key=lambda p: p.relative_to(vault).as_posix())
         for path in md_paths:
-            rel = path.resolve().relative_to(vault).as_posix()
-            yield self.read_document(rel)
+            yield path.relative_to(vault).as_posix()
+
+    def iter_documents(self, sub_prefix: str = "") -> Iterator[VaultDocument]:
+        for relative_path in self.iter_markdown_paths(sub_prefix):
+            yield self.read_document(relative_path)
 
 
 def _vault_root_physical(vault_root: Path) -> Path:

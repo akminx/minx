@@ -38,3 +38,8 @@ def test_resolve_timezone_name_rejects_bogus_iana(tmp_path) -> None:
 
     with pytest.raises(InvalidInputError, match="Invalid timezone"):
         resolve_timezone_name(conn)
+
+
+def test_local_calendar_date_rejects_empty_timezone_name() -> None:
+    with pytest.raises(InvalidInputError, match="Invalid timezone"):
+        local_calendar_date_for_utc_timestamp("2026-01-15T05:00:00Z", "")
