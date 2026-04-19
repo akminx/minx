@@ -36,6 +36,7 @@ from minx_mcp.core.models import (
 )
 from minx_mcp.core.snapshot import build_daily_snapshot
 from minx_mcp.core.trajectory import get_goal_trajectory
+from minx_mcp.core.vault_reconciler import VaultReconciler
 from minx_mcp.core.vault_scanner import VaultScanner
 from minx_mcp.db import scoped_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
@@ -226,6 +227,16 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
             tool_name="vault_replace_section",
         )
 
+    @mcp.tool(name="vault_replace_frontmatter")
+    def vault_replace_frontmatter(
+        relative_path: str,
+        frontmatter: dict[str, object],
+    ) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _vault_replace_frontmatter(config, relative_path, frontmatter),
+            tool_name="vault_replace_frontmatter",
+        )
+
     @mcp.tool(name="vault_scan")
     def vault_scan(dry_run: bool = False) -> ToolResponse:
         return wrap_tool_call(
@@ -233,8 +244,15 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
             tool_name="vault_scan",
         )
 
+    @mcp.tool(name="vault_reconcile_memories")
+    def vault_reconcile_memories(dry_run: bool = False) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _vault_reconcile_memories(config, dry_run),
+            tool_name="vault_reconcile_memories",
+        )
+
     _WIKI_TEMPLATE_DIR = Path(__file__).parent / "templates" / "wiki"
-    _WIKI_TEMPLATE_NAMES = ["entity", "pattern", "review", "goal"]
+    _WIKI_TEMPLATE_NAMES = ["entity", "pattern", "review", "goal", "memory"]
 
     @mcp.resource("wiki-templates://list")
     def wiki_templates_list() -> str:
@@ -868,6 +886,18 @@ def _vault_replace_section(
     return {"path": str(resolved)}
 
 
+def _vault_replace_frontmatter(
+    config: CoreServiceConfig,
+    relative_path: str,
+    frontmatter: dict[str, object],
+) -> dict[str, object]:
+    if not isinstance(frontmatter, dict):
+        raise InvalidInputError("frontmatter must be an object")
+    writer = VaultWriter(config.vault_path, ("Minx",))
+    resolved = writer.replace_frontmatter(relative_path, frontmatter)
+    return {"path": str(resolved)}
+
+
 def _vault_scan(config: CoreServiceConfig, dry_run: bool = False) -> dict[str, object]:
     with scoped_connection(Path(config.db_path)) as conn:
         log_sensitive_access(
@@ -884,3 +914,23 @@ def _vault_scan(config: CoreServiceConfig, dry_run: bool = False) -> dict[str, o
             scope_prefix="Minx",
         )
         return {"report": scanner.scan(dry_run=dry_run).as_dict()}
+
+
+def _vault_reconcile_memories(
+    config: CoreServiceConfig,
+    dry_run: bool = False,
+) -> dict[str, object]:
+    with scoped_connection(Path(config.db_path)) as conn:
+        log_sensitive_access(
+            conn,
+            "vault_reconcile_memories",
+            None,
+            f"vault_reconcile_memories dry_run={dry_run}",
+        )
+        reconciler = VaultReconciler(
+            conn,
+            VaultReader(config.vault_path, ("Minx",)),
+            VaultWriter(config.vault_path, ("Minx",)),
+            scope_prefix="Minx",
+        )
+        return {"report": reconciler.reconcile(dry_run=dry_run).as_dict()}

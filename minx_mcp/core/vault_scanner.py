@@ -11,28 +11,11 @@ from typing import Any
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.core.memory_payloads import validate_memory_payload
 from minx_mcp.core.memory_service import MemoryService
+from minx_mcp.core.vault_memory_frontmatter import RESERVED_MEMORY_KEYS
 from minx_mcp.time_utils import utc_now_isoformat
 from minx_mcp.vault_reader import VaultDocument, VaultReader
 
 logger = logging.getLogger(__name__)
-
-_RESERVED_MEMORY_KEYS = {
-    "type",
-    "domain",
-    "scope",
-    "memory_key",
-    "memory_type",
-    "subject",
-    "memory_id",
-    "updated",
-    "tags",
-    "title",
-    "id",
-    "created",
-    "payload_json",
-    "value_json",
-    "sync_base_updated_at",
-}
 
 
 @dataclass(frozen=True)
@@ -541,7 +524,7 @@ def _parse_memory_payload(frontmatter: dict[str, object]) -> dict[str, object]:
                 raise InvalidInputError("payload_json must be a JSON object")
             return dict(parsed)
         raise InvalidInputError("payload_json must be a JSON object or JSON string")
-    return {str(k): v for k, v in frontmatter.items() if k not in _RESERVED_MEMORY_KEYS}
+    return {str(k): v for k, v in frontmatter.items() if k not in RESERVED_MEMORY_KEYS}
 
 
 def _required_str(

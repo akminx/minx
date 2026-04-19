@@ -11,10 +11,12 @@ lock file and ``fcntl.flock`` so updates serialize across processes.
 from __future__ import annotations
 
 import fcntl
+import json
 import time
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import Any
 
 from minx_mcp.contracts import ConflictError, InvalidInputError
 
@@ -52,6 +54,18 @@ class VaultWriter:
         self._locked_write(path, transform)
         return path
 
+    def replace_frontmatter(self, relative_path: str, frontmatter: dict[str, object]) -> Path:
+        path = self._resolve(relative_path)
+
+        def transform(text: str) -> str:
+            newline = _detect_newline(text)
+            frontmatter_text = _serialize_frontmatter(frontmatter, newline=newline)
+            body = _body_after_frontmatter(text)
+            return f"{frontmatter_text}{body}"
+
+        self._locked_write(path, transform)
+        return path
+
     def _lock_path(self, path: Path) -> Path:
         return path.parent / f".{path.name}.lock"
 
@@ -69,7 +83,11 @@ class VaultWriter:
                         raise ConflictError("vault file is locked by another writer") from None
                     time.sleep(_LOCK_POLL_SLEEP_S)
             try:
-                current_text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
+                if path.exists():
+                    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                        current_text = handle.read()
+                else:
+                    current_text = ""
                 new_text = transform(current_text)
                 self._atomic_write_text(path, new_text)
             finally:
@@ -84,6 +102,7 @@ class VaultWriter:
                 dir=path.parent,
                 delete=False,
                 encoding="utf-8",
+                newline="",
             ) as handle:
                 handle.write(content)
                 temp_path = Path(handle.name)
@@ -140,3 +159,76 @@ class VaultWriter:
         except ValueError as exc:
             raise InvalidInputError("outside allowed vault roots") from exc
         return resolved
+
+
+def _body_after_frontmatter(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return text
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            return "".join(lines[index + 1 :])
+    return text
+
+
+def _serialize_frontmatter(frontmatter: dict[str, object], *, newline: str = "\n") -> str:
+    lines = ["---"]
+    for key, value in frontmatter.items():
+        if not isinstance(key, str) or not key:
+            raise InvalidInputError("frontmatter keys must be non-empty strings")
+        if "\n" in key or ":" in key:
+            raise InvalidInputError("frontmatter keys must be simple YAML keys")
+        lines.append(f"{key}: {_serialize_yaml_scalar(value)}")
+    lines.append("---")
+    return newline.join(lines) + newline
+
+
+def _detect_newline(text: str) -> str:
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def _serialize_yaml_scalar(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        dumped = json.dumps(value, sort_keys=True).replace("'", "''")
+        return f"'{dumped}'"
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    text = str(value)
+    if _needs_double_quotes(text):
+        return '"' + _escape_double_quoted_string(text) + '"'
+    return text
+
+
+def _escape_double_quoted_string(text: str) -> str:
+    escaped: list[str] = []
+    for ch in text:
+        if ch == "\\":
+            escaped.append("\\\\")
+        elif ch == '"':
+            escaped.append('\\"')
+        elif ch == "\n":
+            escaped.append("\\n")
+        elif ch == "\r":
+            escaped.append("\\r")
+        elif ch == "\t":
+            escaped.append("\\t")
+        elif ord(ch) < 0x20:
+            raise InvalidInputError("frontmatter string values cannot contain control characters")
+        else:
+            escaped.append(ch)
+    return "".join(escaped)
+
+
+def _needs_double_quotes(text: str) -> bool:
+    if text == "":
+        return True
+    if text != text.strip():
+        return True
+    if any(ch in text for ch in "\n\r\t:#"):
+        return True
+    lowered = text.lower()
+    return lowered in {"true", "false", "null"} or text in {"---", "..."}

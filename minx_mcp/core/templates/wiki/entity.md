@@ -9,14 +9,14 @@ wiki_type: entity
 
 <!-- Brief description of this entity -->
 
-## Tags
-
-<!-- Relevant tags or categories -->
-
-## Notes
+## Human Editable
 
 <!-- User observations and context -->
 
 ## Recent Activity
 
 <!-- Auto-updated by Minx -->
+
+## System Metadata
+
+Frontmatter is Minx sync metadata. Add everyday notes in Human Editable.

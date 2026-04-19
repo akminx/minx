@@ -4,6 +4,7 @@ from pathlib import Path
 
 from minx_mcp.core.server import create_core_server
 from minx_mcp.db import get_connection
+from minx_mcp.vault_reader import VaultReader
 from tests.helpers import MinxTestConfig, get_tool
 
 # ---------------------------------------------------------------------------
@@ -107,3 +108,119 @@ def test_vault_replace_section_rejects_non_minx_root(tmp_path: Path) -> None:
 
     assert result["success"] is False
     assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_vault_replace_frontmatter_replaces_existing_block_and_preserves_body(
+    tmp_path: Path,
+) -> None:
+    server = _make_server(tmp_path)
+    tool = get_tool(server, "vault_replace_frontmatter").fn
+
+    vault = tmp_path / "vault"
+    note = vault / "Minx" / "Memory" / "timezone.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text(
+        "---\n"
+        "type: old\n"
+        "---\n"
+        "# Timezone\n\n"
+        "## Human Editable\n\n"
+        "Keep this prose exactly.\n",
+        encoding="utf-8",
+    )
+
+    result = tool(
+        "Minx/Memory/timezone.md",
+        {
+            "type": "minx-memory",
+            "scope": "core",
+            "memory_key": "core.preference.timezone",
+            "memory_type": "preference",
+            "subject": "timezone",
+            "memory_id": 12,
+            "payload_json": {"category": "timezone", "value": "America/Chicago"},
+            "tags": ["minx", "memory"],
+        },
+    )
+
+    assert result["success"] is True
+    assert note.read_text(encoding="utf-8") == (
+        "---\n"
+        "type: minx-memory\n"
+        "scope: core\n"
+        "memory_key: core.preference.timezone\n"
+        "memory_type: preference\n"
+        "subject: timezone\n"
+        "memory_id: 12\n"
+        "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        "tags: '[\"minx\", \"memory\"]'\n"
+        "---\n"
+        "# Timezone\n\n"
+        "## Human Editable\n\n"
+        "Keep this prose exactly.\n"
+    )
+
+
+def test_vault_replace_frontmatter_prepends_when_missing(tmp_path: Path) -> None:
+    server = _make_server(tmp_path)
+    tool = get_tool(server, "vault_replace_frontmatter").fn
+
+    vault = tmp_path / "vault"
+    note = vault / "Minx" / "plain.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("# Plain\n\nBody stays.\n", encoding="utf-8")
+
+    result = tool("Minx/plain.md", {"type": "minx-wiki", "wiki_type": "entity"})
+
+    assert result["success"] is True
+    assert note.read_text(encoding="utf-8") == (
+        "---\n"
+        "type: minx-wiki\n"
+        "wiki_type: entity\n"
+        "---\n"
+        "# Plain\n\n"
+        "Body stays.\n"
+    )
+
+
+def test_vault_replace_frontmatter_roundtrips_apostrophes_in_json_payload(
+    tmp_path: Path,
+) -> None:
+    server = _make_server(tmp_path)
+    tool = get_tool(server, "vault_replace_frontmatter").fn
+    note = tmp_path / "vault" / "Minx" / "Memory" / "phone.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("# Phone\n", encoding="utf-8")
+
+    result = tool(
+        "Minx/Memory/phone.md",
+        {
+            "type": "minx-memory",
+            "payload_json": {"category": "preference", "value": "Akash's phone"},
+        },
+    )
+
+    assert result["success"] is True
+    doc = VaultReader(tmp_path / "vault", ("Minx",)).read_document("Minx/Memory/phone.md")
+    assert doc.frontmatter["payload_json"] == (
+        '{"category": "preference", "value": "Akash\'s phone"}'
+    )
+
+
+def test_vault_replace_frontmatter_roundtrips_escaped_multiline_strings(
+    tmp_path: Path,
+) -> None:
+    server = _make_server(tmp_path)
+    tool = get_tool(server, "vault_replace_frontmatter").fn
+    note = tmp_path / "vault" / "Minx" / "Memory" / "subject.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("# Subject\n", encoding="utf-8")
+
+    result = tool(
+        "Minx/Memory/subject.md",
+        {"type": "minx-memory", "subject": "first line\nsecond\tline\rthird"},
+    )
+
+    assert result["success"] is True
+    doc = VaultReader(tmp_path / "vault", ("Minx",)).read_document("Minx/Memory/subject.md")
+    assert doc.frontmatter["subject"] == "first line\nsecond\tline\rthird"

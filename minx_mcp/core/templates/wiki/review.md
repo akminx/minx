@@ -17,6 +17,10 @@ wiki_type: review
 
 <!-- Auto-updated by Minx -->
 
-## Notes
+## Human Editable
 
 <!-- User reflections -->
+
+## System Metadata
+
+Frontmatter is Minx sync metadata. Add everyday notes in Human Editable.

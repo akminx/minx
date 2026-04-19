@@ -17,6 +17,10 @@ wiki_type: goal
 
 <!-- Key checkpoints -->
 
-## Notes
+## Human Editable
 
 <!-- User context -->
+
+## System Metadata
+
+Frontmatter is Minx sync metadata. Add everyday notes in Human Editable.

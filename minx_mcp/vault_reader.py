@@ -271,7 +271,16 @@ def _parse_double_quoted(s: str, file_path: Path, lineno: int) -> str:
         if ch == "\\":
             if i + 1 >= len(s) - 1:
                 raise InvalidInputError(f"Dangling escape in {file_path} line {lineno}")
-            out.append(s[i + 1])
+            escaped = s[i + 1]
+            out.append(
+                {
+                    "n": "\n",
+                    "r": "\r",
+                    "t": "\t",
+                    "\\": "\\",
+                    '"': '"',
+                }.get(escaped, escaped)
+            )
             i += 2
             continue
         if ch == '"':
@@ -285,6 +294,16 @@ def _parse_single_quoted(s: str, file_path: Path, lineno: int) -> str:
     if len(s) < 2 or not s.endswith("'"):
         raise InvalidInputError(f"Unclosed single-quoted string in {file_path} line {lineno}")
     inner = s[1:-1]
-    if "'" in inner:
-        raise InvalidInputError(f"Unescaped ' inside string in {file_path} line {lineno}")
-    return inner
+    out: list[str] = []
+    i = 0
+    while i < len(inner):
+        ch = inner[i]
+        if ch == "'":
+            if i + 1 < len(inner) and inner[i + 1] == "'":
+                out.append("'")
+                i += 2
+                continue
+            raise InvalidInputError(f"Unescaped ' inside string in {file_path} line {lineno}")
+        out.append(ch)
+        i += 1
+    return "".join(out)

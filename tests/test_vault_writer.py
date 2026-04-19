@@ -218,6 +218,21 @@ def test_lock_file_persists_between_writes(tmp_path: Path) -> None:
     assert st2.st_ino == st1.st_ino
 
 
+def test_replace_frontmatter_preserves_crlf_line_endings(tmp_path: Path) -> None:
+    note = tmp_path / "Finance" / "crlf.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_bytes(b"---\r\nold: value\r\n---\r\n# Title\r\n\r\nBody\r\n")
+
+    VaultWriter(tmp_path, ("Finance",)).replace_frontmatter(
+        "Finance/crlf.md",
+        {"type": "minx-wiki", "title": "CRLF"},
+    )
+
+    out = note.read_bytes()
+    assert b"\ntype: minx-wiki\n" not in out
+    assert out == b"---\r\ntype: minx-wiki\r\ntitle: CRLF\r\n---\r\n# Title\r\n\r\nBody\r\n"
+
+
 def test_write_markdown_uses_same_lock(tmp_path: Path, monkeypatch) -> None:
     note = tmp_path / "Finance" / "mix.md"
     note.parent.mkdir(parents=True, exist_ok=True)

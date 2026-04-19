@@ -13,6 +13,10 @@ wiki_type: pattern
 
 <!-- Auto-updated by Minx -->
 
-## Notes
+## Human Editable
 
 <!-- User context and commentary -->
+
+## System Metadata
+
+Frontmatter is Minx sync metadata. Add everyday notes in Human Editable.

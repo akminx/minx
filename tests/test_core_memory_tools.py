@@ -23,6 +23,7 @@ def test_memory_tools_round_trip(tmp_path: Path) -> None:
         "memory_expire",
         "get_pending_memory_candidates",
         "vault_scan",
+        "vault_reconcile_memories",
         "list_snapshot_archives",
         "get_snapshot_archive",
     ):
