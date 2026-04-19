@@ -432,6 +432,20 @@ def test_vault_reconcile_accepts_legacy_domain_alias_and_refreshes_scope(
     assert "domain:" not in text
     assert "scope: core" in text
 
+    before_bytes = note.read_bytes()
+    time.sleep(0.01)
+    before_mtime = note.stat().st_mtime_ns
+    events_before = _event_types(db_path, int(row["id"]))
+
+    second = get_tool(server, "vault_reconcile_memories").fn(False)
+
+    assert second["success"] is True
+    assert second["data"]["report"]["applied"] == 0
+    assert second["data"]["report"]["skipped"] == 1
+    assert note.read_bytes() == before_bytes
+    assert note.stat().st_mtime_ns == before_mtime
+    assert _event_types(db_path, int(row["id"])) == events_before
+
 
 def test_vault_reconcile_memory_key_fallback_updates_live_vault_memory(
     tmp_path: Path,
