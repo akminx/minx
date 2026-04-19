@@ -50,9 +50,11 @@ memory_type: preference
 subject: timezone
 memory_id: 123
 sync_base_updated_at: "2026-04-18 10:15:00"
-payload_json: {"category": "timezone", "value": "America/Chicago"}
+payload_json: '{"category":"timezone","value":"America/Chicago"}'
 ---
 ```
+
+`payload_json` is serialized as a single-quoted JSON string in YAML to sidestep YAML's implicit type coercion (unquoted `{...}` parses as a YAML flow mapping on some parsers and as a raw string on the Core custom parser — the single-quoted string form is unambiguous across both).
 
 Canonical fields:
 
@@ -85,10 +87,10 @@ Core does not infer structured payloads from body prose in 6f. Hermes may read t
 6c compatibility:
 
 - 6c may also derive payload from non-reserved frontmatter keys to support early vault-authored notes.
-- Reserved keys are `type`, `scope`, `domain`, `memory_key`, `memory_type`, `subject`, `memory_id`, `updated`, `sync_base_updated_at`, `payload_json`, and `value_json`.
+- Reserved keys (excluded from implicit payload derivation) are `type`, `scope`, `domain`, `memory_key`, `memory_type`, `subject`, `memory_id`, `updated`, `sync_base_updated_at`, `payload_json`, `value_json`, plus Obsidian housekeeping keys `tags`, `title`, `id`, and `created`. The housekeeping keys are reserved because Obsidian and common templates inject them automatically; treating them as payload would silently pollute memory rows.
 - `value_json` is a temporary legacy alias for `payload_json`.
 
-Frontmatter parsing note: the custom frontmatter parser in `VaultReader` returns JSON-object values (e.g. `payload_json: {"a": "b"}`) as raw strings, not dicts. Scanner/reconciler code must `json.loads` them explicitly before validating as a payload; `_parse_memory_payload` already handles both dict and string forms. Consumers that read `vault_index.metadata_json` should be aware that `payload_json` within it is stored as an embedded JSON string rather than a nested object — this is cosmetic but worth knowing when querying the index.
+Frontmatter parsing note: with the canonical single-quoted `payload_json` form above, the custom frontmatter parser in `VaultReader` returns the value as a plain string, and scanner/reconciler code calls `json.loads` before validating. `_parse_memory_payload` handles both string and dict forms for forward compatibility with any parser that might coerce an unquoted flow mapping. For the legacy `value_json` alias, the same string-then-`json.loads` flow applies. Consumers reading `vault_index.metadata_json` should note that `payload_json` within it is stored as an embedded JSON string, not a nested object — cosmetic, but worth knowing when querying the index.
 
 ## 5) Slice 6c: Vault Scanner
 
@@ -155,7 +157,7 @@ The scanner:
 11. Never mutates rejected or expired memories. It warns and skips.
 12. Emits `memory_events` rows for successful lifecycle changes:
     - create path: `created`, `promoted`, `vault_synced`
-    - candidate path: `confirmed`, `payload_updated`, `vault_synced`
+    - candidate path: `confirmed`, `payload_updated`, `vault_synced` (No `promoted` — see §8.5 for the distinction between auto-promotion and vault confirmation.)
     - active update path: `payload_updated`, `vault_synced`
 13. Emits orphan `vault_synced` only when the orphaned index row references an active memory whose `source='vault_sync'`.
 14. Deletes orphan `vault_index` rows only after a complete vault walk. "Complete" means path enumeration succeeded; per-file read failures warn and skip without blocking orphan cleanup. If path enumeration fails, orphan cleanup is skipped to avoid wiping the index from a transient filesystem error.
@@ -229,6 +231,7 @@ Templates ship as package data:
 - `minx_mcp/core/templates/wiki/pattern.md`
 - `minx_mcp/core/templates/wiki/review.md`
 - `minx_mcp/core/templates/wiki/goal.md`
+- `minx_mcp/core/templates/wiki/memory.md`
 
 Template placeholders use Python `string.Template` syntax: `${name}`, `${date}`, `${scope}`, etc. Do not use `{{name}}`.
 
@@ -243,6 +246,8 @@ Templates must make the human edit path obvious. Each memory/wiki page template 
 The templates should avoid asking users to edit `payload_json`, `memory_key`, `memory_id`, or `sync_base_updated_at` during normal use. Those fields are visible for transparency and auditability, not because they are the preferred human interface.
 
 This is a migration of the currently shipped wiki templates, not a parallel template family. Existing `entity`, `pattern`, `review`, and `goal` templates use `type: minx-wiki`; they should keep `type: minx-wiki` and gain the human-edit affordances above. The `type: minx-memory` frontmatter contract applies only to memory notes that reconcile into SQLite, not to general wiki pages.
+
+The `memory.md` template is new in 6e and produces `type: minx-memory` notes matching the §4 canonical frontmatter and body (`## Summary`, `## Human Editable`, `## System Metadata`). It is the seed used by Hermes or users to hand-create a memory note before reconciliation; once reconciled, subsequent frontmatter updates flow through `vault_replace_frontmatter` (§7.3) rather than re-rendering the template.
 
 ### 7.2 Resource Surface
 
@@ -271,6 +276,21 @@ Semantics:
 - Writes are atomic and guarded by the existing `VaultWriter` file lock.
 
 Hermes decides what body text to write. Core only applies deterministic replacement.
+
+Core also exposes:
+
+```text
+vault_replace_frontmatter(relative_path, frontmatter) -> {path: absolute_path}
+```
+
+Semantics:
+
+- Path is restricted to `Minx/`.
+- Replaces the YAML frontmatter block (delimited by `---` at file start) with a deterministically serialized mapping from the provided `frontmatter` dict, preserving key order as provided.
+- If the note has no frontmatter block, one is prepended.
+- Body content (everything after the closing `---`) is preserved byte-for-byte.
+- Writes are atomic and guarded by the existing `VaultWriter` file lock.
+- Values are serialized as YAML scalars; dict/list values are serialized as JSON strings wrapped in single quotes to avoid YAML type coercion (matches the canonical `payload_json` convention in §4).
 
 ### 7.4 Human Edit Boundary
 
@@ -320,6 +340,14 @@ class VaultReconcileReport:
     warnings: list[VaultReconcileWarning]
 ```
 
+Counter semantics:
+
+- `scanned`: every `type: minx-memory` note processed, regardless of outcome.
+- `applied = created + confirmed + updated`. A note contributes to exactly one of those three on success.
+- `skipped`: notes that did not contribute to `applied`. This includes every note that produced a warning (invalid identity, missing memory, terminal state, write failure, conflict) and also the warning-free idempotent no-op path (§8.9). A skipped note never mutates `memories`.
+- `conflicts`: total count of `kind='conflict'` warnings emitted, across both skipped and applied notes. In the common case conflicts are a subset of `skipped`, but the stale-candidate path (§8.3) may emit a `kind='conflict'` warning while still counting the note as `confirmed` (and therefore `applied`), so `conflicts` is not strictly a subset of `skipped`.
+- `scanned = applied + skipped` must hold. `conflicts` is a cross-cutting warning count and is not part of this sum.
+
 Warning `kind` values are:
 
 - `invalid_note`
@@ -338,7 +366,7 @@ Resolution order:
 
 1. If `memory_id` is present, load that row. It must match `memory_key`, `scope`, `memory_type`, and `subject`.
 2. If `memory_id` is absent, resolve by `memory_key` to a live `(scope, memory_type, subject)` row.
-3. If no live row exists, check the latest row for the same `(scope, memory_type, subject)`. "Latest" is defined as `ORDER BY updated_at DESC, id DESC LIMIT 1` — `id DESC` is the deterministic tie-breaker when two rows share an `updated_at` at the DB's second granularity.
+3. If no live row exists, check whether any terminal (rejected/expired) row exists for the same `(scope, memory_type, subject)`. The "latest terminal" row is `ORDER BY updated_at DESC, id DESC LIMIT 1` — `id DESC` is the deterministic tie-breaker when two rows share an `updated_at` at the DB's second granularity. Steps 1–2 already exhaust the live-row cases, so this step is specifically the terminal-row lookup.
 4. If the latest row is rejected or expired, warn with `kind='terminal_state'` and skip. Do not recreate a fresh live row for a terminal memory just because the note has no `memory_id`.
 5. If no row exists at all, create a new active memory only when the note has valid identity and valid payload.
 6. If `memory_id` points to no row, warn with `kind='missing_memory'` and skip. Do not silently recreate a stale ID.
@@ -354,7 +382,7 @@ Before applying a vault edit:
 
 - **Active target, `sync_base_updated_at` present:** if `row.updated_at == sync_base_updated_at` as an exact string comparison, the edit may apply. If they differ, reconciliation must not overwrite SQLite. It reports a `kind='conflict'` warning containing `memory_id`, `memory_key`, `db_updated_at`, and `sync_base_updated_at`.
 - **Active target, `sync_base_updated_at` absent on a note with `memory_id`:** reconciliation warns and skips. Hermes can ask the user whether to refresh the note or force an explicit tool update.
-- **Candidate target:** detector-proposed candidates may be materialized into vault notes before they carry a `sync_base_updated_at`, so confirmation is allowed without the version field. If `sync_base_updated_at` is present, it must still match exactly; a mismatch is still a `kind='conflict'`. Candidate confirmations transition the row to active via the §8.5 state policy.
+- **Candidate target:** detector-proposed candidates may be materialized into vault notes before they carry a `sync_base_updated_at`, so confirmation is allowed without the version field. If `sync_base_updated_at` is present, it must still match exactly; a mismatch is still a `kind='conflict'`. Candidate confirmations transition the row to active via the §8.5 state policy. If the candidate row's `updated_at` is newer than the note's filesystem mtime (indicating the detector revised the candidate after the note was materialized), reconciliation still applies the confirmation but appends a `kind='conflict'` warning with `db_updated_at` set to the row's `updated_at` and `sync_base_updated_at` omitted, so Hermes can surface the divergence. The confirmation is still counted as `confirmed`, not `skipped`, because the user's vault action is the authoritative signal.
 - **Vault-authored note (no `memory_id`), matches an existing live row with `sync_base_updated_at`:** use the exact-string conflict policy as for active targets.
 - **Vault-authored note (no `memory_id`), matches an existing live row without `sync_base_updated_at`:** only apply automatically when the existing row has `source='vault_sync'`. If the existing row has any other source, warn with `kind='conflict'` and skip because the note has no version field proving it was based on the current row.
 - **Vault-authored note (no `memory_id`), no matching row:** falls through to the `kind='terminal_state'` guard (§8.2) and then to the §8.5 creation path.
@@ -373,8 +401,8 @@ After any successful apply, note refresh canonicalizes the frontmatter to `paylo
 
 ### 8.5 State Policy
 
-- Candidate row + valid vault note: confirm and update, then emit `confirmed`, `payload_updated`, and `vault_synced`.
-- Active row + valid payload: update payload, then emit `payload_updated` and `vault_synced`.
+- Candidate row + valid vault note: confirm and update payload if it differs; emit `confirmed`, and (only if payload changed) `payload_updated`, plus `vault_synced`. Vault confirmation does not emit `promoted` — `promoted` is reserved for the automatic confidence-threshold promotion path in 6a. Vault confirmation is an explicit user action and uses `confirmed` as the sole lifecycle marker.
+- Active row + valid payload: if the payload differs, update payload and emit `payload_updated` + `vault_synced`; if the payload is byte-equal, see §8.9.
 - New valid vault-authored note without a matching row: create active memory, then emit `created`, `promoted`, and `vault_synced`.
 - Rejected or expired row: skip and warn. Vault edits do not resurrect terminal states.
 - Deleting a note does not expire a memory in 6f. Deletion intent requires an explicit tool call or a future confirmation flow.
@@ -394,6 +422,8 @@ After every successful apply, Core refreshes the note frontmatter deterministica
 - canonical `payload_json`
 - new `sync_base_updated_at` equal to the post-update SQLite `memories.updated_at` string
 
+Frontmatter refresh uses `vault_replace_frontmatter`; the body (Summary, Human Editable, and any other prose) is preserved byte-for-byte.
+
 This prevents the next reconciliation from falsely conflicting against the just-applied edit.
 
 ### 8.7 Per-Note Apply Order and Failure Isolation
@@ -401,24 +431,27 @@ This prevents the next reconciliation from falsely conflicting against the just-
 Reconciliation processes notes independently.
 
 - A vault walk failure returns a `walk_failed` warning and performs no orphan cleanup or reconciliation.
-- Each note runs inside a savepoint.
+- Each note runs inside its own `BEGIN IMMEDIATE` transaction.
 - For each changed note, the non-dry-run order is:
   1. Parse identity and payload.
-  2. Open a SQLite savepoint.
+  2. Open a per-note SQLite transaction with `BEGIN IMMEDIATE`.
   3. Resolve identity and terminal/conflict policy.
   4. Apply the SQLite memory mutation and lifecycle events.
   5. Re-read the mutated memory row to capture the exact post-update `updated_at`.
   6. Render canonical refreshed frontmatter with that post-update `updated_at`.
   7. Write refreshed frontmatter through `VaultWriter` without changing unrelated prose.
-  8. Release the savepoint and commit the note's DB changes.
-- `dry_run=True` performs parsing, resolution, validation, and report counting but does not write note files. Any DB simulation runs under a savepoint that is rolled back before returning.
+  8. `COMMIT` the note's transaction. The writer lock is released before the next note starts.
+- When the note hits the §8.9 idempotent no-op path, steps 4–5 are skipped. Steps 6–8 still run using the current `memories.updated_at` (no mutation issued), so the refreshed frontmatter converges `sync_base_updated_at` to the live value without emitting events.
+- `dry_run=True` performs parsing, resolution, validation, and report counting but produces zero durable side effects: no note-file writes, no `memories` row mutations, no `memory_events` rows, no `vault_index` changes. Any DB simulation runs under a savepoint that is rolled back before returning.
 - Invalid notes warn and continue.
 - Conflicts warn and continue.
 - Terminal-state notes warn and continue.
-- A note-frontmatter write failure rolls back that note's DB changes, appends a `kind='write_failed'` warning, increments `skipped`, does not increment `applied`, and continues to later notes.
-- Unexpected exceptions roll back the current note before propagating unless the implementation can safely convert them into a report warning.
+- A note-frontmatter write failure issues `ROLLBACK` on the note's transaction, appends a `kind='write_failed'` warning, increments `skipped`, does not increment `applied`, and continues to later notes.
+- Unexpected exceptions issue `ROLLBACK` on the note's transaction before propagating unless the implementation can safely convert them into a report warning.
 
-SQLite and filesystem writes cannot be made perfectly atomic together. The required ordering above keeps the common failure case safe: if the note write fails, the DB mutation is still inside the savepoint and rolls back. If the final DB commit fails after the note write succeeds, the next reconciliation will see a version mismatch and report a conflict rather than silently overwriting.
+To avoid holding the SQLite writer lock across filesystem I/O, reconciliation processes notes one at a time: for each note, open `BEGIN IMMEDIATE` at step 2, complete steps 2–8 as a bounded unit, commit, and release the lock before starting the next note. The walk (§5.3 phase 1 analog) runs with no DB lock held. This mirrors the 6c scanner split and keeps Finance/Meals importers from starving during long reconciliations.
+
+SQLite and filesystem writes cannot be made perfectly atomic together. The required ordering above keeps the common failure case safe: if the note write fails, the DB mutation is still inside the uncommitted transaction and is rolled back. If the final DB commit fails after the note write succeeds, the next reconciliation will see a version mismatch and report a conflict rather than silently overwriting.
 
 ### 8.8 Audit
 
@@ -435,6 +468,17 @@ Every successful vault-driven SQLite mutation emits `memory_events(event_type='v
 Conflict and invalid-note warnings are report output, not memory events.
 
 The `vault_synced` event is the cross-system audit marker. It does not replace lifecycle events such as `created`, `promoted`, `confirmed`, or `payload_updated`; those events are emitted alongside it when the lifecycle state or payload changes.
+
+### 8.9 Idempotent Re-Apply
+
+When the incoming vault payload is byte-equal to the current SQLite payload after canonicalization, reconciliation treats the note as already in sync:
+
+- No SQLite mutation is issued, so `memories.updated_at` does not advance.
+- No `payload_updated` or `vault_synced` event is emitted.
+- Frontmatter is still refreshed if the note's `sync_base_updated_at` does not equal the current `memories.updated_at`, so future reconciles converge on exact-string equality.
+- Counted as `skipped` with no warning.
+
+This prevents reconciliation from generating spurious `payload_updated` events and keeps `sync_base_updated_at` stable across no-op runs.
 
 ## 9) Test Matrix
 
@@ -464,6 +508,7 @@ The `vault_synced` event is the cross-system audit marker. It does not replace l
 - Templates include human-readable structure with `## Summary`, `## Human Editable`, and sync-metadata guidance.
 - Existing `type: minx-wiki` template frontmatter remains valid while sections migrate to the human-edit contract.
 - Wheel package includes wiki templates.
+- `memory.md` template renders valid `type: minx-memory` frontmatter and body that reconciles through 6f without warnings.
 - `vault_replace_section` replaces first exact section outside fenced code blocks.
 - Missing section append behavior.
 - Path traversal rejection.
@@ -492,6 +537,7 @@ The `vault_synced` event is the cross-system audit marker. It does not replace l
 - Successful apply refreshes frontmatter with canonical identity, payload, `memory_id`, and post-update `sync_base_updated_at`.
 - `dry_run=True` rolls back DB and note-frontmatter changes.
 - Audit event payload shape and lifecycle-event sequencing.
+- Simulated crash between note-frontmatter write (§8.7 step 7) and transaction commit (§8.7 step 8): on restart, the uncommitted transaction rolls back so the DB mutation is gone, but the note on disk carries the post-update `sync_base_updated_at`. The next reconciliation compares the on-disk `sync_base_updated_at` against the (unchanged) `memories.updated_at`, detects the mismatch, and reports `kind='conflict'` — which Hermes or the user resolves by refreshing the note or forcing an explicit update. The test asserts that Core never silently overwrites in either direction.
 
 ## 10) Readiness Gate for Next Phases
 
