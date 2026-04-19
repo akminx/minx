@@ -95,8 +95,8 @@ Tool names are not uniform across domains today: Meals exposes short, unprefixed
 Slice 6d–6f will add or finish:
 
 - `MemoryContext` follow-through on `DailySnapshot` (6d) — DTO surface exists in the current tree; next pass should decide if any additional harness-facing fields are needed
-- Wiki write hardening (6e) — `vault_replace_section` + packaged `wiki-templates://...` resources exist; next pass should lock resource tests and any Hermes-side usage
-- Vault reconciliation (6f) — implement the revised `memory_id` / `memory_key` / `sync_base_updated_at` conflict policy from the 2026-04-18 revised spec
+- Wiki write hardening (6e) — `vault_replace_section` + packaged `wiki-templates://...` resources exist; next pass must add the new `vault_replace_frontmatter(relative_path, frontmatter)` tool (spec §7.3, required by 6f note refresh) and a new `minx_mcp/core/templates/wiki/memory.md` seed template producing `type: minx-memory` notes matching §4 canonical frontmatter/body
+- Vault reconciliation (6f) — implement the revised `memory_id` / `memory_key` / `sync_base_updated_at` conflict policy from the 2026-04-18 revised spec, using per-note `BEGIN IMMEDIATE` transactions (§8.7) to avoid writer-lock starvation during filesystem I/O, with §8.9 idempotent re-apply (byte-equal payload → no mutation, no events, `skipped`), §8.3 stale-candidate handling (confirmation emits `kind='conflict'` warning while still counting as `confirmed`/`applied`), and crash-safety verified by the §9 crash-between-write-and-commit test
 
 Meals Phase 3 (deferred) will add:
 
