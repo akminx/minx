@@ -580,7 +580,8 @@ def test_migration_set_includes_015_memories_unique_live() -> None:
     assert "016_memory_ttl_and_event_check.sql" in names
     assert "017_recipes_vault_synced_at.sql" in names
     assert "018_vault_index.sql" in names
-    assert names[-1] == "018_vault_index.sql"
+    assert "019_playbook_runs.sql" in names
+    assert names[-1] == "019_playbook_runs.sql"
 
 
 def test_unique_index_rejects_duplicate_live_triple(tmp_path) -> None:

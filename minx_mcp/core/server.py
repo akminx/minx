@@ -17,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from minx_mcp.core.tools._shared import CoreServiceConfig
 from minx_mcp.core.tools.goals import register_goal_tools
 from minx_mcp.core.tools.memory import register_memory_tools
+from minx_mcp.core.tools.playbooks import register_playbook_tools
 from minx_mcp.core.tools.snapshot import register_snapshot_tools
 from minx_mcp.core.tools.vault import register_vault_tools
 
@@ -29,4 +30,5 @@ def create_core_server(config: CoreServiceConfig) -> FastMCP:
     register_goal_tools(mcp, config)
     register_vault_tools(mcp, config)
     register_memory_tools(mcp, config)
+    register_playbook_tools(mcp, config)
     return mcp

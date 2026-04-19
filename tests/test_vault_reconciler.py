@@ -292,6 +292,20 @@ def test_vault_reconcile_reports_missing_memory_id(tmp_path: Path) -> None:
         "---\n"
         "# Missing\n",
     )
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO vault_index (
+                vault_path, note_type, scope, content_hash, last_scanned_at,
+                metadata_json, memory_id
+            ) VALUES (?, 'minx-memory', 'core', 'deadbeef', datetime('now'), '{}', NULL)
+            """,
+            ("Minx/Memory/missing.md",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     result = get_tool(server, "vault_reconcile_memories").fn(False)
 
@@ -300,6 +314,33 @@ def test_vault_reconcile_reports_missing_memory_id(tmp_path: Path) -> None:
     assert report["skipped"] == 1
     assert report["warnings"][0]["kind"] == "missing_memory"
     assert _count_rows(db_path, "memories") == 0
+
+
+def test_vault_reconcile_self_heals_orphan_memory_id_without_vault_index(tmp_path: Path) -> None:
+    db_path, vault, server = _server(tmp_path)
+    note = vault / "Minx" / "Memory" / "orphan.md"
+    _write(
+        note,
+        "---\n"
+        "type: minx-memory\n"
+        "scope: core\n"
+        "memory_key: core.preference.timezone\n"
+        "memory_type: preference\n"
+        "subject: timezone\n"
+        "memory_id: 999\n"
+        "sync_base_updated_at: \"2026-04-19 12:00:00\"\n"
+        "payload_json: '{\"category\": \"timezone\", \"value\": \"UTC\"}'\n"
+        "---\n"
+        "# Orphan\n",
+    )
+
+    result = get_tool(server, "vault_reconcile_memories").fn(False)
+
+    assert result["success"] is True
+    report = result["data"]["report"]
+    assert report["created"] == 1
+    assert any(w["kind"] == "orphan_memory_id" for w in report["warnings"])
+    assert _count_rows(db_path, "memories") == 1
 
 
 def test_vault_reconcile_skips_latest_terminal_row_without_memory_id(tmp_path: Path) -> None:
