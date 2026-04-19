@@ -96,6 +96,7 @@ class VaultReconciler:
         self._vault_reader = vault_reader
         self._vault_writer = vault_writer
         self._scope_prefix = scope_prefix
+        self._orphan_warning: VaultReconcileWarning | None = None
 
     def reconcile(self, *, dry_run: bool = False) -> VaultReconcileReport:
         counts = _ReconcileCounts()
@@ -191,12 +192,17 @@ class VaultReconciler:
             )
             return
 
+        resolved_path = self._vault_writer.resolve_path(doc.relative_path)
+        note_mtime_utc = _safe_note_mtime_utc(resolved_path)
+
+        self._orphan_warning = None
         self._conn.execute("BEGIN IMMEDIATE")
         try:
-            result = self._apply_db_side(doc, identity, payload)
-            if result.warning is not None:
-                warnings.append(result.warning)
-                if result.warning.kind == "conflict":
+            result = self._apply_db_side(doc, identity, payload, note_mtime_utc=note_mtime_utc)
+            effective_warning = result.warning or self._orphan_warning
+            if effective_warning is not None:
+                warnings.append(effective_warning)
+                if effective_warning.kind == "conflict":
                     counts.conflicts += 1
 
             if dry_run:
@@ -211,7 +217,7 @@ class VaultReconciler:
                 updated_at=result.updated_at,
             )
             if _frontmatter_refresh_not_needed(doc.frontmatter, identity, result):
-                resolved = self._vault_writer.resolve_path(doc.relative_path)
+                resolved = resolved_path
             else:
                 try:
                     resolved = self._vault_writer.replace_frontmatter(doc.relative_path, frontmatter)
@@ -240,12 +246,16 @@ class VaultReconciler:
             if self._conn.in_transaction:
                 self._conn.rollback()
             raise
+        finally:
+            self._orphan_warning = None
 
     def _apply_db_side(
         self,
         doc: VaultDocument,
         identity: _MemoryIdentity,
         payload: dict[str, object],
+        *,
+        note_mtime_utc: datetime | None,
     ) -> _ApplyResult:
         row = self._resolve_row(identity, doc.relative_path)
         if row is None:
@@ -265,7 +275,7 @@ class VaultReconciler:
             )
         if status == "candidate":
             self._check_candidate_conflict(row, identity, doc.relative_path)
-            return self._confirm_candidate(doc, identity, row, payload)
+            return self._confirm_candidate(doc, identity, row, payload, note_mtime_utc=note_mtime_utc)
 
         self._check_active_conflict(row, identity, doc.relative_path)
         prior_payload = _parse_payload_json(str(row["payload_json"]))
@@ -311,17 +321,31 @@ class VaultReconciler:
                 (identity.memory_id,),
             ).fetchone()
             if row is None:
-                raise _SkipNote(
-                    VaultReconcileWarning(
-                        kind="missing_memory",
+                if self._is_crash_orphan(vault_path):
+                    self._orphan_warning = VaultReconcileWarning(
+                        kind="orphan_memory_id",
                         vault_path=vault_path,
-                        message=f"memory_id {identity.memory_id} does not exist",
+                        message=(
+                            f"memory_id {identity.memory_id} does not exist and no vault_index row"
+                            " tracks this note; treating as crashed prior reconcile and"
+                            " rebuilding from note contents"
+                        ),
                         memory_id=identity.memory_id,
                         memory_key=identity.memory_key,
                     )
-                )
-            _require_identity_match(row, identity, vault_path)
-            return row
+                else:
+                    raise _SkipNote(
+                        VaultReconcileWarning(
+                            kind="missing_memory",
+                            vault_path=vault_path,
+                            message=f"memory_id {identity.memory_id} does not exist",
+                            memory_id=identity.memory_id,
+                            memory_key=identity.memory_key,
+                        )
+                    )
+            else:
+                _require_identity_match(row, identity, vault_path)
+                return row
 
         live = self._conn.execute(
             """
@@ -444,13 +468,15 @@ class VaultReconciler:
         identity: _MemoryIdentity,
         row: Row,
         payload: dict[str, object],
+        *,
+        note_mtime_utc: datetime | None,
     ) -> _ApplyResult:
         memory_id = int(row["id"])
         prior_payload = _parse_payload_json(str(row["payload_json"]))
         payload_changed = _canonical_payload_json(prior_payload) != _canonical_payload_json(payload)
         stale_candidate = (
             identity.sync_base_updated_at is None
-            and _row_updated_after_note_mtime(row, self._vault_writer.resolve_path(doc.relative_path))
+            and _row_updated_after_note_mtime(row, note_mtime_utc)
         )
         cur = self._conn.execute(
             """
@@ -533,6 +559,13 @@ class VaultReconciler:
                 memory_id,
             ),
         )
+
+    def _is_crash_orphan(self, vault_path: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM vault_index WHERE vault_path = ?",
+            (vault_path,),
+        ).fetchone()
+        return row is None
 
     def _get_memory_row(self, memory_id: int) -> Row:
         row = self._conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
@@ -803,7 +836,9 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _row_updated_after_note_mtime(row: Row, path: Path) -> bool:
+def _row_updated_after_note_mtime(row: Row, note_mtime_utc: datetime | None) -> bool:
+    if note_mtime_utc is None:
+        return False
     try:
         db_updated = datetime.fromisoformat(str(row["updated_at"])).replace(tzinfo=UTC)
     except ValueError:
@@ -812,5 +847,20 @@ def _row_updated_after_note_mtime(row: Row, path: Path) -> bool:
             extra={"memory_id": row["id"], "updated_at": row["updated_at"]},
         )
         return False
-    note_mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
-    return db_updated > note_mtime
+    return db_updated > note_mtime_utc
+
+
+def _safe_note_mtime_utc(path: Path) -> datetime | None:
+    """Stat the note to capture its mtime before opening a DB transaction.
+
+    Kept outside ``BEGIN IMMEDIATE`` so the SQLite writer lock is never held
+    across filesystem I/O — matches the two-phase discipline of VaultScanner.
+    """
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    except OSError as exc:
+        logger.warning(
+            "vault reconcile could not stat note for stale-candidate check",
+            extra={"path": str(path), "error": str(exc)},
+        )
+        return None

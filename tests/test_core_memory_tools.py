@@ -26,6 +26,11 @@ def test_memory_tools_round_trip(tmp_path: Path) -> None:
         "vault_reconcile_memories",
         "list_snapshot_archives",
         "get_snapshot_archive",
+        "start_playbook_run",
+        "complete_playbook_run",
+        "log_playbook_run",
+        "playbook_history",
+        "playbook_reconcile_crashed",
     ):
         assert get_tool(server, name) is not None
 

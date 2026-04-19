@@ -44,6 +44,10 @@ class ConflictError(MinxContractError):
         super().__init__(message, CONFLICT, data)
 
 
+class PlaybookConflictError(ConflictError):
+    """Specialized CONFLICT for playbook run contention/state transitions."""
+
+
 class LLMError(MinxContractError):
     """Raised when an LLM provider call, response shape, or schema validation fails.
 

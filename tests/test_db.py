@@ -62,6 +62,7 @@ def test_database_bootstrap_creates_memory_tables(tmp_path):
     assert "memories" in names
     assert "memory_events" in names
     assert "vault_index" in names
+    assert "playbook_runs" in names
 
 
 def test_memory_events_accept_vault_synced_after_slice6c_migration(tmp_path):
@@ -479,6 +480,7 @@ def test_built_wheel_includes_packaged_resources(tmp_path):
     assert "minx_mcp/schema/migrations/016_memory_ttl_and_event_check.sql" in names
     assert "minx_mcp/schema/migrations/017_recipes_vault_synced_at.sql" in names
     assert "minx_mcp/schema/migrations/018_vault_index.sql" in names
+    assert "minx_mcp/schema/migrations/019_playbook_runs.sql" in names
 
     # Finance markdown templates ship alongside the package so installed wheels
     # can render weekly/monthly reports without relying on the repo layout.

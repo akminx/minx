@@ -96,6 +96,11 @@ async def test_core_server_stdio_goal_parse_flow(tmp_path: Path) -> None:
             "get_pending_memory_candidates",
             "list_snapshot_archives",
             "get_snapshot_archive",
+            "start_playbook_run",
+            "complete_playbook_run",
+            "log_playbook_run",
+            "playbook_history",
+            "playbook_reconcile_crashed",
         ]
 
         captured_create = await session.call_tool(
