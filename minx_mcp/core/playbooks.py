@@ -169,21 +169,16 @@ def start_playbook_run(
     except sqlite3.IntegrityError as exc:
         if conn.in_transaction:
             conn.rollback()
-        if _running_row_exists(
-            conn,
-            playbook_id=normalized_playbook_id,
-            trigger_type=normalized_trigger_type,
-            trigger_ref=normalized_trigger_ref,
-        ):
-            raise PlaybookConflictError(
-                "A matching playbook run is already in-flight",
-                data={
-                    "playbook_id": normalized_playbook_id,
-                    "trigger_type": normalized_trigger_type,
-                    "trigger_ref": normalized_trigger_ref,
-                },
-            ) from exc
-        raise
+        # idx_playbook_runs_in_flight only fires on this INSERT, so any
+        # IntegrityError here is a uniqueness conflict — raise unconditionally.
+        raise PlaybookConflictError(
+            "A matching playbook run is already in-flight",
+            data={
+                "playbook_id": normalized_playbook_id,
+                "trigger_type": normalized_trigger_type,
+                "trigger_ref": normalized_trigger_ref,
+            },
+        ) from exc
     except Exception:
         if conn.in_transaction:
             conn.rollback()
@@ -344,21 +339,14 @@ def log_playbook_run(
     except sqlite3.IntegrityError as exc:
         if conn.in_transaction:
             conn.rollback()
-        if _running_row_exists(
-            conn,
-            playbook_id=normalized_playbook_id,
-            trigger_type=normalized_trigger_type,
-            trigger_ref=normalized_trigger_ref,
-        ):
-            raise PlaybookConflictError(
-                "A matching playbook run is already in-flight",
-                data={
-                    "playbook_id": normalized_playbook_id,
-                    "trigger_type": normalized_trigger_type,
-                    "trigger_ref": normalized_trigger_ref,
-                },
-            ) from exc
-        raise
+        raise PlaybookConflictError(
+            "A matching playbook run is already in-flight",
+            data={
+                "playbook_id": normalized_playbook_id,
+                "trigger_type": normalized_trigger_type,
+                "trigger_ref": normalized_trigger_ref,
+            },
+        ) from exc
     except Exception:
         if conn.in_transaction:
             conn.rollback()
@@ -432,6 +420,7 @@ def playbook_reconcile_crashed(
             WHERE status = 'running'
               AND julianday(triggered_at) <= julianday('now', ?)
             ORDER BY id
+            LIMIT 999
             """,
             (modifier,),
         ).fetchall()
@@ -528,6 +517,8 @@ def _nullable_bool(value: object | None) -> bool | None:
 
 
 def _normalize_run_id(run_id: int) -> int:
+    if isinstance(run_id, bool) or not isinstance(run_id, int):
+        raise InvalidInputError("run_id must be an integer")
     if run_id <= 0:
         raise InvalidInputError("run_id must be greater than 0")
     return run_id

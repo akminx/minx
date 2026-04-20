@@ -227,6 +227,13 @@ def test_log_playbook_run_writes_terminal_row(tmp_path: Path) -> None:
 def test_log_playbook_run_hides_intermediate_running_row_from_other_connections(
     tmp_path: Path,
 ) -> None:
+    # What this test proves: BEGIN IMMEDIATE holds the write lock across both
+    # INSERT and UPDATE, so the observer's SELECT (which fires via trace
+    # callback *before* commit) reads the pre-transaction snapshot — zero
+    # running rows. It does NOT prove that a reader between two separate
+    # commits would see a running row (that scenario can't arise because both
+    # statements share one transaction). Any refactor that splits the
+    # INSERT/UPDATE into separate transactions would need a new threading test.
     db_path = tmp_path / "m.db"
     conn = get_connection(db_path)
     observer = sqlite3.connect(str(db_path))
