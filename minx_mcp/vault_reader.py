@@ -6,7 +6,9 @@ Slice 6 foundation diff small; behavior must stay aligned if either side
 changes).
 
 This module performs pure file I/O and frontmatter parsing only — no database
-writes, no ``vault_index`` scanner persistence (Slice 6c). Markdown bodies use
+writes, no ``vault_index`` scanner persistence (Slice 6c).
+``iter_markdown_paths`` dedupes by resolved path so symlink aliases to the same
+inode are not enumerated twice. Markdown bodies use
 ``str.splitlines()`` so standalone ``\\r`` newline markers inside the body are
 normalized to ``\\n``. Files are decoded with ``utf-8-sig`` so a UTF-8 BOM at
 the start of a file is transparently stripped before frontmatter parsing —
@@ -77,6 +79,7 @@ class VaultReader:
     def iter_markdown_paths(self, sub_prefix: str = "") -> Iterator[str]:
         vault = _vault_root_physical(self._vault_root)
         md_paths: list[Path] = []
+        seen_physical: set[Path] = set()
         for base in _iter_walk_bases(self._vault_root, self._allowed_prefixes, sub_prefix):
             if not base.exists():
                 continue
@@ -86,6 +89,9 @@ class VaultReader:
                 physical = path.resolve()
                 if not physical.is_relative_to(vault):
                     raise InvalidInputError("vault path resolves outside the vault root")
+                if physical in seen_physical:
+                    continue
+                seen_physical.add(physical)
                 md_paths.append(physical)
         md_paths.sort(key=lambda p: p.relative_to(vault).as_posix())
         for path in md_paths:
