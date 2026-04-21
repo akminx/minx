@@ -250,8 +250,10 @@ def frozen_clock(
             return pinned.replace(tzinfo=None)
 
     # Narrow, explicit patch list — see docstring. Expand deliberately.
+    # ``date.today()`` in goal_create's default lives in tools.goals after
+    # the server.py split.
     _PATCH_TARGETS = [
-        ("minx_mcp.core.server", "date", _FrozenDate),
+        ("minx_mcp.core.tools.goals", "date", _FrozenDate),
     ]
     for module_path, attr, replacement in _PATCH_TARGETS:
         # monkeypatch.setattr with a string target fails if the attribute

@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from minx_mcp.core import server as core_server_module
 from minx_mcp.core.events import emit_event
 from minx_mcp.core.models import GoalCaptureResult
 from minx_mcp.core.server import create_core_server
+from minx_mcp.core.tools import goals as goal_tools_module
 from minx_mcp.db import get_connection
 from tests.helpers import MinxTestConfig, get_tool
 
@@ -136,7 +136,7 @@ async def test_goal_parse_does_not_hold_db_connection_across_llm_await(
             second.close()
         return GoalCaptureResult(result_type="no_match", assistant_message="probe ok")
 
-    monkeypatch.setattr(core_server_module, "parse_goal_input", fake_parse_goal_input)
+    monkeypatch.setattr(goal_tools_module, "parse_goal_input", fake_parse_goal_input)
     server = create_core_server(config)
     goal_parse = get_tool(server, "goal_parse").fn
 
@@ -180,7 +180,7 @@ async def test_goal_parse_persists_result_after_llm_returns(
             assistant_message="Paused.",
         )
 
-    monkeypatch.setattr(core_server_module, "parse_goal_input", fake_parse_goal_input)
+    monkeypatch.setattr(goal_tools_module, "parse_goal_input", fake_parse_goal_input)
     server = create_core_server(config)
     goal_parse = get_tool(server, "goal_parse").fn
 

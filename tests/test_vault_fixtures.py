@@ -88,10 +88,10 @@ def test_vault_note_rejects_colliding_extra_keys(tmp_path: Path) -> None:
         )
 
 
-def test_frozen_clock_pins_core_server_today(monkeypatch: pytest.MonkeyPatch) -> None:
-    from minx_mcp.core import server as core_server_module
+def test_frozen_clock_pins_goal_tools_today(monkeypatch: pytest.MonkeyPatch) -> None:
+    from minx_mcp.core.tools import goals as goal_tools_module
 
     with frozen_clock(monkeypatch, "2026-03-15T12:00:00+00:00") as clock:
-        assert core_server_module.date.today().isoformat() == "2026-03-15"
+        assert goal_tools_module.date.today().isoformat() == "2026-03-15"
         assert clock.date_iso == "2026-03-15"
         assert clock.iso.startswith("2026-03-15T12:00:00")
