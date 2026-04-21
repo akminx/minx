@@ -5,10 +5,10 @@ from minx_mcp.core.goal_capture_llm import _capture_with_llm
 from minx_mcp.core.goal_capture_nl import (
     _capture_create,
     _capture_update,
-    _normalize_text,
     _resolve_exact_subject,
 )
 from minx_mcp.core.goal_capture_structured import _validate_structured_goal_input
+from minx_mcp.core.goal_capture_utils import _normalize_text
 from minx_mcp.core.goals import GoalService
 from minx_mcp.core.models import (
     FinanceReadInterface,

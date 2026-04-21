@@ -117,7 +117,7 @@ _PROVIDER_BUILDERS: dict[str, Callable[[dict[str, Any]], LLMInterface | None]] =
 
 
 def create_llm(
-    config: dict | None = None,
+    config: dict[str, Any] | None = None,
     *,
     db_path: str | Path | None = None,
 ) -> LLMInterface | None:

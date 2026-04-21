@@ -81,7 +81,7 @@ class OpenAICompatibleLLM:
         self,
         prompt: str,
         response_format: dict[str, Any] | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         api_key = os.getenv(self.api_key_env)
         if not api_key:
             raise LLMProviderError(f"Missing API key environment variable: {self.api_key_env}")

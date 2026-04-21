@@ -39,7 +39,7 @@ def find_anomalies(
     threshold = get_finance_anomaly_threshold_cents(conn)
     if period_start and end_exclusive:
         date_clause = "AND t.posted_at >= ? AND t.posted_at < ?"
-        params: tuple = (threshold, period_start, end_exclusive)
+        params: tuple[int | str, ...] = (threshold, period_start, end_exclusive)
     else:
         date_clause = ""
         params = (threshold,)

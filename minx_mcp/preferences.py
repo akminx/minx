@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from sqlite3 import Connection
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ def get_preference(
     if row is None:
         return default
     try:
-        return json.loads(row["value_json"])
+        return cast(object, json.loads(row["value_json"]))
     except json.JSONDecodeError as exc:
         logger.warning(
             "malformed preference JSON for %s.%s; using default (%s)",

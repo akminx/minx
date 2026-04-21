@@ -7,6 +7,7 @@ from pathlib import Path
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.core.goal_progress import _period_window, _progress_for_goal, get_metric_value
 from minx_mcp.core.goals import GoalService
+from minx_mcp.core.models import GoalRecord
 from minx_mcp.db import scoped_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
 
@@ -85,7 +86,7 @@ def get_goal_trajectory(
     }
 
 
-def _build_completed_periods(goal, as_of: date, periods: int) -> list[tuple[date, date]]:
+def _build_completed_periods(goal: GoalRecord, as_of: date, periods: int) -> list[tuple[date, date]]:
     windows: list[tuple[date, date]] = []
     cursor = _latest_completed_end(goal.period, as_of)
     while len(windows) < periods:

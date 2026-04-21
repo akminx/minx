@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from sqlite3 import Row
+from typing import cast
 
 from minx_mcp.base_service import BaseService
 from minx_mcp.contracts import InvalidInputError, NotFoundError
@@ -349,14 +351,14 @@ class FinanceService(BaseService):
     def _account_id(self, account_name: str) -> int:
         return int(self._account(account_name)["id"])
 
-    def _account(self, account_name: str):
+    def _account(self, account_name: str) -> Row:
         row = self.conn.execute(
             "SELECT id, import_profile FROM finance_accounts WHERE name = ?",
             (account_name,),
         ).fetchone()
         if not row:
             raise NotFoundError(f"Unknown finance account: {account_name}")
-        return row
+        return cast(Row, row)
 
     def _insert_batch(self, account_id: int, parsed: ParsedImportBatch) -> int:
         cursor = self.conn.execute(

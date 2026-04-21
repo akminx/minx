@@ -9,10 +9,11 @@ has been updated in the test suite).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
-from typing import cast
+from typing import TypeVar, cast
 
 from mcp.server.fastmcp import FastMCP
 
@@ -40,8 +41,17 @@ from minx_mcp.core.tools._shared import CoreServiceConfig, resolve_review_date
 from minx_mcp.core.trajectory import get_goal_trajectory
 from minx_mcp.db import scoped_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
+from minx_mcp.finance.read_models import (
+    ImportJobIssue,
+    IncomeSummary,
+    PeriodComparison,
+    SpendingSummary,
+    UncategorizedSummary,
+)
 
 __all__ = ["parse_goal_input", "register_goal_tools"]
+
+_T = TypeVar("_T")
 
 
 def register_goal_tools(mcp: FastMCP, config: CoreServiceConfig) -> None:
@@ -222,17 +232,17 @@ class _ScopingFinanceReadAPI:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
 
-    def _with_api(self, fn):
+    def _with_api(self, fn: Callable[[FinanceReadAPI], _T]) -> _T:
         with scoped_connection(self._db_path) as conn:
             return fn(FinanceReadAPI(conn))
 
-    def get_spending_summary(self, start_date: str, end_date: str):
+    def get_spending_summary(self, start_date: str, end_date: str) -> SpendingSummary:
         return self._with_api(lambda api: api.get_spending_summary(start_date, end_date))
 
-    def get_uncategorized(self, start_date: str, end_date: str):
+    def get_uncategorized(self, start_date: str, end_date: str) -> UncategorizedSummary:
         return self._with_api(lambda api: api.get_uncategorized(start_date, end_date))
 
-    def get_import_job_issues(self):
+    def get_import_job_issues(self) -> list[ImportJobIssue]:
         return self._with_api(lambda api: api.get_import_job_issues())
 
     def list_account_names(self) -> list[str]:
@@ -244,7 +254,7 @@ class _ScopingFinanceReadAPI:
         current_end: str,
         prior_start: str,
         prior_end: str,
-    ):
+    ) -> PeriodComparison:
         return self._with_api(
             lambda api: api.get_period_comparison(
                 current_start, current_end, prior_start, prior_end
@@ -295,7 +305,7 @@ class _ScopingFinanceReadAPI:
             )
         )
 
-    def get_income_summary(self, start_date: str, end_date: str):
+    def get_income_summary(self, start_date: str, end_date: str) -> IncomeSummary:
         return self._with_api(lambda api: api.get_income_summary(start_date, end_date))
 
     def get_net_flow(self, start_date: str, end_date: str) -> int:
@@ -308,7 +318,7 @@ class _ScopingGoalService:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
 
-    def get_goal(self, goal_id: int):
+    def get_goal(self, goal_id: int) -> GoalRecord:
         with scoped_connection(self._db_path) as conn:
             return GoalService(conn).get_goal(goal_id)
 

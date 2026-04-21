@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection, Row
+from typing import cast
 
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.core.memory_payloads import validate_memory_payload
@@ -427,7 +428,7 @@ class VaultReconciler:
                     )
                 )
             _require_identity_match(row, identity, vault_path)
-            return row
+            return cast(Row, row)
 
         live = self._conn.execute(
             """
@@ -441,7 +442,7 @@ class VaultReconciler:
             (identity.memory_type, identity.scope, identity.subject),
         ).fetchone()
         if live is not None:
-            return live
+            return cast(Row, live)
 
         terminal = self._conn.execute(
             """
@@ -454,7 +455,7 @@ class VaultReconciler:
             (identity.memory_type, identity.scope, identity.subject),
         ).fetchone()
         if terminal is not None and str(terminal["status"]) in {"rejected", "expired"}:
-            return terminal
+            return cast(Row, terminal)
         return None
 
     def _check_active_conflict(
@@ -644,7 +645,7 @@ class VaultReconciler:
         row = self._conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if row is None:
             raise RuntimeError(f"memory {memory_id} disappeared during reconciliation")
-        return row
+        return cast(Row, row)
 
     def _insert_memory_event(
         self,

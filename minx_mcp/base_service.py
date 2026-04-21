@@ -4,7 +4,7 @@ import contextvars
 import threading
 from pathlib import Path
 from sqlite3 import Connection
-from typing import Self
+from typing import Self, cast
 
 from minx_mcp.db import get_connection
 
@@ -52,7 +52,7 @@ class BaseService:
                 default=None,
             )
             return self._conn_var
-        return var
+        return cast(contextvars.ContextVar[Connection | None], var)
 
     @property
     def db_path(self) -> Path:
@@ -68,7 +68,7 @@ class BaseService:
                 legacy = getattr(local, "conn", None)
                 if legacy is not None:
                     var.set(legacy)
-                    return legacy
+                    return cast(Connection, legacy)
             conn = get_connection(self._db_path)
             var.set(conn)
         return conn
