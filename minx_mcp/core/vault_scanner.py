@@ -6,12 +6,16 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from sqlite3 import Connection
-from typing import Any
 
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.core.memory_payloads import validate_memory_payload
-from minx_mcp.core.memory_service import MemoryService
-from minx_mcp.core.vault_memory_frontmatter import RESERVED_MEMORY_KEYS
+from minx_mcp.core.vault_memory_frontmatter import (
+    MemoryIdentity,
+    optional_str,
+    parse_memory_identity,
+    parse_memory_payload,
+    parse_note_scope,
+)
 from minx_mcp.time_utils import utc_now_isoformat
 from minx_mcp.vault_reader import VaultDocument, VaultReader
 
@@ -58,18 +62,25 @@ class _MemorySyncResult:
     clear_memory_id: bool = False
 
 
+@dataclass(frozen=True)
+class _IndexEntry:
+    """Subset of ``vault_index`` columns needed by the indexing phase."""
+
+    id: int
+    content_hash: str
+    memory_id: int | None
+
+
 class VaultScanner:
     def __init__(
         self,
         conn: Connection,
         vault_reader: VaultReader,
-        memory_service: MemoryService,
         *,
         scope_prefix: str = "Minx",
     ) -> None:
         self._conn = conn
         self._vault_reader = vault_reader
-        self._memory_service = memory_service
         self._scope_prefix = scope_prefix
 
     def scan(self, *, dry_run: bool = False) -> VaultScanReport:
@@ -173,6 +184,36 @@ class VaultScanner:
                 skipped_paths.add(relative_path)
         return True, documents, skipped_paths
 
+    def _preload_index(self, documents: list[VaultDocument]) -> dict[str, _IndexEntry]:
+        """Fetch ``vault_index`` rows for the current walk in one query.
+
+        Replaces the previous per-document ``SELECT ... WHERE vault_path = ?``,
+        which was an O(n) round-trip pattern that dominated scan time for vaults
+        in the thousands of files.
+        """
+        if not documents:
+            return {}
+        paths = [doc.relative_path for doc in documents]
+        # SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999 (pre-3.32) or
+        # 32766+ on modern builds, but chunking keeps us safe on older
+        # libraries and prevents pathological query sizes.
+        chunk_size = 500
+        rows_by_path: dict[str, _IndexEntry] = {}
+        for start in range(0, len(paths), chunk_size):
+            chunk = paths[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                f"SELECT id, vault_path, content_hash, memory_id FROM vault_index WHERE vault_path IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                rows_by_path[str(row["vault_path"])] = _IndexEntry(
+                    id=int(row["id"]),
+                    content_hash=str(row["content_hash"]),
+                    memory_id=(int(row["memory_id"]) if row["memory_id"] is not None else None),
+                )
+        return rows_by_path
+
     def _index_documents(
         self,
         scan_token: str,
@@ -181,17 +222,15 @@ class VaultScanner:
         warnings: list[str],
     ) -> None:
         """Phase 2: write all index rows; must be called inside a transaction."""
+        prior_by_path = self._preload_index(documents)
         for doc in documents:
             counts.scanned += 1
-            prior = self._conn.execute(
-                "SELECT id, content_hash, memory_id FROM vault_index WHERE vault_path = ?",
-                (doc.relative_path,),
-            ).fetchone()
-            note_type = _optional_str(doc.frontmatter.get("type"))
-            scope = _parse_note_scope(doc.frontmatter)
+            prior = prior_by_path.get(doc.relative_path)
+            note_type = optional_str(doc.frontmatter.get("type"))
+            scope = parse_note_scope(doc.frontmatter)
             metadata_json = json.dumps(doc.frontmatter, sort_keys=True)
             memory_id: int | None = None
-            changed = prior is None or str(prior["content_hash"]) != doc.content_hash
+            changed = prior is None or prior.content_hash != doc.content_hash
 
             clear_memory_id = False
             if note_type == "minx-memory" and changed:
@@ -201,11 +240,10 @@ class VaultScanner:
                 if memory_id is not None:
                     counts.memory_syncs += 1
             elif prior is not None:
-                memory_id = int(prior["memory_id"]) if prior["memory_id"] is not None else None
+                memory_id = prior.memory_id
                 if memory_id is not None and note_type != "minx-memory":
                     warnings.append(
-                        f"{doc.relative_path}: note type is not minx-memory; "
-                        "cleared stale vault_index pointer"
+                        f"{doc.relative_path}: note type is not minx-memory; cleared stale vault_index pointer"
                     )
                     clear_memory_id = True
                     if not changed:
@@ -330,18 +368,12 @@ class VaultScanner:
             counts.orphaned += 1
             memory_id = row["memory_id"]
             if memory_id is not None:
-                warnings.append(
-                    f"{row['vault_path']}: vault index orphaned for memory_id={int(memory_id)}"
-                )
+                warnings.append(f"{row['vault_path']}: vault index orphaned for memory_id={int(memory_id)}")
                 memory = self._conn.execute(
                     "SELECT status, source FROM memories WHERE id = ?",
                     (int(memory_id),),
                 ).fetchone()
-                if (
-                    memory is not None
-                    and str(memory["status"]) == "active"
-                    and str(memory["source"]) == "vault_sync"
-                ):
+                if memory is not None and str(memory["status"]) == "active" and str(memory["source"]) == "vault_sync":
                     self._insert_memory_event(
                         int(memory_id),
                         "vault_synced",
@@ -359,9 +391,9 @@ class VaultScanner:
 
     def _sync_memory_note(self, doc: VaultDocument, warnings: list[str]) -> _MemorySyncResult:
         try:
-            scope, memory_type, subject = _parse_memory_identity(doc.frontmatter)
-            payload = _parse_memory_payload(doc.frontmatter)
-            payload = validate_memory_payload(memory_type, payload)
+            identity = parse_memory_identity(doc.frontmatter)
+            payload = parse_memory_payload(doc.frontmatter, allow_implicit=True)
+            payload = validate_memory_payload(identity.memory_type, payload)
         except InvalidInputError as exc:
             warnings.append(f"{doc.relative_path}: invalid minx-memory frontmatter: {exc}")
             # Current file no longer satisfies the sync contract. Do not leave
@@ -376,19 +408,15 @@ class VaultScanner:
             ORDER BY updated_at DESC, id DESC
             LIMIT 1
             """,
-            (memory_type, scope, subject),
+            (identity.memory_type, identity.scope, identity.subject),
         ).fetchone()
         if row is None:
-            return _MemorySyncResult(
-                memory_id=self._create_vault_memory(doc, memory_type, scope, subject, payload)
-            )
+            return _MemorySyncResult(memory_id=self._create_vault_memory(doc, identity, payload))
 
         status = str(row["status"])
         memory_id = int(row["id"])
         if status in {"rejected", "expired"}:
-            warnings.append(
-                f"{doc.relative_path}: terminal memory {memory_id} has status={status}; skipped"
-            )
+            warnings.append(f"{doc.relative_path}: terminal memory {memory_id} has status={status}; skipped")
             # Terminal: clear the stale memory_id pointer in vault_index.
             return _MemorySyncResult(memory_id=None, clear_memory_id=True)
         if status == "candidate":
@@ -447,9 +475,7 @@ class VaultScanner:
     def _create_vault_memory(
         self,
         doc: VaultDocument,
-        memory_type: str,
-        scope: str,
-        subject: str,
+        identity: MemoryIdentity,
         payload: dict[str, object],
     ) -> int:
         cur = self._conn.execute(
@@ -460,9 +486,9 @@ class VaultScanner:
             ) VALUES (?, ?, ?, 1.0, 'active', ?, 'vault_sync', ?, datetime('now'), datetime('now'), datetime('now'))
             """,
             (
-                memory_type,
-                scope,
-                subject,
+                identity.memory_type,
+                identity.scope,
+                identity.subject,
                 json.dumps(payload, sort_keys=True),
                 f"vault sync from {doc.relative_path}",
             ),
@@ -488,85 +514,6 @@ class VaultScanner:
             """,
             (memory_id, event_type, json.dumps(payload, sort_keys=True)),
         )
-
-
-def _parse_memory_identity(frontmatter: dict[str, object]) -> tuple[str, str, str]:
-    scope = _parse_note_scope(frontmatter, strict_alias_match=True, required=True)
-    memory_type = _required_str(frontmatter, "memory_type")
-    memory_key = _required_str(frontmatter, "memory_key")
-    parts = memory_key.split(".", 2)
-    if len(parts) != 3:
-        raise InvalidInputError("memory_key must have format {scope}.{memory_type}.{subject}")
-    key_scope, key_memory_type, key_subject = (p.strip() for p in parts)
-    if key_scope != scope:
-        raise InvalidInputError("memory_key scope does not match note scope")
-    if key_memory_type != memory_type:
-        raise InvalidInputError("memory_key memory_type does not match memory_type")
-    subject = _optional_str(frontmatter.get("subject"))
-    if subject is not None and subject.strip() != key_subject:
-        raise InvalidInputError("subject does not match memory_key")
-    if not key_subject:
-        raise InvalidInputError("subject is required")
-    return scope, memory_type, key_subject
-
-
-def _parse_memory_payload(frontmatter: dict[str, object]) -> dict[str, object]:
-    raw_payload = frontmatter.get("payload_json", frontmatter.get("value_json"))
-    if raw_payload is not None:
-        if isinstance(raw_payload, dict):
-            return dict(raw_payload)
-        if isinstance(raw_payload, str):
-            try:
-                parsed = json.loads(raw_payload)
-            except json.JSONDecodeError as exc:
-                raise InvalidInputError("payload_json must be valid JSON") from exc
-            if not isinstance(parsed, dict):
-                raise InvalidInputError("payload_json must be a JSON object")
-            return dict(parsed)
-        raise InvalidInputError("payload_json must be a JSON object or JSON string")
-    return {str(k): v for k, v in frontmatter.items() if k not in RESERVED_MEMORY_KEYS}
-
-
-def _required_str(
-    frontmatter: dict[str, object],
-    key: str,
-    *,
-    fallback_key: str | None = None,
-) -> str:
-    value = _optional_str(frontmatter.get(key))
-    if value is None and fallback_key is not None:
-        value = _optional_str(frontmatter.get(fallback_key))
-    if value is None or not value.strip():
-        raise InvalidInputError(f"{key} is required")
-    return value.strip()
-
-
-def _optional_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    return value if isinstance(value, str) else str(value)
-
-
-def _parse_note_scope(
-    frontmatter: dict[str, object],
-    *,
-    strict_alias_match: bool = False,
-    required: bool = False,
-) -> str | None:
-    scope = _optional_str(frontmatter.get("scope"))
-    domain = _optional_str(frontmatter.get("domain"))
-    scope_text = scope.strip() if scope is not None else ""
-    domain_text = domain.strip() if domain is not None else ""
-
-    if scope_text:
-        if strict_alias_match and domain_text and domain_text != scope_text:
-            raise InvalidInputError("scope and domain must match")
-        return scope_text
-    if domain_text:
-        return domain_text
-    if not required:
-        return None
-    raise InvalidInputError("scope is required")
 
 
 def _terminal_memory_status(conn: Connection, memory_id: int) -> str | None:

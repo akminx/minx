@@ -71,32 +71,22 @@ async def test_core_server_stdio_goal_parse_flow(tmp_path: Path) -> None:
         assert initialize_result.serverInfo.name == "minx-core"
 
         tools_result = await session.list_tools()
-        tool_names = [tool.name for tool in tools_result.tools]
-        assert tool_names == [
+        tool_names = {tool.name for tool in tools_result.tools}
+        # The stdio transport test covers the handshake and a specific
+        # goal/parse flow; it should not act as a frozen manifest of every
+        # registered tool, because adding a new tool elsewhere shouldn't fail
+        # this test. We assert on the tools this test actually exercises plus
+        # a few canonical ones that must exist for an intelligible Core
+        # server. Additional tools are allowed and ignored.
+        required_tools = {
             "get_daily_snapshot",
             "goal_create",
-            "goal_list",
             "goal_get",
             "goal_update",
-            "goal_archive",
             "goal_parse",
-            "get_insight_history",
-            "get_goal_trajectory",
-            "persist_note",
-            "vault_replace_section",
-            "vault_replace_frontmatter",
-            "vault_scan",
-            "vault_reconcile_memories",
-            "memory_list",
-            "memory_get",
-            "memory_create",
-            "memory_confirm",
-            "memory_reject",
-            "memory_expire",
-            "get_pending_memory_candidates",
-            "list_snapshot_archives",
-            "get_snapshot_archive",
-        ]
+        }
+        missing = required_tools - tool_names
+        assert not missing, f"core stdio server missing expected tools: {sorted(missing)}; got {sorted(tool_names)}"
 
         captured_create = await session.call_tool(
             "goal_parse",

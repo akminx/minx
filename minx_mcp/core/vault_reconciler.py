@@ -1,4 +1,20 @@
-"""Bounded vault-frontmatter reconciliation for Slice 6f memory notes."""
+"""Bounded vault-frontmatter reconciliation for Slice 6f memory notes.
+
+The reconciler walks the vault, and for each ``type: minx-memory`` note:
+
+1. Parses identity + payload (via the shared frontmatter parser).
+2. Acquires the per-file vault write lock.
+3. **Stages** the new canonical frontmatter bytes on disk (temp file).
+4. Opens a DB transaction and mutates ``memories`` + ``memory_events``.
+5. Upserts ``vault_index`` with the pre-computed content hash of the staged
+   bytes.
+6. Commits the DB transaction.
+7. Atomically publishes the staged bytes by rename.
+
+If any step up to and including the DB commit fails, the staged temp file is
+aborted and the vault file is untouched. This eliminates the prior
+split-brain risk where the file could be written but the DB rolled back.
+"""
 
 from __future__ import annotations
 
@@ -8,13 +24,18 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection, Row
-from typing import Any
 
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.core.memory_payloads import validate_memory_payload
-from minx_mcp.core.vault_memory_frontmatter import RESERVED_MEMORY_KEYS
+from minx_mcp.core.vault_memory_frontmatter import (
+    MemoryIdentity,
+    optional_str,
+    parse_memory_identity,
+    parse_memory_payload,
+    parse_optional_int,
+)
 from minx_mcp.vault_reader import VaultDocument, VaultReader
-from minx_mcp.vault_writer import VaultWriter
+from minx_mcp.vault_writer import StagedVaultWrite, VaultWriter
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +83,6 @@ class _ReconcileCounts:
     @property
     def applied(self) -> int:
         return self.created + self.confirmed + self.updated
-
-
-@dataclass(frozen=True)
-class _MemoryIdentity:
-    scope: str
-    memory_type: str
-    subject: str
-    memory_key: str
-    memory_id: int | None
-    sync_base_updated_at: str | None
 
 
 @dataclass(frozen=True)
@@ -134,7 +145,7 @@ class VaultReconciler:
                     ),
                 )
                 continue
-            if _optional_str(doc.frontmatter.get("type")) != "minx-memory":
+            if optional_str(doc.frontmatter.get("type")) != "minx-memory":
                 continue
             counts.scanned += 1
             self._reconcile_one(doc, counts, warnings, dry_run=dry_run)
@@ -173,8 +184,8 @@ class VaultReconciler:
         dry_run: bool,
     ) -> None:
         try:
-            identity = _parse_memory_identity(doc.frontmatter)
-            payload = _parse_memory_payload(
+            identity = parse_memory_identity(doc.frontmatter)
+            payload = parse_memory_payload(
                 doc.frontmatter,
                 allow_implicit=identity.memory_id is None,
             )
@@ -191,6 +202,20 @@ class VaultReconciler:
             )
             return
 
+        if dry_run:
+            self._reconcile_one_dry_run(doc, identity, payload, counts, warnings)
+            return
+
+        self._reconcile_one_apply(doc, identity, payload, counts, warnings)
+
+    def _reconcile_one_dry_run(
+        self,
+        doc: VaultDocument,
+        identity: MemoryIdentity,
+        payload: dict[str, object],
+        counts: _ReconcileCounts,
+        warnings: list[VaultReconcileWarning],
+    ) -> None:
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             result = self._apply_db_side(doc, identity, payload)
@@ -198,53 +223,135 @@ class VaultReconciler:
                 warnings.append(result.warning)
                 if result.warning.kind == "conflict":
                     counts.conflicts += 1
-
-            if dry_run:
+            _count_outcome(counts, result.outcome)
+        except _SkipNote as exc:
+            _skip_with_warning(counts, warnings, exc.warning)
+        finally:
+            if self._conn.in_transaction:
                 self._conn.rollback()
-                _count_outcome(counts, result.outcome)
-                return
 
-            frontmatter = _canonical_frontmatter(
-                identity,
-                memory_id=result.memory_id,
-                payload=result.payload,
-                updated_at=result.updated_at,
-            )
-            if _frontmatter_refresh_not_needed(doc.frontmatter, identity, result):
-                resolved = self._vault_writer.resolve_path(doc.relative_path)
-            else:
-                try:
-                    resolved = self._vault_writer.replace_frontmatter(doc.relative_path, frontmatter)
-                except Exception as exc:
+    def _reconcile_one_apply(
+        self,
+        doc: VaultDocument,
+        identity: MemoryIdentity,
+        payload: dict[str, object],
+        counts: _ReconcileCounts,
+        warnings: list[VaultReconcileWarning],
+    ) -> None:
+        # Step 1: stage vault write (hold lock, prepare temp file). This must
+        # happen before opening the DB transaction so the lock wait doesn't
+        # block with an open transaction.
+        canonical_preview = _canonical_frontmatter(
+            identity,
+            memory_id=identity.memory_id if identity.memory_id is not None else 0,
+            payload=payload,
+            updated_at=identity.sync_base_updated_at or "",
+        )
+        refresh_needed_hint = not _frontmatter_equals_expected(doc.frontmatter, canonical_preview)
+
+        staged: StagedVaultWrite | None = None
+
+        try:
+            # Step 2: DB mutations inside a transaction.
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                result = self._apply_db_side(doc, identity, payload)
+                if result.warning is not None:
+                    warnings.append(result.warning)
+                    if result.warning.kind == "conflict":
+                        counts.conflicts += 1
+
+                canonical = _canonical_frontmatter(
+                    identity,
+                    memory_id=result.memory_id,
+                    payload=result.payload,
+                    updated_at=result.updated_at,
+                )
+                skip_write = _frontmatter_refresh_not_needed(doc.frontmatter, identity, result) or (
+                    not refresh_needed_hint and _frontmatter_equals_expected(doc.frontmatter, canonical)
+                )
+
+                if skip_write:
+                    resolved = self._vault_writer.resolve_path(doc.relative_path)
+                    content_hash = _sha256_file(resolved)
+                else:
+                    try:
+                        staged = self._vault_writer.stage_replace_frontmatter(doc.relative_path, canonical)
+                    except Exception as exc:
+                        raise _SkipNote(
+                            VaultReconcileWarning(
+                                kind="write_failed",
+                                vault_path=doc.relative_path,
+                                message=f"frontmatter refresh failed: {exc}",
+                                memory_id=result.memory_id,
+                                memory_key=identity.memory_key,
+                            )
+                        ) from exc
+                    resolved = staged.target
+                    content_hash = staged.content_hash
+
+                self._upsert_vault_index(
+                    doc,
+                    resolved,
+                    canonical,
+                    result.memory_id,
+                    identity.scope,
+                    content_hash=content_hash,
+                )
+                self._conn.commit()
+            except _SkipNote as exc:
+                if self._conn.in_transaction:
                     self._conn.rollback()
-                    _skip_with_warning(
-                        counts,
-                        warnings,
+                if staged is not None:
+                    staged.abort()
+                    staged = None
+                _skip_with_warning(counts, warnings, exc.warning)
+                return
+            except Exception:
+                if self._conn.in_transaction:
+                    self._conn.rollback()
+                if staged is not None:
+                    staged.abort()
+                    staged = None
+                raise
+
+            # Step 3: DB has committed. Atomically publish the staged vault
+            # bytes. If the rename fails here the DB is ahead of the vault by
+            # one reconcile cycle; the next run converges because the note on
+            # disk still parses but has stale sync_base_updated_at.
+            if staged is not None:
+                try:
+                    staged.commit()
+                except Exception as exc:
+                    logger.error(
+                        "vault rename failed after DB commit; will self-heal on next reconcile",
+                        exc_info=True,
+                        extra={
+                            "vault_path": doc.relative_path,
+                            "memory_id": result.memory_id,
+                        },
+                    )
+                    warnings.append(
                         VaultReconcileWarning(
                             kind="write_failed",
                             vault_path=doc.relative_path,
-                            message=f"frontmatter refresh failed: {exc}",
+                            message=(f"vault publish failed after DB commit; next reconcile will retry: {exc}"),
                             memory_id=result.memory_id,
                             memory_key=identity.memory_key,
-                        ),
+                        )
                     )
-                    return
-            self._upsert_vault_index(doc, resolved, frontmatter, result.memory_id, identity.scope)
-            self._conn.commit()
+                    # DB state was still committed; count the outcome.
+                finally:
+                    staged = None
             _count_outcome(counts, result.outcome)
-        except _SkipNote as exc:
-            if self._conn.in_transaction:
-                self._conn.rollback()
-            _skip_with_warning(counts, warnings, exc.warning)
-        except Exception:
-            if self._conn.in_transaction:
-                self._conn.rollback()
-            raise
+        finally:
+            if staged is not None:
+                staged.abort()
 
     def _apply_db_side(
         self,
         doc: VaultDocument,
-        identity: _MemoryIdentity,
+        identity: MemoryIdentity,
         payload: dict[str, object],
     ) -> _ApplyResult:
         row = self._resolve_row(identity, doc.relative_path)
@@ -258,7 +365,7 @@ class VaultReconciler:
                 VaultReconcileWarning(
                     kind="terminal_state",
                     vault_path=doc.relative_path,
-                    message=f"memory {memory_id} is {status}; vault edits do not resurrect terminal memories",
+                    message=(f"memory {memory_id} is {status}; vault edits do not resurrect terminal memories"),
                     memory_id=memory_id,
                     memory_key=identity.memory_key,
                 )
@@ -304,7 +411,7 @@ class VaultReconciler:
             payload=payload,
         )
 
-    def _resolve_row(self, identity: _MemoryIdentity, vault_path: str) -> Row | None:
+    def _resolve_row(self, identity: MemoryIdentity, vault_path: str) -> Row | None:
         if identity.memory_id is not None:
             row = self._conn.execute(
                 "SELECT * FROM memories WHERE id = ?",
@@ -354,7 +461,7 @@ class VaultReconciler:
     def _check_active_conflict(
         self,
         row: Row,
-        identity: _MemoryIdentity,
+        identity: MemoryIdentity,
         vault_path: str,
     ) -> None:
         db_updated_at = str(row["updated_at"])
@@ -388,7 +495,7 @@ class VaultReconciler:
     def _check_candidate_conflict(
         self,
         row: Row,
-        identity: _MemoryIdentity,
+        identity: MemoryIdentity,
         vault_path: str,
     ) -> None:
         if identity.sync_base_updated_at is None:
@@ -399,7 +506,7 @@ class VaultReconciler:
     def _create_memory(
         self,
         doc: VaultDocument,
-        identity: _MemoryIdentity,
+        identity: MemoryIdentity,
         payload: dict[str, object],
     ) -> _ApplyResult:
         cur = self._conn.execute(
@@ -441,16 +548,15 @@ class VaultReconciler:
     def _confirm_candidate(
         self,
         doc: VaultDocument,
-        identity: _MemoryIdentity,
+        identity: MemoryIdentity,
         row: Row,
         payload: dict[str, object],
     ) -> _ApplyResult:
         memory_id = int(row["id"])
         prior_payload = _parse_payload_json(str(row["payload_json"]))
         payload_changed = _canonical_payload_json(prior_payload) != _canonical_payload_json(payload)
-        stale_candidate = (
-            identity.sync_base_updated_at is None
-            and _row_updated_after_note_mtime(row, self._vault_writer.resolve_path(doc.relative_path))
+        stale_candidate = identity.sync_base_updated_at is None and _row_updated_after_note_mtime(
+            row, self._vault_writer.resolve_path(doc.relative_path)
         )
         cur = self._conn.execute(
             """
@@ -508,8 +614,9 @@ class VaultReconciler:
         frontmatter: dict[str, object],
         memory_id: int,
         scope: str,
+        *,
+        content_hash: str,
     ) -> None:
-        content_hash = _sha256_file(resolved_path)
         metadata_json = json.dumps(frontmatter, sort_keys=True)
         self._conn.execute(
             """
@@ -585,107 +692,7 @@ def _count_outcome(counts: _ReconcileCounts, outcome: str) -> None:
         raise RuntimeError(f"unknown reconcile outcome: {outcome}")
 
 
-def _parse_memory_identity(frontmatter: dict[str, object]) -> _MemoryIdentity:
-    scope = _parse_note_scope(frontmatter, strict_alias_match=True, required=True)
-    memory_type = _required_str(frontmatter, "memory_type")
-    memory_key = _required_str(frontmatter, "memory_key")
-    parts = memory_key.split(".", 2)
-    if len(parts) != 3:
-        raise InvalidInputError("memory_key must have format {scope}.{memory_type}.{subject}")
-    key_scope, key_memory_type, key_subject = (p.strip() for p in parts)
-    if key_scope != scope:
-        raise InvalidInputError("memory_key scope does not match note scope")
-    if key_memory_type != memory_type:
-        raise InvalidInputError("memory_key memory_type does not match memory_type")
-    subject = _optional_str(frontmatter.get("subject"))
-    if subject is not None and subject.strip() != key_subject:
-        raise InvalidInputError("subject does not match memory_key")
-    if not key_subject:
-        raise InvalidInputError("subject is required")
-    return _MemoryIdentity(
-        scope=scope,
-        memory_type=memory_type,
-        subject=key_subject,
-        memory_key=f"{scope}.{memory_type}.{key_subject}",
-        memory_id=_parse_optional_int(frontmatter.get("memory_id"), "memory_id"),
-        sync_base_updated_at=_optional_str(frontmatter.get("sync_base_updated_at")),
-    )
-
-
-def _parse_memory_payload(
-    frontmatter: dict[str, object],
-    *,
-    allow_implicit: bool,
-) -> dict[str, object]:
-    raw_payload = frontmatter.get("payload_json", frontmatter.get("value_json"))
-    if raw_payload is not None:
-        if isinstance(raw_payload, dict):
-            return dict(raw_payload)
-        if isinstance(raw_payload, str):
-            try:
-                parsed = json.loads(raw_payload)
-            except json.JSONDecodeError as exc:
-                raise InvalidInputError("payload_json must be valid JSON") from exc
-            if not isinstance(parsed, dict):
-                raise InvalidInputError("payload_json must be a JSON object")
-            return dict(parsed)
-        raise InvalidInputError("payload_json must be a JSON object or JSON string")
-    if not allow_implicit:
-        raise InvalidInputError("payload_json is required for generated memory notes")
-    return {str(k): v for k, v in frontmatter.items() if k not in RESERVED_MEMORY_KEYS}
-
-
-def _parse_note_scope(
-    frontmatter: dict[str, object],
-    *,
-    strict_alias_match: bool = False,
-    required: bool = False,
-) -> str:
-    scope = _optional_str(frontmatter.get("scope"))
-    domain = _optional_str(frontmatter.get("domain"))
-    scope_text = scope.strip() if scope is not None else ""
-    domain_text = domain.strip() if domain is not None else ""
-    if scope_text:
-        if strict_alias_match and domain_text and domain_text != scope_text:
-            raise InvalidInputError("scope and domain must match")
-        return scope_text
-    if domain_text:
-        return domain_text
-    if required:
-        raise InvalidInputError("scope is required")
-    return ""
-
-
-def _required_str(frontmatter: dict[str, object], key: str) -> str:
-    value = _optional_str(frontmatter.get(key))
-    if value is None or not value.strip():
-        raise InvalidInputError(f"{key} is required")
-    return value.strip()
-
-
-def _optional_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    return value if isinstance(value, str) else str(value)
-
-
-def _parse_optional_int(value: object, field_name: str) -> int | None:
-    if value is None or value == "":
-        return None
-    if isinstance(value, bool):
-        raise InvalidInputError(f"{field_name} must be an integer")
-    if isinstance(value, int):
-        parsed = value
-    elif isinstance(value, str) and value.strip().isdigit():
-        parsed = int(value.strip())
-    else:
-        raise InvalidInputError(f"{field_name} must be an integer")
-    if parsed < 1:
-        raise InvalidInputError(f"{field_name} must be positive")
-    return parsed
-
-
-def _require_identity_match(row: Row, identity: _MemoryIdentity, vault_path: str) -> None:
+def _require_identity_match(row: Row, identity: MemoryIdentity, vault_path: str) -> None:
     if (
         str(row["scope"]) != identity.scope
         or str(row["memory_type"]) != identity.memory_type
@@ -702,7 +709,7 @@ def _require_identity_match(row: Row, identity: _MemoryIdentity, vault_path: str
         )
 
 
-def _conflict_warning(row: Row, identity: _MemoryIdentity, vault_path: str) -> VaultReconcileWarning:
+def _conflict_warning(row: Row, identity: MemoryIdentity, vault_path: str) -> VaultReconcileWarning:
     return VaultReconcileWarning(
         kind="conflict",
         vault_path=vault_path,
@@ -728,50 +735,75 @@ def _canonical_payload_json(payload: dict[str, object]) -> str:
     return json.dumps(payload, sort_keys=True)
 
 
+_CANONICAL_KEYS = {
+    "type",
+    "scope",
+    "memory_key",
+    "memory_type",
+    "subject",
+    "memory_id",
+    "sync_base_updated_at",
+    "payload_json",
+}
+
+
+def _frontmatter_equals_expected(
+    frontmatter: dict[str, object],
+    expected: dict[str, object],
+) -> bool:
+    """Cheap structural equality test for canonical frontmatter shape."""
+    if set(frontmatter) != _CANONICAL_KEYS:
+        return False
+    for key in _CANONICAL_KEYS:
+        if key == "payload_json":
+            lhs = frontmatter.get(key)
+            if not isinstance(lhs, dict):
+                return False
+            rhs = expected.get(key)
+            rhs_dict: dict[str, object] = rhs if isinstance(rhs, dict) else {}
+            if _canonical_payload_json(lhs) != _canonical_payload_json(rhs_dict):
+                return False
+        else:
+            if str(frontmatter.get(key)) != str(expected.get(key)):
+                return False
+    return True
+
+
 def _frontmatter_refresh_not_needed(
     frontmatter: dict[str, object],
-    identity: _MemoryIdentity,
+    identity: MemoryIdentity,
     result: _ApplyResult,
 ) -> bool:
     if result.outcome != "skipped":
         return False
     if identity.sync_base_updated_at != result.updated_at:
         return False
-    if set(frontmatter) != {
-        "type",
-        "scope",
-        "memory_key",
-        "memory_type",
-        "subject",
-        "memory_id",
-        "sync_base_updated_at",
-        "payload_json",
-    }:
+    if set(frontmatter) != _CANONICAL_KEYS:
         return False
-    if _optional_str(frontmatter.get("type")) != "minx-memory":
+    if optional_str(frontmatter.get("type")) != "minx-memory":
         return False
-    if _optional_str(frontmatter.get("scope")) != identity.scope:
+    if optional_str(frontmatter.get("scope")) != identity.scope:
         return False
-    if _optional_str(frontmatter.get("memory_key")) != identity.memory_key:
+    if optional_str(frontmatter.get("memory_key")) != identity.memory_key:
         return False
-    if _optional_str(frontmatter.get("memory_type")) != identity.memory_type:
+    if optional_str(frontmatter.get("memory_type")) != identity.memory_type:
         return False
-    if _optional_str(frontmatter.get("subject")) != identity.subject:
+    if optional_str(frontmatter.get("subject")) != identity.subject:
         return False
     try:
-        memory_id = _parse_optional_int(frontmatter.get("memory_id"), "memory_id")
-        payload = _parse_memory_payload(frontmatter, allow_implicit=False)
+        memory_id = parse_optional_int(frontmatter.get("memory_id"), "memory_id")
+        payload = parse_memory_payload(frontmatter, allow_implicit=False)
     except InvalidInputError:
         return False
     return (
         memory_id == result.memory_id
-        and _optional_str(frontmatter.get("sync_base_updated_at")) == result.updated_at
+        and optional_str(frontmatter.get("sync_base_updated_at")) == result.updated_at
         and _canonical_payload_json(payload) == _canonical_payload_json(result.payload)
     )
 
 
 def _canonical_frontmatter(
-    identity: _MemoryIdentity,
+    identity: MemoryIdentity,
     *,
     memory_id: int,
     payload: dict[str, object],

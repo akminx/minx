@@ -16,8 +16,7 @@ def _scanner(tmp_path: Path):
     vault_root = tmp_path / "vault"
     conn = get_connection(db_path)
     reader = VaultReader(vault_root, ("Minx",))
-    service = MemoryService(db_path, conn=conn)
-    return conn, VaultScanner(conn, reader, service)
+    return conn, VaultScanner(conn, reader)
 
 
 def _write(path: Path, text: str) -> None:
@@ -147,9 +146,7 @@ def test_vault_scanner_prefers_scope_over_domain_when_both_are_present(tmp_path:
     report = scanner.scan()
 
     assert report.memory_syncs == 1
-    row = conn.execute(
-        "SELECT scope FROM vault_index WHERE vault_path = 'Minx/Memory/scope_precedence.md'"
-    ).fetchone()
+    row = conn.execute("SELECT scope FROM vault_index WHERE vault_path = 'Minx/Memory/scope_precedence.md'").fetchone()
     assert row["scope"] == "core"
 
 
@@ -176,9 +173,7 @@ def test_vault_scanner_rejects_mismatched_scope_and_domain(tmp_path: Path) -> No
     assert report.memory_syncs == 0
     assert len(report.warnings) == 1
     assert "invalid minx-memory frontmatter" in report.warnings[0]
-    row = conn.execute(
-        "SELECT scope FROM vault_index WHERE vault_path = 'Minx/Memory/mismatch.md'"
-    ).fetchone()
+    row = conn.execute("SELECT scope FROM vault_index WHERE vault_path = 'Minx/Memory/mismatch.md'").fetchone()
     assert row["scope"] == "core"
 
 
@@ -321,8 +316,7 @@ def test_vault_scanner_does_not_delete_existing_index_when_path_enumeration_fail
     vault_root = tmp_path / "vault"
     conn = get_connection(db_path)
     reader = VaultReader(vault_root, ("Minx",))
-    service = MemoryService(db_path, conn=conn)
-    scanner = VaultScanner(conn, reader, service)
+    scanner = VaultScanner(conn, reader)
     good = tmp_path / "vault" / "Minx" / "Entities" / "ok.md"
     _write(good, "---\ntype: minx-entity\ndomain: core\n---\n")
     first = scanner.scan()
@@ -348,8 +342,7 @@ def test_vault_scanner_marks_oserror_during_path_enumeration_as_incomplete_walk(
     vault_root = tmp_path / "vault"
     conn = get_connection(db_path)
     reader = VaultReader(vault_root, ("Minx",))
-    service = MemoryService(db_path, conn=conn)
-    scanner = VaultScanner(conn, reader, service)
+    scanner = VaultScanner(conn, reader)
     good = tmp_path / "vault" / "Minx" / "Entities" / "ok.md"
     _write(good, "---\ntype: minx-entity\nscope: core\n---\n")
     assert scanner.scan().indexed == 1
@@ -394,17 +387,9 @@ def test_vault_scanner_indexes_good_docs_and_cleans_orphans_when_one_file_is_unr
     assert report.orphaned == 1
     assert any("bad.md" in warning for warning in report.warnings)
     assert (
-        conn.execute(
-            "SELECT COUNT(*) FROM vault_index WHERE vault_path = 'Minx/Entities/good.md'"
-        ).fetchone()[0]
-        == 1
+        conn.execute("SELECT COUNT(*) FROM vault_index WHERE vault_path = 'Minx/Entities/good.md'").fetchone()[0] == 1
     )
-    assert (
-        conn.execute(
-            "SELECT COUNT(*) FROM vault_index WHERE vault_path = 'Minx/Orphans/old.md'"
-        ).fetchone()[0]
-        == 0
-    )
+    assert conn.execute("SELECT COUNT(*) FROM vault_index WHERE vault_path = 'Minx/Orphans/old.md'").fetchone()[0] == 0
 
 
 def test_vault_scanner_skips_file_when_read_document_raises_oserror(tmp_path: Path) -> None:
@@ -412,8 +397,7 @@ def test_vault_scanner_skips_file_when_read_document_raises_oserror(tmp_path: Pa
     vault_root = tmp_path / "vault"
     conn = get_connection(db_path)
     reader = VaultReader(vault_root, ("Minx",))
-    service = MemoryService(db_path, conn=conn)
-    scanner = VaultScanner(conn, reader, service)
+    scanner = VaultScanner(conn, reader)
     good = tmp_path / "vault" / "Minx" / "Entities" / "good.md"
     bad = tmp_path / "vault" / "Minx" / "Entities" / "bad.md"
     _write(good, "---\ntype: minx-entity\nscope: core\n---\n")
@@ -441,8 +425,7 @@ def test_vault_scanner_does_not_orphan_previously_indexed_file_that_cannot_be_re
     vault_root = tmp_path / "vault"
     conn = get_connection(db_path)
     reader = VaultReader(vault_root, ("Minx",))
-    service = MemoryService(db_path, conn=conn)
-    scanner = VaultScanner(conn, reader, service)
+    scanner = VaultScanner(conn, reader)
     note = tmp_path / "vault" / "Minx" / "Memory" / "flaky.md"
     _write(
         note,
@@ -459,9 +442,9 @@ def test_vault_scanner_does_not_orphan_previously_indexed_file_that_cannot_be_re
     )
     first = scanner.scan()
     assert first.memory_syncs == 1
-    memory_id = conn.execute(
-        "SELECT memory_id FROM vault_index WHERE vault_path = 'Minx/Memory/flaky.md'"
-    ).fetchone()["memory_id"]
+    memory_id = conn.execute("SELECT memory_id FROM vault_index WHERE vault_path = 'Minx/Memory/flaky.md'").fetchone()[
+        "memory_id"
+    ]
     assert memory_id is not None
     original_read = reader.read_document
 
@@ -473,9 +456,7 @@ def test_vault_scanner_does_not_orphan_previously_indexed_file_that_cannot_be_re
     reader.read_document = flaky_read  # type: ignore[method-assign]
     second = scanner.scan()
 
-    row = conn.execute(
-        "SELECT memory_id FROM vault_index WHERE vault_path = 'Minx/Memory/flaky.md'"
-    ).fetchone()
+    row = conn.execute("SELECT memory_id FROM vault_index WHERE vault_path = 'Minx/Memory/flaky.md'").fetchone()
     orphan_events = conn.execute(
         """
         SELECT COUNT(*)
@@ -681,7 +662,6 @@ def test_vault_scanner_does_not_hold_db_lock_during_walk(tmp_path: Path) -> None
     vault_root = tmp_path / "vault"
     conn = get_connection(db_path)
     reader = VaultReader(vault_root, ("Minx",))
-    service = MemoryService(db_path, conn=conn)
 
     note = tmp_path / "vault" / "Minx" / "Notes" / "slow.md"
     _write(note, "---\ntype: entity\n---\nBody\n")
@@ -716,7 +696,7 @@ def test_vault_scanner_does_not_hold_db_lock_during_walk(tmp_path: Path) -> None
     thread = threading.Thread(target=concurrent_writer, daemon=True)
     thread.start()
     # Run the scan; the concurrent writer should complete without blocking.
-    scanner = VaultScanner(conn, reader, service)
+    scanner = VaultScanner(conn, reader)
     scanner.scan()
     thread.join(timeout=5.0)
 
@@ -781,8 +761,9 @@ def test_vault_scanner_dry_run_does_not_persist_index_rows(tmp_path: Path) -> No
 
     assert report.scanned == 1
     assert report.indexed == 1
-    assert conn.execute("SELECT COUNT(*) FROM vault_index").fetchone()[0] == 0, \
+    assert conn.execute("SELECT COUNT(*) FROM vault_index").fetchone()[0] == 0, (
         "dry_run=True must not persist vault_index rows"
+    )
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
 
 
@@ -879,9 +860,7 @@ def test_vault_scanner_clears_stale_memory_id_on_unchanged_terminal_rescan(tmp_p
 
     second = scanner.scan()
 
-    row = conn.execute(
-        "SELECT memory_id FROM vault_index WHERE vault_path = 'Minx/Memory/stale_pointer.md'"
-    ).fetchone()
+    row = conn.execute("SELECT memory_id FROM vault_index WHERE vault_path = 'Minx/Memory/stale_pointer.md'").fetchone()
     assert row["memory_id"] is None
     assert second.memory_syncs == 0
     assert any("terminal" in warning for warning in second.warnings)
@@ -907,9 +886,7 @@ def test_vault_scanner_excludes_sync_base_updated_at_from_payload(tmp_path: Path
     report = scanner.scan()
 
     assert report.memory_syncs == 1
-    payload = json.loads(
-        conn.execute("SELECT payload_json FROM memories WHERE subject = 'tz'").fetchone()[0]
-    )
+    payload = json.loads(conn.execute("SELECT payload_json FROM memories WHERE subject = 'tz'").fetchone()[0])
     assert "sync_base_updated_at" not in payload
     assert payload == {"value": "UTC"}
 
@@ -937,9 +914,7 @@ def test_vault_scanner_excludes_obsidian_housekeeping_keys_from_payload(tmp_path
     report = scanner.scan()
 
     payload = json.loads(
-        conn.execute("SELECT payload_json FROM memories WHERE subject = 'obsidian_keys'").fetchone()[
-            0
-        ]
+        conn.execute("SELECT payload_json FROM memories WHERE subject = 'obsidian_keys'").fetchone()[0]
     )
     assert report.memory_syncs == 1
     assert payload == {"value": "yes"}
@@ -964,8 +939,6 @@ def test_vault_scanner_keeps_entity_fact_aliases_as_payload(tmp_path: Path) -> N
 
     report = scanner.scan()
 
-    payload = json.loads(
-        conn.execute("SELECT payload_json FROM memories WHERE subject = 'local_shop'").fetchone()[0]
-    )
+    payload = json.loads(conn.execute("SELECT payload_json FROM memories WHERE subject = 'local_shop'").fetchone()[0])
     assert report.memory_syncs == 1
     assert payload == {"category": "merchant", "aliases": ["Local Shop", "The Shop"]}

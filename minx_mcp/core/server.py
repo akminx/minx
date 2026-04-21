@@ -456,11 +456,7 @@ class _ScopingFinanceReadAPI:
         prior_start: str,
         prior_end: str,
     ):
-        return self._with_api(
-            lambda api: api.get_period_comparison(
-                current_start, current_end, prior_start, prior_end
-            )
-        )
+        return self._with_api(lambda api: api.get_period_comparison(current_start, current_end, prior_start, prior_end))
 
     def list_goal_category_names(self) -> list[str]:
         return self._with_api(lambda api: api.list_goal_category_names())
@@ -906,11 +902,9 @@ def _vault_scan(config: CoreServiceConfig, dry_run: bool = False) -> dict[str, o
             None,
             f"vault_scan dry_run={dry_run}",
         )
-        service = MemoryService(Path(config.db_path), conn=conn)
         scanner = VaultScanner(
             conn,
             VaultReader(config.vault_path, ("Minx",)),
-            service,
             scope_prefix="Minx",
         )
         return {"report": scanner.scan(dry_run=dry_run).as_dict()}

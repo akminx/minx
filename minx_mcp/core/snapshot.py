@@ -80,9 +80,7 @@ def _build_daily_snapshot_sync(
             warning = memory_ingest_warning or memory_warning
         attention_items = _build_attention_items(read_models, detector_signals)
         if memory_context.pending_candidate_count:
-            attention_items.append(
-                f"{memory_context.pending_candidate_count} memory candidates need review."
-            )
+            attention_items.append(f"{memory_context.pending_candidate_count} memory candidates need review.")
         snapshot = DailySnapshot(
             date=review_date,
             timeline=read_models.timeline,
@@ -195,8 +193,7 @@ def _ingest_memory_proposals_best_effort(
         )
     if report.failures:
         failed = ", ".join(
-            f"{failure.memory_type}:{failure.scope}:{failure.subject}"
-            for failure in report.failures[:5]
+            f"{failure.memory_type}:{failure.scope}:{failure.subject}" for failure in report.failures[:5]
         )
         suffix = "" if len(report.failures) <= 5 else f" (+{len(report.failures) - 5} more)"
         return PersistenceWarning(
@@ -279,10 +276,7 @@ def _persist_warning(
         failure = DurabilitySinkFailure("detector_insights", exc)
         return PersistenceWarning(
             sink=failure.sink,
-            message=(
-                "Detector insight persistence failed; snapshot data may be fresher "
-                "than stored history."
-            ),
+            message=("Detector insight persistence failed; snapshot data may be fresher than stored history."),
         )
     return None
 
@@ -302,9 +296,7 @@ def _persist_detector_insights(
     conn.execute(f"SAVEPOINT {savepoint}")
     try:
         _insert_detector_insights(conn, review_date, insights)
-    except (
-        Exception
-    ):  # Broad except is intentional: any failure must roll back the savepoint before re-raising
+    except Exception:  # Broad except is intentional: any failure must roll back the savepoint before re-raising
         conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         raise
@@ -326,9 +318,7 @@ def _replace_detector_insights(
             (review_date,),
         )
         _insert_detector_insights(conn, review_date, insights)
-    except (
-        Exception
-    ):  # Broad except is intentional: any failure must roll back the savepoint before re-raising
+    except Exception:  # Broad except is intentional: any failure must roll back the savepoint before re-raising
         conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         raise
@@ -394,7 +384,29 @@ def _persist_snapshot_archive(conn: Connection, review_date: str, snapshot: Dail
             content_hash=content_hash,
         )
         conn.commit()
-    except sqlite3.IntegrityError:
+    except sqlite3.IntegrityError as exc:
+        # The table enforces UNIQUE(review_date, content_hash); duplicates are
+        # expected when ``build_daily_snapshot`` runs more than once in a day
+        # without any observable state change (see test_snapshot.py::
+        # _archive_count checks that re-running yields exactly one row).
+        # That case is benign, but the original code swallowed the error with
+        # zero telemetry, which made any *other* IntegrityError (e.g. a NOT
+        # NULL violation introduced by a schema regression) indistinguishable
+        # from the benign dedupe path. Emit an INFO record so operators can
+        # see the skip happened and distinguish benign re-runs from real bugs.
+        logger.info(
+            "Snapshot archive already exists for %s (content_hash=%s); skipping insert: %s",
+            review_date,
+            content_hash,
+            exc,
+            extra={
+                "domain": "core",
+                "tool": "build_daily_snapshot",
+                "success": True,
+                "review_date": review_date,
+                "content_hash": content_hash,
+            },
+        )
         with suppress(sqlite3.Error):
             conn.rollback()
     except Exception as exc:

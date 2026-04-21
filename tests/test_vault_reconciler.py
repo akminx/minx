@@ -7,9 +7,9 @@ from pathlib import Path
 
 from minx_mcp.core.memory_service import MemoryService
 from minx_mcp.core.server import create_core_server
+from minx_mcp.core.vault_memory_frontmatter import MemoryIdentity as _MemoryIdentity
 from minx_mcp.core.vault_reconciler import (
     VaultReconciler,
-    _MemoryIdentity,
     _row_updated_after_note_mtime,
     _SkipNote,
 )
@@ -74,7 +74,7 @@ def test_vault_reconcile_creates_memory_and_refreshes_frontmatter(tmp_path: Path
         "memory_key: core.preference.timezone\n"
         "memory_type: preference\n"
         "subject: timezone\n"
-        "payload_json: '{\"category\":\"timezone\",\"value\":\"America/Chicago\"}'\n"
+        'payload_json: \'{"category":"timezone","value":"America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n\n"
         "## Human Editable\n\n"
@@ -98,8 +98,8 @@ def test_vault_reconcile_creates_memory_and_refreshes_frontmatter(tmp_path: Path
     }
     text = note.read_text(encoding="utf-8")
     assert f"memory_id: {row['id']}" in text
-    assert f"sync_base_updated_at: \"{row['updated_at']}\"" in text
-    assert "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'" in text
+    assert f'sync_base_updated_at: "{row["updated_at"]}"' in text
+    assert 'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'' in text
     assert "Keep this exact prose." in text
     assert _event_types(db_path, int(row["id"])) == ["created", "promoted", "vault_synced"]
 
@@ -127,8 +127,8 @@ def test_vault_reconcile_detects_active_memory_version_conflict(tmp_path: Path) 
         "memory_type: preference\n"
         "subject: timezone\n"
         f"memory_id: {memory.id}\n"
-        "sync_base_updated_at: \"1999-01-01 00:00:00\"\n"
-        "payload_json: '{\"category\":\"timezone\",\"value\":\"America/Chicago\"}'\n"
+        'sync_base_updated_at: "1999-01-01 00:00:00"\n'
+        'payload_json: \'{"category":"timezone","value":"America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n"
     )
@@ -171,7 +171,7 @@ def test_vault_reconcile_confirms_candidate_without_sync_base(tmp_path: Path) ->
         "memory_type: preference\n"
         "subject: timezone\n"
         f"memory_id: {memory.id}\n"
-        "payload_json: '{\"category\":\"timezone\",\"value\":\"America/Chicago\"}'\n"
+        'payload_json: \'{"category":"timezone","value":"America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n",
     )
@@ -218,8 +218,8 @@ def test_vault_reconcile_idempotent_reapply_skips_without_events(tmp_path: Path)
         "memory_type: preference\n"
         "subject: timezone\n"
         f"memory_id: {memory.id}\n"
-        f"sync_base_updated_at: \"{memory.updated_at}\"\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"UTC\"}'\n"
+        f'sync_base_updated_at: "{memory.updated_at}"\n'
+        'payload_json: \'{"category": "timezone", "value": "UTC"}\'\n'
         "---\n"
         "# Timezone\n",
     )
@@ -261,8 +261,8 @@ def test_vault_reconcile_reports_identity_mismatch(tmp_path: Path) -> None:
         "memory_type: preference\n"
         "subject: language\n"
         f"memory_id: {memory.id}\n"
-        f"sync_base_updated_at: \"{memory.updated_at}\"\n"
-        "payload_json: '{\"category\": \"preference\", \"value\": \"English\"}'\n"
+        f'sync_base_updated_at: "{memory.updated_at}"\n'
+        'payload_json: \'{"category": "preference", "value": "English"}\'\n'
         "---\n"
         "# Language\n",
     )
@@ -287,8 +287,8 @@ def test_vault_reconcile_reports_missing_memory_id(tmp_path: Path) -> None:
         "memory_type: preference\n"
         "subject: timezone\n"
         "memory_id: 999\n"
-        "sync_base_updated_at: \"2026-04-19 12:00:00\"\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"UTC\"}'\n"
+        'sync_base_updated_at: "2026-04-19 12:00:00"\n'
+        'payload_json: \'{"category": "timezone", "value": "UTC"}\'\n'
         "---\n"
         "# Missing\n",
     )
@@ -326,7 +326,7 @@ def test_vault_reconcile_skips_latest_terminal_row_without_memory_id(tmp_path: P
         "memory_key: core.preference.timezone\n"
         "memory_type: preference\n"
         "subject: timezone\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n",
     )
@@ -354,15 +354,25 @@ def test_vault_reconcile_write_failure_rolls_back_memory_create(
         "memory_key: core.preference.timezone\n"
         "memory_type: preference\n"
         "subject: timezone\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n",
     )
 
-    def fail_replace_frontmatter(self, relative_path, frontmatter):
+    def fail_stage_replace_frontmatter(self, relative_path, frontmatter):
         raise OSError("disk full")
 
-    monkeypatch.setattr(VaultWriter, "replace_frontmatter", fail_replace_frontmatter)
+    # The reconciler now uses the two-phase staged-write API so it can commit
+    # the DB transaction *before* the filesystem is mutated. Both the legacy
+    # ``replace_frontmatter`` and new ``stage_replace_frontmatter`` call into
+    # the same lock+write machinery, so patching the staged entry point gives
+    # us the same "write fails" behaviour under the new flow.
+    monkeypatch.setattr(
+        VaultWriter,
+        "stage_replace_frontmatter",
+        fail_stage_replace_frontmatter,
+    )
+    monkeypatch.setattr(VaultWriter, "replace_frontmatter", fail_stage_replace_frontmatter)
 
     result = get_tool(server, "vault_reconcile_memories").fn(False)
 
@@ -387,7 +397,7 @@ def test_vault_reconcile_accepts_legacy_value_json_and_refreshes_payload_json(
         "memory_key: core.preference.timezone\n"
         "memory_type: preference\n"
         "subject: timezone\n"
-        "value_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        'value_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n",
     )
@@ -402,7 +412,7 @@ def test_vault_reconcile_accepts_legacy_value_json_and_refreshes_payload_json(
     }
     text = note.read_text(encoding="utf-8")
     assert "value_json:" not in text
-    assert "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'" in text
+    assert 'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'' in text
 
 
 def test_vault_reconcile_accepts_legacy_domain_alias_and_refreshes_scope(
@@ -418,7 +428,7 @@ def test_vault_reconcile_accepts_legacy_domain_alias_and_refreshes_scope(
         "memory_key: core.preference.timezone\n"
         "memory_type: preference\n"
         "subject: timezone\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n",
     )
@@ -472,7 +482,7 @@ def test_vault_reconcile_memory_key_fallback_updates_live_vault_memory(
         "memory_key: core.preference.timezone\n"
         "memory_type: preference\n"
         "subject: timezone\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n",
     )
@@ -513,8 +523,8 @@ def test_vault_reconcile_updates_non_vault_memory_when_sync_base_matches(
         "memory_key: core.preference.timezone\n"
         "memory_type: preference\n"
         "subject: timezone\n"
-        f"sync_base_updated_at: \"{memory.updated_at}\"\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        f'sync_base_updated_at: "{memory.updated_at}"\n'
+        'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n",
     )
@@ -523,9 +533,7 @@ def test_vault_reconcile_updates_non_vault_memory_when_sync_base_matches(
 
     assert result["success"] is True
     assert result["data"]["report"]["updated"] == 1
-    assert json.loads(_memory_row(db_path, "timezone")["payload_json"])["value"] == (
-        "America/Chicago"
-    )
+    assert json.loads(_memory_row(db_path, "timezone")["payload_json"])["value"] == ("America/Chicago")
 
 
 def test_vault_reconcile_conflicts_on_memory_id_without_sync_base_for_active(
@@ -552,7 +560,7 @@ def test_vault_reconcile_conflicts_on_memory_id_without_sync_base_for_active(
         "memory_type: preference\n"
         "subject: timezone\n"
         f"memory_id: {memory.id}\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n"
     )
@@ -593,7 +601,7 @@ def test_vault_reconcile_conflicts_for_non_vault_memory_without_sync_base(
         "memory_key: core.preference.timezone\n"
         "memory_type: preference\n"
         "subject: timezone\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n",
     )
@@ -618,7 +626,7 @@ def test_vault_reconcile_invalid_payload_validation_is_invalid_note(tmp_path: Pa
         "memory_key: core.preference.timezone\n"
         "memory_type: preference\n"
         "subject: timezone\n"
-        "payload_json: '{\"unknown\": \"field\"}'\n"
+        'payload_json: \'{"unknown": "field"}\'\n'
         "---\n"
         "# Timezone\n",
     )
@@ -692,7 +700,7 @@ def test_vault_reconcile_generated_note_rejects_implicit_payload(
         "memory_type: preference\n"
         "subject: timezone\n"
         f"memory_id: {memory.id}\n"
-        f"sync_base_updated_at: \"{memory.updated_at}\"\n"
+        f'sync_base_updated_at: "{memory.updated_at}"\n'
         "category: timezone\n"
         "value: America/Chicago\n"
         "---\n"
@@ -781,8 +789,8 @@ def test_vault_reconcile_dry_run_update_does_not_mutate_db_or_note(tmp_path: Pat
         "memory_type: preference\n"
         "subject: timezone\n"
         f"memory_id: {memory.id}\n"
-        f"sync_base_updated_at: \"{memory.updated_at}\"\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        f'sync_base_updated_at: "{memory.updated_at}"\n'
+        'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n"
     )
@@ -822,7 +830,7 @@ def test_vault_reconcile_dry_run_confirm_does_not_mutate_db_or_note(tmp_path: Pa
         "memory_type: preference\n"
         "subject: timezone\n"
         f"memory_id: {memory.id}\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n"
     )
@@ -844,22 +852,32 @@ def test_vault_reconcile_crash_after_frontmatter_write_rolls_back_db(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    """Under the staged-write flow, a crash between staging the vault file
+    and committing the DB must leave **both** sides untouched so the next
+    reconcile cycle can retry cleanly.
+
+    Previously the reconciler rewrote the note in place *before* committing
+    the DB, so a DB failure left an orphan ``memory_id:`` in the file with
+    no matching row — the test below used to lock in that buggy shape. With
+    the two-phase write we assert the correct invariant: nothing leaks.
+    """
+
     db_path, vault, server = _server(tmp_path)
     note = vault / "Minx" / "Memory" / "timezone.md"
-    _write(
-        note,
+    original_body = (
         "---\n"
         "type: minx-memory\n"
         "scope: core\n"
         "memory_key: core.preference.timezone\n"
         "memory_type: preference\n"
         "subject: timezone\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
         "---\n"
-        "# Timezone\n",
+        "# Timezone\n"
     )
+    _write(note, original_body)
 
-    def fail_after_frontmatter(self, doc, resolved_path, frontmatter, memory_id):
+    def fail_after_frontmatter(self, doc, resolved_path, frontmatter, memory_id, scope, *, content_hash):
         raise RuntimeError("simulated crash")
 
     monkeypatch.setattr(VaultReconciler, "_upsert_vault_index", fail_after_frontmatter)
@@ -867,18 +885,21 @@ def test_vault_reconcile_crash_after_frontmatter_write_rolls_back_db(
     result = get_tool(server, "vault_reconcile_memories").fn(False)
 
     assert result["success"] is False
+    # DB was never committed → no memory, no events.
     assert _count_rows(db_path, "memories") == 0
     assert _count_rows(db_path, "memory_events") == 0
-    assert "memory_id:" in note.read_text(encoding="utf-8")
+    # Vault file was never published → no memory_id stamped on disk.
+    assert note.read_text(encoding="utf-8") == original_body
+    assert "memory_id:" not in note.read_text(encoding="utf-8")
 
     monkeypatch.undo()
     retry = get_tool(server, "vault_reconcile_memories").fn(False)
 
     assert retry["success"] is True
     report = retry["data"]["report"]
-    assert report["skipped"] == 1
-    assert report["warnings"][0]["kind"] == "missing_memory"
-    assert _count_rows(db_path, "memories") == 0
+    # Fresh retry creates the memory cleanly — no orphan state to reconcile.
+    assert report.get("created", 0) == 1
+    assert _count_rows(db_path, "memories") == 1
 
 
 def test_vault_reconcile_crash_after_update_frontmatter_retries_as_conflict(
@@ -913,39 +934,40 @@ def test_vault_reconcile_crash_after_update_frontmatter_retries_as_conflict(
         "memory_type: preference\n"
         "subject: timezone\n"
         f"memory_id: {memory.id}\n"
-        "sync_base_updated_at: \"2000-01-01 00:00:00\"\n"
-        "payload_json: '{\"category\": \"timezone\", \"value\": \"America/Chicago\"}'\n"
+        'sync_base_updated_at: "2000-01-01 00:00:00"\n'
+        'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n",
     )
 
-    def fail_after_frontmatter(self, doc, resolved_path, frontmatter, memory_id):
+    original_note = note.read_text(encoding="utf-8")
+
+    def fail_after_frontmatter(self, doc, resolved_path, frontmatter, memory_id, scope, *, content_hash):
         raise RuntimeError("simulated crash")
 
     monkeypatch.setattr(VaultReconciler, "_upsert_vault_index", fail_after_frontmatter)
 
     result = get_tool(server, "vault_reconcile_memories").fn(False)
 
+    # With the staged-write flow, the crash in `_upsert_vault_index` happens
+    # *before* the DB commit and *before* the vault file is published, so
+    # both sides are untouched.
     assert result["success"] is False
     row_after_crash = _memory_row(db_path, "timezone")
     assert row_after_crash["updated_at"] == "2000-01-01 00:00:00"
     assert json.loads(row_after_crash["payload_json"])["value"] == "UTC"
-    assert 'sync_base_updated_at: "2000-01-01 00:00:00"' not in note.read_text(
-        encoding="utf-8"
-    )
+    assert note.read_text(encoding="utf-8") == original_note
 
     monkeypatch.undo()
     retry = get_tool(server, "vault_reconcile_memories").fn(False)
 
+    # Clean retry: sync_base in the note still matches DB, so the update
+    # proceeds normally — no synthetic conflict, payload is refreshed.
     assert retry["success"] is True
     report = retry["data"]["report"]
-    assert report["skipped"] == 1
-    assert report["conflicts"] == 1
-    warning = report["warnings"][0]
-    assert warning["kind"] == "conflict"
-    assert warning["db_updated_at"] == "2000-01-01 00:00:00"
-    assert warning["sync_base_updated_at"] != "2000-01-01 00:00:00"
-    assert json.loads(_memory_row(db_path, "timezone")["payload_json"])["value"] == "UTC"
+    assert report.get("updated", 0) == 1
+    updated_row = _memory_row(db_path, "timezone")
+    assert json.loads(updated_row["payload_json"])["value"] == "America/Chicago"
 
 
 def test_vault_reconcile_dry_run_does_not_mutate_db_or_note(tmp_path: Path) -> None:
@@ -958,7 +980,7 @@ def test_vault_reconcile_dry_run_does_not_mutate_db_or_note(tmp_path: Path) -> N
         "memory_key: core.preference.timezone\n"
         "memory_type: preference\n"
         "subject: timezone\n"
-        "payload_json: '{\"category\":\"timezone\",\"value\":\"America/Chicago\"}'\n"
+        'payload_json: \'{"category":"timezone","value":"America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n"
     )
@@ -981,10 +1003,7 @@ def test_vault_reconcile_invalid_note_does_not_block_later_notes(tmp_path: Path)
     db_path, vault, server = _server(tmp_path)
     _write(
         vault / "Minx" / "Memory" / "bad.md",
-        "---\n"
-        "type: minx-memory\n"
-        "  nested: nope\n"
-        "---\n",
+        "---\ntype: minx-memory\n  nested: nope\n---\n",
     )
     _write(
         vault / "Minx" / "Memory" / "timezone.md",
@@ -994,7 +1013,7 @@ def test_vault_reconcile_invalid_note_does_not_block_later_notes(tmp_path: Path)
         "memory_key: core.preference.timezone\n"
         "memory_type: preference\n"
         "subject: timezone\n"
-        "payload_json: '{\"category\":\"timezone\",\"value\":\"America/Chicago\"}'\n"
+        'payload_json: \'{"category":"timezone","value":"America/Chicago"}\'\n'
         "---\n"
         "# Timezone\n",
     )

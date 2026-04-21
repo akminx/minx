@@ -11,17 +11,125 @@ lock file and ``fcntl.flock`` so updates serialize across processes.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
+import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import IO, Any
 
 from minx_mcp.contracts import ConflictError, InvalidInputError
 
+logger = logging.getLogger(__name__)
+
 _LOCK_ACQUIRE_TIMEOUT_S = 8.0
 _LOCK_POLL_SLEEP_S = 0.05
+
+
+class StagedVaultWrite:
+    """A vault-file write that has been prepared but not yet published.
+
+    The new bytes have been written to a sibling temp file while holding the
+    per-file lock. Callers can either :meth:`commit` (atomic rename into place
+    and release the lock) or :meth:`abort` (delete the temp and release the
+    lock).
+
+    This two-phase API lets callers persist related DB state atomically in
+    between: commit the DB transaction **before** :meth:`commit` so that a
+    failed DB commit leaves the vault file untouched, eliminating split-brain
+    between SQLite rows and vault markdown.
+
+    Instances should be used as context managers. If ``__exit__`` runs without
+    a prior :meth:`commit`, the write is aborted — no partial file ever
+    appears on disk.
+    """
+
+    def __init__(
+        self,
+        *,
+        target: Path,
+        temp_path: Path,
+        content: str,
+        content_hash: str,
+        lock_handle: IO[str],
+        lock_path: Path,
+    ) -> None:
+        self._target = target
+        self._temp_path: Path | None = temp_path
+        self._content = content
+        self._content_hash = content_hash
+        self._lock_handle: IO[str] | None = lock_handle
+        self._lock_path = lock_path
+        self._committed = False
+
+    @property
+    def target(self) -> Path:
+        return self._target
+
+    @property
+    def content(self) -> str:
+        return self._content
+
+    @property
+    def content_hash(self) -> str:
+        """SHA-256 of the to-be-written UTF-8 bytes.
+
+        Equal to the hash ``VaultReader`` would compute on the new file,
+        available *before* :meth:`commit` so callers can stamp database rows
+        (e.g. ``vault_index.content_hash``) without re-reading the file.
+        """
+        return self._content_hash
+
+    @property
+    def is_finalized(self) -> bool:
+        return self._temp_path is None
+
+    def commit(self) -> None:
+        """Atomically rename the staged temp file into place and release the lock."""
+        if self.is_finalized:
+            raise RuntimeError("staged vault write has already been finalized")
+        temp_path = self._temp_path
+        assert temp_path is not None
+        try:
+            temp_path.replace(self._target)
+            self._committed = True
+        finally:
+            self._temp_path = None
+            self._release_lock()
+
+    def abort(self) -> None:
+        """Discard the staged write and release the lock."""
+        if self.is_finalized:
+            return
+        temp_path = self._temp_path
+        self._temp_path = None
+        try:
+            if temp_path is not None and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError as exc:  # pragma: no cover - defensive
+                    logger.warning("staged vault write: temp cleanup failed for %s: %s", temp_path, exc)
+        finally:
+            self._release_lock()
+
+    def _release_lock(self) -> None:
+        lock_handle = self._lock_handle
+        self._lock_handle = None
+        if lock_handle is None:
+            return
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_handle.close()
+
+    def __enter__(self) -> StagedVaultWrite:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if not self._committed:
+            self.abort()
 
 
 class VaultWriter:
@@ -55,25 +163,56 @@ class VaultWriter:
         return path
 
     def replace_frontmatter(self, relative_path: str, frontmatter: dict[str, object]) -> Path:
+        """Immediate-commit variant; equivalent to :meth:`stage_replace_frontmatter` + commit."""
+        with self.stage_replace_frontmatter(relative_path, frontmatter) as staged:
+            staged.commit()
+            return staged.target
+
+    def stage_replace_frontmatter(
+        self,
+        relative_path: str,
+        frontmatter: dict[str, object],
+    ) -> StagedVaultWrite:
+        """Prepare a frontmatter replacement; the lock is held until commit/abort.
+
+        Returns a :class:`StagedVaultWrite` that the caller must finalize
+        exactly once (via commit or abort, ideally through ``with``).
+        """
         path = self._resolve(relative_path)
-
-        def transform(text: str) -> str:
-            newline = _detect_newline(text)
+        lock_handle, lock_path = self._acquire_lock(path)
+        try:
+            if path.exists():
+                with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                    current_text = handle.read()
+            else:
+                current_text = ""
+            newline = _detect_newline(current_text)
             frontmatter_text = _serialize_frontmatter(frontmatter, newline=newline)
-            body = _body_after_frontmatter(text)
-            return f"{frontmatter_text}{body}"
+            body = _body_after_frontmatter(current_text)
+            new_text = f"{frontmatter_text}{body}"
+            temp_path = self._stage_write(path, new_text)
+        except Exception:
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_handle.close()
+            raise
+        content_hash = hashlib.sha256(new_text.encode("utf-8")).hexdigest()
+        return StagedVaultWrite(
+            target=path,
+            temp_path=temp_path,
+            content=new_text,
+            content_hash=content_hash,
+            lock_handle=lock_handle,
+            lock_path=lock_path,
+        )
 
-        self._locked_write(path, transform)
-        return path
-
-    def _lock_path(self, path: Path) -> Path:
-        return path.parent / f".{path.name}.lock"
-
-    def _locked_write(self, path: Path, transform: Callable[[str], str]) -> None:
+    def _acquire_lock(self, path: Path) -> tuple[IO[str], Path]:
         lock_path = self._lock_path(path)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + _LOCK_ACQUIRE_TIMEOUT_S
-        with open(lock_path, "a+", encoding="utf-8") as lock_handle:
+        lock_handle = open(lock_path, "a+", encoding="utf-8")  # noqa: SIM115 - released by caller
+        try:
             while True:
                 try:
                     fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -82,30 +221,46 @@ class VaultWriter:
                     if time.monotonic() >= deadline:
                         raise ConflictError("vault file is locked by another writer") from None
                     time.sleep(_LOCK_POLL_SLEEP_S)
+        except Exception:
+            lock_handle.close()
+            raise
+        return lock_handle, lock_path
+
+    def _lock_path(self, path: Path) -> Path:
+        return path.parent / f".{path.name}.lock"
+
+    def _locked_write(self, path: Path, transform: Callable[[str], str]) -> None:
+        lock_handle, _ = self._acquire_lock(path)
+        try:
+            if path.exists():
+                with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                    current_text = handle.read()
+            else:
+                current_text = ""
+            new_text = transform(current_text)
+            self._atomic_write_text(path, new_text)
+        finally:
             try:
-                if path.exists():
-                    with path.open("r", encoding="utf-8-sig", newline="") as handle:
-                        current_text = handle.read()
-                else:
-                    current_text = ""
-                new_text = transform(current_text)
-                self._atomic_write_text(path, new_text)
-            finally:
                 fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_handle.close()
+
+    def _stage_write(self, path: Path, content: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(
+            "w",
+            dir=path.parent,
+            delete=False,
+            encoding="utf-8",
+            newline="",
+        ) as handle:
+            handle.write(content)
+            return Path(handle.name)
 
     def _atomic_write_text(self, path: Path, content: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
         temp_path: Path | None = None
         try:
-            with NamedTemporaryFile(
-                "w",
-                dir=path.parent,
-                delete=False,
-                encoding="utf-8",
-                newline="",
-            ) as handle:
-                handle.write(content)
-                temp_path = Path(handle.name)
+            temp_path = self._stage_write(path, content)
             temp_path.replace(path)
         except Exception:  # Broad except is intentional: must clean up temp file for any failure type before re-raising
             if temp_path is not None and temp_path.exists():
