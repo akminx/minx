@@ -95,3 +95,26 @@ def test_parse_dollars_to_cents_rejects_four_digit_group_before_comma() -> None:
 def test_parse_dollars_to_cents_accepts_multi_group_thousands() -> None:
     assert parse_dollars_to_cents("1,234,567.89") == 123456789
     assert parse_dollars_to_cents("-1,234,567.89") == -123456789
+
+
+def test_parse_dollars_to_cents_accepts_negative_dollar_prefix() -> None:
+    assert parse_dollars_to_cents("-$0.01") == -1
+    assert parse_dollars_to_cents("-$1,234.56") == -123456
+    assert parse_dollars_to_cents("- $42.00") == -4200
+
+
+def test_parse_dollars_to_cents_accepts_negative_usd_prefix() -> None:
+    assert parse_dollars_to_cents("-USD 0.01") == -1
+    assert parse_dollars_to_cents("-USD 1,234.56") == -123456
+
+
+def test_parse_dollars_to_cents_rejects_double_negative() -> None:
+    # "-$-1" must not be silently accepted as a single negative.
+    with pytest.raises(InvalidInputError):
+        parse_dollars_to_cents("-$-1.00")
+
+
+def test_format_cents_round_trips_for_negative_amounts() -> None:
+    # Regression: format_cents(-1) -> "-$0.01" previously failed to parse.
+    for n in (-1, -4216, -100000, -99999999999):
+        assert parse_dollars_to_cents(format_cents(n)) == n

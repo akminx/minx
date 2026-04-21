@@ -60,23 +60,12 @@ class TestMoneyProperties:
     def test_round_trip_integer_cents_via_format_decimal_cents(self, n: int) -> None:
         assert parse_dollars_to_cents(format_decimal_cents(n)) == n
 
-    # format_cents(n) puts the sign before the '$' (e.g. n=-1 -> '-$0.01'). parse_dollars_to_cents
-    # only strips '$' when the string starts with '$', so negative amounts are rejected — real defect.
+    # format_cents(n) emits "-$0.01" for n<0; parse_dollars_to_cents normalizes the
+    # leading minus before stripping the currency prefix so the full signed range
+    # round-trips cleanly.
     @_PROP_SETTINGS
-    @given(n=st.integers(min_value=0, max_value=10**12))
-    def test_round_trip_integer_cents_via_format_cents_non_negative(self, n: int) -> None:
-        assert parse_dollars_to_cents(format_cents(n)) == n
-
-    @_PROP_SETTINGS
-    @given(n=st.integers(min_value=-(10**12), max_value=-1))
-    @pytest.mark.xfail(
-        reason=(
-            "format_cents emits '-$…' for n<0 but parse_dollars_to_cents does not normalize '-$' "
-            "(shrinker example: n=-1 -> '-$0.01')."
-        ),
-        strict=True,
-    )
-    def test_round_trip_integer_cents_via_format_cents_negative(self, n: int) -> None:
+    @given(n=st.integers(min_value=-(10**12), max_value=10**12))
+    def test_round_trip_integer_cents_via_format_cents(self, n: int) -> None:
         assert parse_dollars_to_cents(format_cents(n)) == n
 
     @_PROP_SETTINGS

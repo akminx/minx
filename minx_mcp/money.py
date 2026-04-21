@@ -27,10 +27,19 @@ _US_GROUPED_AMOUNT = re.compile(
 
 def parse_dollars_to_cents(value: str) -> int:
     raw = value.strip()
+    # Extract an optional leading minus before any currency prefix so that
+    # ``format_cents(-1) == "-$0.01"`` round-trips through this parser.
+    # The sign is re-attached below for the decimal body matchers, which
+    # already accept a leading "-".
+    sign = ""
+    if raw.startswith("-"):
+        sign = "-"
+        raw = raw[1:].lstrip()
     if raw.startswith("USD "):
         raw = raw.removeprefix("USD ").strip()
     elif raw.startswith("$"):
         raw = raw.removeprefix("$").strip()
+    raw = sign + raw
     if "," in raw and not _US_GROUPED_AMOUNT.fullmatch(raw):
         raise InvalidInputError(
             "amount uses malformed thousands grouping (expected e.g. '1,234.56')"
