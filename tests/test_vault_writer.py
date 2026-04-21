@@ -183,7 +183,7 @@ def test_lock_timeout_raises_conflict(tmp_path: Path) -> None:
     release = threading.Event()
 
     def hold_lock() -> None:
-        with open(lock_path, "a+", encoding="utf-8") as handle:
+        with lock_path.open("a+", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             hold.set()
             release.wait(timeout=30)

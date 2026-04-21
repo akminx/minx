@@ -154,11 +154,10 @@ def emit_event(
                 sensitivity,
             ),
         )
-        return cursor.lastrowid
     except UnknownEventTypeError:
         raise
     except ValidationError as exc:
-        logger.error(
+        logger.exception(
             "event emission dropped for %s: validation failed",
             event_type,
             extra=_event_drop_extra(event_type, domain, entity_ref, exc),
@@ -167,7 +166,7 @@ def emit_event(
             raise
         return None
     except sqlite3.IntegrityError as exc:
-        logger.error(
+        logger.exception(
             "event emission dropped for %s: integrity error",
             event_type,
             extra=_event_drop_extra(event_type, domain, entity_ref, exc),
@@ -199,6 +198,8 @@ def emit_event(
         if strict:
             raise
         return None
+    else:
+        return cursor.lastrowid
 
 
 def _event_drop_extra(

@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -175,7 +176,9 @@ def test_finance_import_rolls_back_if_event_emission_fails(tmp_path, monkeypatch
     source = _import_source(tmp_path)
     monkeypatch.setattr("minx_mcp.finance.service.emit_event", lambda *args, **kwargs: None)
 
-    with pytest.raises(RuntimeError, match="finance.transactions_imported event emission failed"):
+    with pytest.raises(
+        RuntimeError, match=re.escape("finance.transactions_imported event emission failed")
+    ):
         service.finance_import(str(source), account_name="DCU", source_kind="dcu_csv")
 
     assert query_events(observer, event_type="finance.transactions_imported") == []
@@ -195,7 +198,7 @@ def test_finance_categorize_rolls_back_if_event_emission_fails(tmp_path, monkeyp
     monkeypatch.setattr("minx_mcp.finance.service.emit_event", lambda *args, **kwargs: None)
 
     with pytest.raises(
-        RuntimeError, match="finance.transactions_categorized event emission failed"
+        RuntimeError, match=re.escape("finance.transactions_categorized event emission failed")
     ):
         service.finance_categorize([transaction["id"]], "Dining Out")
 
@@ -210,7 +213,9 @@ def test_report_generation_marks_failed_if_event_emission_fails(tmp_path, monkey
     _seed_transaction(service, tmp_path)
     monkeypatch.setattr("minx_mcp.finance.service.emit_event", lambda *args, **kwargs: None)
 
-    with pytest.raises(RuntimeError, match="finance.report_generated event emission failed"):
+    with pytest.raises(
+        RuntimeError, match=re.escape("finance.report_generated event emission failed")
+    ):
         service.generate_weekly_report("2026-03-02", "2026-03-08")
 
     assert query_events(service.conn, event_type="finance.report_generated") == []
@@ -228,7 +233,9 @@ def test_finance_anomalies_fails_if_event_emission_fails(tmp_path, monkeypatch):
     service.finance_import(str(source), account_name="DCU", source_kind="dcu_csv")
     monkeypatch.setattr("minx_mcp.finance.service.emit_event", lambda *args, **kwargs: None)
 
-    with pytest.raises(RuntimeError, match="finance.anomalies_detected event emission failed"):
+    with pytest.raises(
+        RuntimeError, match=re.escape("finance.anomalies_detected event emission failed")
+    ):
         service.finance_anomalies()
 
     assert query_events(service.conn, event_type="finance.anomalies_detected") == []

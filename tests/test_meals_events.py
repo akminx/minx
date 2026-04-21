@@ -20,7 +20,7 @@ def test_payload_models_include_finance_and_meals_events() -> None:
 
 @pytest.mark.parametrize("module_name", ["minx_mcp.finance.events", "minx_mcp.meals.events"])
 def test_domain_event_modules_import_directly(module_name: str) -> None:
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603 - isolated import check via sys.executable -c
         [sys.executable, "-c", f"import {module_name}"],
         check=False,
         capture_output=True,

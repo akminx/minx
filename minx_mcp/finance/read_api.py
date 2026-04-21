@@ -177,13 +177,14 @@ class FinanceReadAPI:
 
     def list_goal_category_names(self) -> list[str]:
         placeholders = ", ".join("?" for _ in _GOAL_INELIGIBLE_CATEGORY_NAMES)
+        # Safe: NOT IN uses one ? per module-level constant tuple; category names are bound, not inlined.
         rows = self._db.execute(
             f"""
             SELECT name
             FROM finance_categories
             WHERE name NOT IN ({placeholders})
             ORDER BY name ASC
-            """,
+            """,  # noqa: S608
             _GOAL_INELIGIBLE_CATEGORY_NAMES,
         ).fetchall()
         return [str(row["name"]) for row in rows]
@@ -326,7 +327,8 @@ def _build_filtered_expense_query(
         clauses.append(f"a.name IN ({placeholders})")
         params.extend(account_names)
     where = " AND ".join(clauses)
-    sql = f"SELECT {aggregate_sql} FROM finance_transactions t {joins} WHERE {where}"
+    # Safe: aggregate_sql/joins are fixed strings from callers; WHERE is ?-only IN/date clauses; values bound.
+    sql = f"SELECT {aggregate_sql} FROM finance_transactions t {joins} WHERE {where}"  # noqa: S608
     return sql, params
 
 

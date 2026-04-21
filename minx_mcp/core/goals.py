@@ -138,8 +138,9 @@ class GoalService:
             return current
         updates.append("updated_at = datetime('now')")
         params.append(goal_id)
+        # Safe: SET list is built only from fixed column assignments (? or NULL); values are bound in params.
         self._conn.execute(
-            f"UPDATE goals SET {', '.join(updates)} WHERE id = ?",
+            f"UPDATE goals SET {', '.join(updates)} WHERE id = ?",  # noqa: S608
             params,
         )
         self._conn.commit()

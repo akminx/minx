@@ -41,7 +41,7 @@ from minx_mcp.core.trajectory import get_goal_trajectory
 from minx_mcp.db import scoped_connection
 from minx_mcp.finance.read_api import FinanceReadAPI
 
-__all__ = ["register_goal_tools", "parse_goal_input"]
+__all__ = ["parse_goal_input", "register_goal_tools"]
 
 
 def register_goal_tools(mcp: FastMCP, config: CoreServiceConfig) -> None:

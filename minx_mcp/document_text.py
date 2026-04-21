@@ -33,7 +33,7 @@ def extract_text(path: Path) -> str:
     settings = get_settings()
     binary = _resolve_liteparse_binary(settings.liteparse_bin)
     try:
-        proc = subprocess.run(
+        proc = subprocess.run(  # noqa: S603 - controlled argv: resolved liteparse binary + file path
             [binary, str(path)],
             capture_output=True,
             check=True,

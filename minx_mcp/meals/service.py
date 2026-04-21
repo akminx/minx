@@ -66,7 +66,7 @@ class MealsService(BaseService):
     def from_connection(cls, conn: Connection) -> MealsService:
         """Create an instance with an injected connection. Does NOT open a new connection."""
         instance = cls.__new__(cls)
-        instance._db_path = Path(".")
+        instance._db_path = Path()
         instance._vault_root = None
         instance._local = threading.local()
         instance._local.conn = conn

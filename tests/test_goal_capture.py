@@ -45,24 +45,24 @@ def _insert_transaction(
 
 
 def _goal_record(**overrides) -> GoalRecord:
-    defaults = dict(
-        id=1,
-        goal_type="spending_cap",
-        title="Dining Out Spending Cap",
-        status="active",
-        metric_type="sum_below",
-        target_value=25_000,
-        period="monthly",
-        domain="finance",
-        category_names=["Dining Out"],
-        merchant_names=[],
-        account_names=[],
-        starts_on="2026-03-01",
-        ends_on=None,
-        notes=None,
-        created_at="2026-03-01 00:00:00",
-        updated_at="2026-03-01 00:00:00",
-    )
+    defaults = {
+        "id": 1,
+        "goal_type": "spending_cap",
+        "title": "Dining Out Spending Cap",
+        "status": "active",
+        "metric_type": "sum_below",
+        "target_value": 25_000,
+        "period": "monthly",
+        "domain": "finance",
+        "category_names": ["Dining Out"],
+        "merchant_names": [],
+        "account_names": [],
+        "starts_on": "2026-03-01",
+        "ends_on": None,
+        "notes": None,
+        "created_at": "2026-03-01 00:00:00",
+        "updated_at": "2026-03-01 00:00:00",
+    }
     defaults.update(overrides)
     return GoalRecord(**defaults)
 
@@ -73,7 +73,7 @@ def _goal_record(**overrides) -> GoalRecord:
 
 
 def test_resolve_exact_subject_category_case_insensitive(tmp_path):
-    conn, api = _make_db_and_api(tmp_path)
+    _conn, api = _make_db_and_api(tmp_path)
     # "Dining Out" is seeded by the migrations
 
     result = _resolve_exact_subject("category", "dining out", api)
@@ -91,7 +91,7 @@ def test_resolve_exact_subject_merchant_via_sq_prefix_normalization(tmp_path):
 
 
 def test_resolve_exact_subject_returns_none_for_nonexistent(tmp_path):
-    conn, api = _make_db_and_api(tmp_path)
+    _conn, api = _make_db_and_api(tmp_path)
 
     result = _resolve_exact_subject("category", "nonexistent", api)
 
@@ -104,7 +104,7 @@ def test_resolve_exact_subject_returns_none_for_nonexistent(tmp_path):
 
 
 def test_capture_goal_message_create_with_known_category(tmp_path):
-    conn, api = _make_db_and_api(tmp_path)
+    _conn, api = _make_db_and_api(tmp_path)
     # "Dining Out" is seeded by migrations
 
     result = _run(
@@ -168,7 +168,7 @@ def test_capture_goal_message_create_ambiguous_subject(tmp_path):
 
 
 def test_capture_goal_message_create_subject_matches_nothing(tmp_path):
-    conn, api = _make_db_and_api(tmp_path)
+    _conn, api = _make_db_and_api(tmp_path)
 
     result = _run(
         capture_goal_message(
@@ -185,7 +185,7 @@ def test_capture_goal_message_create_subject_matches_nothing(tmp_path):
 
 
 def test_capture_goal_message_create_no_dollar_amount(tmp_path):
-    conn, api = _make_db_and_api(tmp_path)
+    _conn, api = _make_db_and_api(tmp_path)
 
     result = _run(
         capture_goal_message(
@@ -201,7 +201,7 @@ def test_capture_goal_message_create_no_dollar_amount(tmp_path):
 
 
 def test_capture_goal_message_no_goal_intent(tmp_path):
-    conn, api = _make_db_and_api(tmp_path)
+    _conn, api = _make_db_and_api(tmp_path)
 
     result = _run(
         capture_goal_message(
@@ -222,7 +222,7 @@ def test_capture_goal_message_no_goal_intent(tmp_path):
 
 
 def test_capture_goal_message_pause_single_matching_goal(tmp_path):
-    conn, api = _make_db_and_api(tmp_path)
+    _conn, api = _make_db_and_api(tmp_path)
     goal = _goal_record(id=7, category_names=["Dining Out"])
 
     result = _run(
@@ -241,7 +241,7 @@ def test_capture_goal_message_pause_single_matching_goal(tmp_path):
 
 
 def test_capture_goal_message_pause_ambiguous_goals(tmp_path):
-    conn, api = _make_db_and_api(tmp_path)
+    _conn, api = _make_db_and_api(tmp_path)
     goal_a = _goal_record(id=1, title="Dining Out Spending Cap", category_names=["Dining Out"])
     goal_b = _goal_record(id=2, title="Dining Out Spending Cap", category_names=["Dining Out"])
 
@@ -260,7 +260,7 @@ def test_capture_goal_message_pause_ambiguous_goals(tmp_path):
 
 
 def test_capture_goal_message_pause_no_matching_goals(tmp_path):
-    conn, api = _make_db_and_api(tmp_path)
+    _conn, api = _make_db_and_api(tmp_path)
 
     result = _run(
         capture_goal_message(
@@ -277,7 +277,7 @@ def test_capture_goal_message_pause_no_matching_goals(tmp_path):
 
 
 def test_capture_goal_message_retarget_with_amount(tmp_path):
-    conn, api = _make_db_and_api(tmp_path)
+    _conn, api = _make_db_and_api(tmp_path)
     goal = _goal_record(id=7, category_names=["Dining Out"])
 
     result = _run(
@@ -301,7 +301,7 @@ def test_capture_goal_message_retarget_with_amount(tmp_path):
 
 
 def test_capture_goal_message_unsupported_goal_type_only(tmp_path):
-    conn, api = _make_db_and_api(tmp_path)
+    _conn, api = _make_db_and_api(tmp_path)
     goal = _goal_record(
         id=7,
         goal_type="savings_goal",

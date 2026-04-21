@@ -122,7 +122,7 @@ class TestEnabledByDefaultFiltering:
 
         import minx_mcp.core.snapshot as snapshot_module
 
-        patched = list(DETECTORS) + [disabled]
+        patched = [*list(DETECTORS), disabled]
         with patch.object(snapshot_module, "DETECTORS", patched):
             from minx_mcp.core.snapshot import _run_detectors
 

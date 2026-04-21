@@ -88,7 +88,7 @@ def launch_commands(
     previous_sigterm = signal.signal(signal.SIGTERM, _shutdown)
     try:
         for command in commands:
-            proc = subprocess.Popen(command)
+            proc = subprocess.Popen(command)  # noqa: S603 - internal launcher; argv from fixed command list
             procs.append(proc)
             print(f"Started {' '.join(command)} (pid {proc.pid})", file=log_stream)
         return _wait_for_processes(procs, poll_interval=poll_interval)

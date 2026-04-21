@@ -11,7 +11,7 @@ from minx_mcp.core.vault_memory_frontmatter import MemoryIdentity as _MemoryIden
 from minx_mcp.core.vault_reconciler import (
     VaultReconciler,
     _row_updated_after_note_mtime,
-    _SkipNote,
+    _SkipNoteError,
 )
 from minx_mcp.db import get_connection
 from minx_mcp.vault_reader import VaultDocument
@@ -58,7 +58,7 @@ def _event_types(db_path: Path, memory_id: int) -> list[str]:
 def _count_rows(db_path: Path, table: str) -> int:
     conn = get_connection(db_path)
     try:
-        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])  # noqa: S608
     finally:
         conn.close()
 
@@ -746,7 +746,7 @@ def test_vault_reconcile_insert_without_rowid_becomes_write_failed_warning() -> 
             identity,
             {"category": "timezone", "value": "UTC"},
         )
-    except _SkipNote as exc:
+    except _SkipNoteError as exc:
         assert exc.warning.kind == "write_failed"
         assert exc.warning.memory_key == "core.preference.timezone"
     else:

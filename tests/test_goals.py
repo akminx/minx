@@ -9,20 +9,20 @@ from minx_mcp.db import get_connection
 
 
 def _make_valid_input(**overrides) -> GoalCreateInput:
-    defaults = dict(
-        goal_type="spending_cap",
-        title="Dining out under $250",
-        metric_type="sum_below",
-        target_value=25_000,
-        period="monthly",
-        domain="finance",
-        category_names=["Dining Out"],
-        merchant_names=[],
-        account_names=[],
-        starts_on="2026-03-01",
-        ends_on=None,
-        notes=None,
-    )
+    defaults = {
+        "goal_type": "spending_cap",
+        "title": "Dining out under $250",
+        "metric_type": "sum_below",
+        "target_value": 25_000,
+        "period": "monthly",
+        "domain": "finance",
+        "category_names": ["Dining Out"],
+        "merchant_names": [],
+        "account_names": [],
+        "starts_on": "2026-03-01",
+        "ends_on": None,
+        "notes": None,
+    }
     defaults.update(overrides)
     return GoalCreateInput(**defaults)
 

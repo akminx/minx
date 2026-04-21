@@ -634,7 +634,7 @@ def test_vault_scanner_strips_whitespace_in_memory_key_segments(tmp_path: Path) 
 
 
 def test_vault_scanner_strips_whitespace_in_scope_and_memory_type(tmp_path: Path) -> None:
-    conn, scanner = _scanner(tmp_path)
+    _conn, scanner = _scanner(tmp_path)
     note = tmp_path / "vault" / "Minx" / "Memory" / "ws_test.md"
     # scope and memory_type with surrounding whitespace in memory_key segments.
     _write(

@@ -44,6 +44,7 @@ def find_anomalies(
         date_clause = ""
         params = (threshold,)
 
+    # Safe: date_clause is either empty or fixed AND ... ? ... ?; dates bind via params.
     return [
         {
             "kind": "large_uncategorized",
@@ -61,7 +62,7 @@ def find_anomalies(
               AND COALESCE(c.name, 'Uncategorized') = 'Uncategorized'
               {date_clause}
             ORDER BY t.amount_cents ASC, t.id ASC
-            """,
+            """,  # noqa: S608
             params,
         ).fetchall()
     ]
@@ -119,6 +120,7 @@ def sensitive_query(
         description_contains=description_contains,
     )
     where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    # Safe: WHERE is AND of _build_sensitive_filter_clauses templates (? only); values bound in params/limit.
     rows = [
         {
             "id": int(row["id"]),
@@ -147,7 +149,7 @@ def sensitive_query(
             {where_clause}
             ORDER BY t.posted_at DESC, t.id DESC
             LIMIT ?
-            """,
+            """,  # noqa: S608
             [*params, limit],
         ).fetchall()
     ]
@@ -316,6 +318,7 @@ def sensitive_query_total_cents(
     )
     clauses.append("t.amount_cents < 0")
     where_clause = f"WHERE {' AND '.join(clauses)}"
+    # Safe: WHERE joins sensitive-filter templates (? only) plus literal outflow predicate; params bound.
     row = conn.execute(
         f"""
         SELECT COALESCE(ABS(SUM(t.amount_cents)), 0) AS total_cents
@@ -323,7 +326,7 @@ def sensitive_query_total_cents(
         JOIN finance_accounts a ON a.id = t.account_id
         LEFT JOIN finance_categories c ON c.id = t.category_id
         {where_clause}
-        """,
+        """,  # noqa: S608
         params,
     ).fetchone()
     log_sensitive_access(conn, "finance_query", session_ref, "aggregate intent=sum_spending")
@@ -364,6 +367,7 @@ def sensitive_query_count(
     )
     clauses.append("t.amount_cents < 0")
     where_clause = f"WHERE {' AND '.join(clauses)}"
+    # Safe: same dynamic WHERE as sensitive aggregates; only ? placeholders carry user filters.
     row = conn.execute(
         f"""
         SELECT COUNT(*) AS total_count
@@ -371,7 +375,7 @@ def sensitive_query_count(
         JOIN finance_accounts a ON a.id = t.account_id
         LEFT JOIN finance_categories c ON c.id = t.category_id
         {where_clause}
-        """,
+        """,  # noqa: S608
         params,
     ).fetchone()
     log_sensitive_access(

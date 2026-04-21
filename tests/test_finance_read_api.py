@@ -559,27 +559,25 @@ def _insert_transaction(
     category_id: int,
     amount: float | None = None,
 ) -> None:
-    columns = [
-        "account_id",
-        "batch_id",
-        "posted_at",
-        "description",
-        "merchant",
-        "amount_cents",
-        "category_id",
-        "category_source",
-    ]
     values = [1, 1, posted_at, description, merchant, amount_cents, category_id, "manual"]
 
-    if amount is not None:
-        columns.append("amount")
-        values.append(amount)
-
-    placeholders = ", ".join("?" for _ in values)
-    conn.execute(
-        f"""
-        INSERT INTO finance_transactions ({", ".join(columns)})
-        VALUES ({placeholders})
-        """,
-        values,
-    )
+    if amount is None:
+        conn.execute(
+            """
+            INSERT INTO finance_transactions (
+                account_id, batch_id, posted_at, description, merchant,
+                amount_cents, category_id, category_source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO finance_transactions (
+                account_id, batch_id, posted_at, description, merchant,
+                amount_cents, category_id, category_source, amount
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [*values, amount],
+        )

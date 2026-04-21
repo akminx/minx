@@ -129,7 +129,7 @@ def _latest_completed_end(period: str, as_of: date) -> date:
     if period == "rolling_28d":
         days_since_sunday = (as_of.weekday() + 1) % 7
         return as_of - timedelta(days=days_since_sunday)
-    start, end = _period_window(period, as_of.isoformat())
+    _start, end = _period_window(period, as_of.isoformat())
     return date.fromisoformat(end)
 
 

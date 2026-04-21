@@ -60,10 +60,12 @@ def test_streamable_http_app_is_available(tmp_path):
 def test_build_parser_accepts_transport_host_and_port():
     parser = finance_main.build_parser()
 
-    args = parser.parse_args(["--transport", "http", "--host", "0.0.0.0", "--port", "9000"])
+    args = parser.parse_args(
+        ["--transport", "http", "--host", "0.0.0.0", "--port", "9000"]  # noqa: S104 - CLI parse test
+    )
 
     assert args.transport == "http"
-    assert args.host == "0.0.0.0"
+    assert args.host == "0.0.0.0"  # noqa: S104
     assert args.port == 9000
 
 
@@ -103,7 +105,7 @@ def test_main_wires_cli_and_settings_into_run_server(monkeypatch, tmp_path):
     monkeypatch.setattr(
         argparse.ArgumentParser,
         "parse_args",
-        lambda self: argparse.Namespace(transport="http", host="0.0.0.0", port=9000),
+        lambda self: argparse.Namespace(transport="http", host="0.0.0.0", port=9000),  # noqa: S104
     )
 
     finance_main.main()
@@ -111,7 +113,7 @@ def test_main_wires_cli_and_settings_into_run_server(monkeypatch, tmp_path):
     assert isinstance(calls["service"], FinanceService)
     assert calls["server"] is fake_server
     assert calls["transport"] == "http"
-    assert calls["host"] == "0.0.0.0"
+    assert calls["host"] == "0.0.0.0"  # noqa: S104
     assert calls["port"] == 9000
 
 

@@ -400,15 +400,14 @@ def _monthly_review_items(
     period_start: str,
     end_exclusive: str,
 ) -> list[MonthlyReviewItem]:
-    items: list[MonthlyReviewItem] = []
-    for row in _uncategorized_transaction_rows(conn, period_start, end_exclusive):
-        items.append(
-            UncategorizedReviewItem(
-                posted_at=str(row["posted_at"]),
-                description=str(row["description"]),
-                amount_cents=int(row["amount_cents"]),
-            )
+    items: list[MonthlyReviewItem] = [
+        UncategorizedReviewItem(
+            posted_at=str(row["posted_at"]),
+            description=str(row["description"]),
+            amount_cents=int(row["amount_cents"]),
         )
+        for row in _uncategorized_transaction_rows(conn, period_start, end_exclusive)
+    ]
 
     new_merchants = conn.execute(
         """
@@ -430,14 +429,14 @@ def _monthly_review_items(
         """,
         (period_start, end_exclusive, period_start),
     ).fetchall()
-    for row in new_merchants:
-        items.append(
-            NewMerchantReviewItem(
-                merchant=str(row["merchant"]),
-                first_seen_at=str(row["first_seen_at"]),
-                total_amount_cents=int(row["total_amount_cents"]),
-            )
+    items.extend(
+        NewMerchantReviewItem(
+            merchant=str(row["merchant"]),
+            first_seen_at=str(row["first_seen_at"]),
+            total_amount_cents=int(row["total_amount_cents"]),
         )
+        for row in new_merchants
+    )
     return items
 
 

@@ -202,7 +202,7 @@ def _row_to_job(row: Row) -> dict[str, object | None]:
         try:
             result = json.loads(row["result_json"])
         except json.JSONDecodeError as exc:
-            logger.error(
+            logger.exception(
                 "job result_json is corrupt for job_id=%s",
                 row["id"],
                 extra={"job_id": row["id"], "error_type": type(exc).__name__},

@@ -76,9 +76,7 @@ def _emit_scalar(value: Any) -> str:
 
 
 def _emit_list(items: list[Any]) -> str:
-    parts: list[str] = []
-    for item in items:
-        parts.append(_emit_scalar(item))
+    parts = [_emit_scalar(item) for item in items]
     return "[" + ", ".join(parts) + "]"
 
 
@@ -95,7 +93,7 @@ def _emit_value(value: Any) -> str:
 def _emit_frontmatter(fm: Mapping[str, Any]) -> str:
     lines: list[str] = []
     for key, value in fm.items():
-        if not key or not key[0].isalpha() and key[0] != "_":
+        if not key or (not key[0].isalpha() and key[0] != "_"):
             raise ValueError(f"invalid frontmatter key: {key!r}")
         lines.append(f"{key}: {_emit_value(value)}")
     return "\n".join(lines)
@@ -252,10 +250,10 @@ def frozen_clock(
     # Narrow, explicit patch list — see docstring. Expand deliberately.
     # ``date.today()`` in goal_create's default lives in tools.goals after
     # the server.py split.
-    _PATCH_TARGETS = [
+    patch_targets = [
         ("minx_mcp.core.tools.goals", "date", _FrozenDate),
     ]
-    for module_path, attr, replacement in _PATCH_TARGETS:
+    for module_path, attr, replacement in patch_targets:
         # monkeypatch.setattr with a string target fails if the attribute
         # doesn't exist; that's the early-warning we want if a module
         # stops importing date/datetime directly.

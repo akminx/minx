@@ -99,7 +99,8 @@ def parse_memory_identity(frontmatter: dict[str, object]) -> MemoryIdentity:
     """Parse the canonical identity fields of a ``minx-memory`` note."""
     scope = parse_note_scope(frontmatter, strict_alias_match=True, required=True)
     # ``required=True`` guarantees a non-empty string.
-    assert scope is not None
+    if scope is None:
+        raise RuntimeError("internal: parse_note_scope returned None with required=True")
     memory_type = required_str(frontmatter, "memory_type")
     memory_key = required_str(frontmatter, "memory_key")
     parts = memory_key.split(".", 2)

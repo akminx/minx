@@ -246,11 +246,13 @@ def _build_attention_items(
     read_models: ReadModels,
     detector_signals: list[InsightCandidate],
 ) -> list[str]:
-    ranked: list[tuple[int, int, str]] = []
-    for signal in detector_signals:
-        ranked.append((_SEVERITY_PRIORITY.get(signal.severity, 99), 0, signal.summary))
-    for loop in read_models.open_loops.loops:
-        ranked.append((_SEVERITY_PRIORITY.get(loop.severity, 99), 1, loop.description))
+    ranked: list[tuple[int, int, str]] = [
+        (_SEVERITY_PRIORITY.get(signal.severity, 99), 0, signal.summary)
+        for signal in detector_signals
+    ] + [
+        (_SEVERITY_PRIORITY.get(loop.severity, 99), 1, loop.description)
+        for loop in read_models.open_loops.loops
+    ]
     for goal in read_models.goal_progress:
         mapped = _GOAL_STATUS_SEVERITY.get(goal.status)
         if mapped is None:
@@ -409,12 +411,10 @@ def _persist_snapshot_archive(conn: Connection, review_date: str, snapshot: Dail
         )
         with suppress(sqlite3.Error):
             conn.rollback()
-    except Exception as exc:
-        logger.error(
-            "Snapshot archive persistence failed for %s: %s",
+    except Exception:
+        logger.exception(
+            "Snapshot archive persistence failed for %s",
             review_date,
-            exc,
-            exc_info=True,
             extra={
                 "domain": "core",
                 "tool": "build_daily_snapshot",

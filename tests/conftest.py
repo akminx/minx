@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gc
 import sqlite3
 
@@ -58,16 +59,12 @@ def _autoclose_leaked_resources(monkeypatch: pytest.MonkeyPatch):
     yield
 
     for conn in created_conns:
-        try:
+        with contextlib.suppress(Exception):
             conn.close()
-        except Exception:  # noqa: BLE001 - best-effort teardown; don't mask test results
-            pass
     for loop in created_loops:
-        try:
+        with contextlib.suppress(Exception):
             if not loop.is_closed():
                 loop.close()
-        except Exception:  # noqa: BLE001
-            pass
 
     # Belt-and-braces sweep for event loops that bypassed our ``new_event_loop``
     # hook (e.g. created via ``EventLoopPolicy.new_event_loop()`` directly, or
@@ -78,11 +75,9 @@ def _autoclose_leaked_resources(monkeypatch: pytest.MonkeyPatch):
     gc.collect()
     for obj in gc.get_objects():
         if isinstance(obj, asyncio.AbstractEventLoop):
-            try:
+            with contextlib.suppress(Exception):
                 if not obj.is_closed():
                     obj.close()
-            except Exception:  # noqa: BLE001
-                pass
     # Force a collection inside the teardown boundary so any late GC of tracked
     # resources (missed connections, orphaned event loops) is *attributed to the
     # originating test* rather than surfacing later as a session-teardown

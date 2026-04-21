@@ -470,6 +470,7 @@ class TrainingService(BaseService):
             where_clauses.append("datetime(s.occurred_at) < datetime(?)")
             params.append(end_utc)
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        # Safe: where_sql is only datetime(?) range templates from literals; bounds and limit are bound params.
         rows = self.conn.execute(
             f"""
             SELECT
@@ -486,7 +487,7 @@ class TrainingService(BaseService):
             GROUP BY s.id
             ORDER BY s.occurred_at ASC, s.id ASC
             LIMIT ?
-            """,
+            """,  # noqa: S608
             [*params, limit],
         ).fetchall()
         return [_session_from_row(row) for row in rows]

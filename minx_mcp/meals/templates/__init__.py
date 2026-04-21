@@ -40,6 +40,6 @@ def read_recipe_starter_template() -> str:
 
 __all__ = [
     "TEMPLATE_DIR",
-    "recipe_starter_template_path",
     "read_recipe_starter_template",
+    "recipe_starter_template_path",
 ]

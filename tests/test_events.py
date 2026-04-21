@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 
 import pytest
@@ -214,7 +215,7 @@ def test_emit_event_returns_none_and_logs_on_unexpected_insert_failure(tmp_path,
 def test_emit_event_raises_on_unknown_event_type(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
 
-    with pytest.raises(UnknownEventTypeError, match="finance.unknown_event"):
+    with pytest.raises(UnknownEventTypeError, match=re.escape("finance.unknown_event")):
         emit_event(
             conn,
             event_type="finance.unknown_event",

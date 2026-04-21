@@ -103,9 +103,10 @@ def wrap_tool_call(fn: Callable[[], Any], tool_name: str = "") -> ToolResponse:
             "tool call",
             extra={"tool": tool_name, "duration_ms": duration_ms, "success": True},
         )
-        return result
     except Exception as exc:
         return _handle_tool_error(exc, tool_name, start)
+    else:
+        return result
 
 
 async def wrap_async_tool_call(
@@ -119,6 +120,7 @@ async def wrap_async_tool_call(
             "tool call",
             extra={"tool": tool_name, "duration_ms": duration_ms, "success": True},
         )
-        return result
     except Exception as exc:
         return _handle_tool_error(exc, tool_name, start)
+    else:
+        return result

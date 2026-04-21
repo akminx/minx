@@ -35,7 +35,7 @@ def _proxy_conn_first_memory_id_select(
         def __init__(self, c: sqlite3.Connection) -> None:
             self._inner = c
 
-        def execute(self, sql: str, parameters: Any = ()) -> Any:  # noqa: ANN401
+        def execute(self, sql: str, parameters: Any = ()) -> Any:
             cur = self._inner.execute(sql, parameters)
             if (
                 isinstance(sql, str)
@@ -44,11 +44,11 @@ def _proxy_conn_first_memory_id_select(
             ):
 
                 class _Cursor:
-                    def __init__(self, base: Any) -> None:  # noqa: ANN401
+                    def __init__(self, base: Any) -> None:
                         self._base = base
                         self._first_fetch = True
 
-                    def fetchone(self) -> Any:  # noqa: ANN401
+                    def fetchone(self) -> Any:
                         if self._first_fetch:
                             self._first_fetch = False
                             row = self._base.fetchone()
@@ -56,13 +56,13 @@ def _proxy_conn_first_memory_id_select(
                             return row
                         return self._base.fetchone()
 
-                    def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+                    def __getattr__(self, name: str) -> Any:
                         return getattr(self._base, name)
 
                 return _Cursor(cur)
             return cur
 
-        def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+        def __getattr__(self, name: str) -> Any:
             return getattr(self._inner, name)
 
     return _Proxy(inner)  # type: ignore[return-value]
@@ -84,7 +84,7 @@ def _proxy_conn_first_prior_row_fetch(
         def __init__(self, c: sqlite3.Connection) -> None:
             self._inner = c
 
-        def execute(self, sql: str, parameters: Any = ()) -> Any:  # noqa: ANN401
+        def execute(self, sql: str, parameters: Any = ()) -> Any:
             cur = self._inner.execute(sql, parameters)
             if (
                 isinstance(sql, str)
@@ -95,11 +95,11 @@ def _proxy_conn_first_prior_row_fetch(
             ):
 
                 class _Cursor:
-                    def __init__(self, base: Any) -> None:  # noqa: ANN401
+                    def __init__(self, base: Any) -> None:
                         self._base = base
                         self._first_fetch = True
 
-                    def fetchone(self) -> Any:  # noqa: ANN401
+                    def fetchone(self) -> Any:
                         if self._first_fetch:
                             self._first_fetch = False
                             row = self._base.fetchone()
@@ -107,13 +107,13 @@ def _proxy_conn_first_prior_row_fetch(
                             return row
                         return self._base.fetchone()
 
-                    def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+                    def __getattr__(self, name: str) -> Any:
                         return getattr(self._base, name)
 
                 return _Cursor(cur)
             return cur
 
-        def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+        def __getattr__(self, name: str) -> Any:
             return getattr(self._inner, name)
 
     return _Proxy(inner)  # type: ignore[return-value]

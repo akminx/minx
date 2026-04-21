@@ -202,8 +202,9 @@ class VaultScanner:
         for start in range(0, len(paths), chunk_size):
             chunk = paths[start : start + chunk_size]
             placeholders = ",".join("?" for _ in chunk)
+            # Safe: IN list length matches chunk; only "?" tokens are interpolated; paths are bound.
             rows = self._conn.execute(
-                f"SELECT id, vault_path, content_hash, memory_id FROM vault_index WHERE vault_path IN ({placeholders})",
+                f"SELECT id, vault_path, content_hash, memory_id FROM vault_index WHERE vault_path IN ({placeholders})",  # noqa: S608
                 chunk,
             ).fetchall()
             for row in rows:

@@ -263,7 +263,7 @@ def _start_server(
     log_path = log_dir / f"{module.rsplit('.', 1)[-1]}.log"
     log_file = log_path.open("ab")
     try:
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # noqa: S603 - smoke test spawns MCP module with fixed argv
             [
                 sys.executable,
                 "-m",
@@ -305,7 +305,7 @@ async def _wait_for_tools(url: str, expected_tools: set[str], timeout: float = 3
                 if expected_tools.issubset(tool_names):
                     return tool_names
                 raise AssertionError(f"{url} missing expected tools: {sorted(expected_tools - tool_names)}")
-        except Exception as exc:  # noqa: BLE001 - retry until the server is ready
+        except Exception as exc:
             last_error = exc
             if asyncio.get_running_loop().time() >= deadline:
                 raise AssertionError(f"timed out waiting for {url}: {exc}") from exc

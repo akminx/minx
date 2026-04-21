@@ -28,24 +28,24 @@ class _GoalFinanceAPIDouble:
 
 
 def _make_goal(**overrides) -> GoalRecord:
-    defaults = dict(
-        id=1,
-        goal_type="spending_cap",
-        title="Dining out under $250",
-        status="active",
-        metric_type="sum_below",
-        target_value=25_000,
-        period="monthly",
-        domain="finance",
-        category_names=["Dining Out"],
-        merchant_names=[],
-        account_names=[],
-        starts_on="2026-03-01",
-        ends_on=None,
-        notes=None,
-        created_at="2026-03-01T00:00:00Z",
-        updated_at="2026-03-01T00:00:00Z",
-    )
+    defaults = {
+        "id": 1,
+        "goal_type": "spending_cap",
+        "title": "Dining out under $250",
+        "status": "active",
+        "metric_type": "sum_below",
+        "target_value": 25_000,
+        "period": "monthly",
+        "domain": "finance",
+        "category_names": ["Dining Out"],
+        "merchant_names": [],
+        "account_names": [],
+        "starts_on": "2026-03-01",
+        "ends_on": None,
+        "notes": None,
+        "created_at": "2026-03-01T00:00:00Z",
+        "updated_at": "2026-03-01T00:00:00Z",
+    }
     defaults.update(overrides)
     return GoalRecord(**defaults)
 

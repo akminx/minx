@@ -94,7 +94,7 @@ async def capture_goal_message(
 
 # Re-export for external callers that import directly from goal_parse
 __all__ = [
-    "parse_goal_input",
-    "capture_goal_message",
     "_resolve_exact_subject",
+    "capture_goal_message",
+    "parse_goal_input",
 ]

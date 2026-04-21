@@ -17,9 +17,10 @@ def test_mark_running_unknown_job_raises_not_found(tmp_path):
 
 def test_submit_job_reuses_idempotency_key(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
+    src = str(tmp_path / "a.csv")
 
-    first = submit_job(conn, "finance_import", "test", "/tmp/a.csv", "same-file")
-    second = submit_job(conn, "finance_import", "test", "/tmp/a.csv", "same-file")
+    first = submit_job(conn, "finance_import", "test", src, "same-file")
+    second = submit_job(conn, "finance_import", "test", src, "same-file")
 
     assert first["id"] == second["id"]
 
@@ -27,7 +28,7 @@ def test_submit_job_reuses_idempotency_key(tmp_path):
 def test_job_status_transitions_are_persisted(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
 
-    job = submit_job(conn, "finance_import", "test", "/tmp/a.csv", "key-1")
+    job = submit_job(conn, "finance_import", "test", str(tmp_path / "a.csv"), "key-1")
     mark_running(conn, job["id"])
     mark_completed(conn, job["id"], {"inserted": 3})
 
@@ -39,7 +40,7 @@ def test_job_status_transitions_are_persisted(tmp_path):
 
 def test_row_to_job_returns_error_payload_on_corrupt_result_json(tmp_path, caplog):
     conn = get_connection(tmp_path / "minx.db")
-    job = submit_job(conn, "finance_import", "test", "/tmp/a.csv", "corrupt-result")
+    job = submit_job(conn, "finance_import", "test", str(tmp_path / "a.csv"), "corrupt-result")
     conn.execute(
         "UPDATE jobs SET result_json = ? WHERE id = ?",
         ("{bad json", job["id"]),
@@ -55,7 +56,7 @@ def test_row_to_job_returns_error_payload_on_corrupt_result_json(tmp_path, caplo
 def test_stuck_job_recovery_records_single_failure_event(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
 
-    job = submit_job(conn, "finance_import", "test", "/tmp/a.csv", "recover-me")
+    job = submit_job(conn, "finance_import", "test", str(tmp_path / "a.csv"), "recover-me")
     mark_running(conn, job["id"])
     conn.execute(
         """
@@ -67,7 +68,7 @@ def test_stuck_job_recovery_records_single_failure_event(tmp_path):
     )
     conn.commit()
 
-    recovered = submit_job(conn, "finance_import", "test", "/tmp/a.csv", "recover-me")
+    recovered = submit_job(conn, "finance_import", "test", str(tmp_path / "a.csv"), "recover-me")
     events = conn.execute(
         "SELECT status, message FROM job_events WHERE job_id = ? ORDER BY id",
         (job["id"],),
@@ -81,10 +82,10 @@ def test_stuck_job_recovery_records_single_failure_event(tmp_path):
 def test_failed_job_releases_idempotency_key_for_retry(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
 
-    first = submit_job(conn, "finance_import", "test", "/tmp/a.csv", "retry-me")
+    first = submit_job(conn, "finance_import", "test", str(tmp_path / "a.csv"), "retry-me")
     mark_failed(conn, first["id"], "boom")
 
-    retried = submit_job(conn, "finance_import", "test", "/tmp/a.csv", "retry-me")
+    retried = submit_job(conn, "finance_import", "test", str(tmp_path / "a.csv"), "retry-me")
 
     assert retried["id"] != first["id"]
     assert retried["status"] == "queued"
@@ -134,7 +135,7 @@ def test_submit_job_handles_idempotency_race_without_integrity_error(tmp_path):
     def submit_once():
         conn = ConnectionProxy(get_connection(tmp_path / "minx.db"))
         try:
-            return submit_job(conn, "finance_import", "test", "/tmp/a.csv", "same-file")
+            return submit_job(conn, "finance_import", "test", str(tmp_path / "a.csv"), "same-file")
         finally:
             conn.close()
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from pathlib import Path
 
@@ -95,7 +96,7 @@ def test_tampered_migration_error_message_names_file(tmp_path, monkeypatch):
 
     m1.write_text("CREATE TABLE foo (id INTEGER PRIMARY KEY, col TEXT);")
 
-    with pytest.raises(RuntimeError, match="001_things.sql"):
+    with pytest.raises(RuntimeError, match=re.escape("001_things.sql")):
         apply_migrations(conn)
 
 

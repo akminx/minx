@@ -147,7 +147,8 @@ class MemoryService(BaseService):
             clauses.append("scope = ?")
             params.append(require_non_empty("scope", scope))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        sql = f"SELECT * FROM memories {where} ORDER BY id DESC LIMIT ?"
+        # Safe: WHERE is only AND of literal fragments with ?; filter values are bound in params.
+        sql = f"SELECT * FROM memories {where} ORDER BY id DESC LIMIT ?"  # noqa: S608
         params.append(limit)
         rows = self.conn.execute(sql, params).fetchall()
         return [_row_to_record(row) for row in rows]
@@ -360,11 +361,13 @@ class MemoryService(BaseService):
             clauses.append("scope = ?")
             params.append(require_non_empty("scope", scope))
         params.append(limit)
+        # Safe: WHERE is AND of fixed SQL snippets and ? placeholders; scope/limit values are bound.
+        where_sql = f"WHERE {' AND '.join(clauses)} "
         sql = (
-            "SELECT * FROM memories "
-            f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY confidence DESC, created_at ASC "
-            "LIMIT ?"
+            "SELECT * FROM memories "  # noqa: S608
+            + where_sql
+            + "ORDER BY confidence DESC, created_at ASC "
+            + "LIMIT ?"
         )
         rows = self.conn.execute(sql, params).fetchall()
         return [_row_to_record(row) for row in rows]
@@ -498,7 +501,8 @@ class MemoryService(BaseService):
                 out.append(rec)
                 continue
 
-            assert prior_status is not None
+            if prior_status is None:
+                raise RuntimeError("internal: prior_status required after candidate branch")
             self.conn.execute("BEGIN IMMEDIATE")
             try:
                 memory_id = int(row["id"])

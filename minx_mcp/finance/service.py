@@ -73,12 +73,13 @@ class FinanceService(BaseService):
         if batch_id is not None:
             reset_where_clause += " AND batch_id = ?"
             reset_params.append(batch_id)
+        # Safe: reset_where_clause is fixed literals plus optional batch_id ?; category id bound in params.
         self.conn.execute(
             f"""
             UPDATE finance_transactions
             SET category_id = ?, category_source = 'uncategorized'
             {reset_where_clause}
-            """,
+            """,  # noqa: S608
             [uncategorized_id, *reset_params],
         )
 
@@ -118,13 +119,14 @@ class FinanceService(BaseService):
             where_clause += " AND batch_id = ?"
             params.append(batch_id)
 
+        # Safe: where_clause is fixed predicate text plus optional batch_id ?; values bound in params.
         rows = self.conn.execute(
             f"""
             SELECT id, merchant, raw_merchant
             FROM finance_transactions
             {where_clause}
             ORDER BY id ASC
-            """,
+            """,  # noqa: S608
             params,
         ).fetchall()
         for row in rows:
@@ -159,12 +161,13 @@ class FinanceService(BaseService):
         savepoint = "finance_categorize"
         self.conn.execute(f"SAVEPOINT {savepoint}")
         try:
+            # Safe: IN expands to len(unique_ids) "?" tokens; integer ids are bound, not concatenated.
             cursor = self.conn.execute(
                 f"""
                 UPDATE finance_transactions
                 SET category_id = ?, category_source = 'manual'
                 WHERE id IN ({placeholders})
-                """,
+                """,  # noqa: S608
                 [category_id, *unique_ids],
             )
             self._emit_finance_event(
@@ -214,8 +217,9 @@ class FinanceService(BaseService):
             return []
 
         placeholders = ",".join("?" for _ in transaction_ids)
+        # Safe: placeholder count matches transaction_ids; ids are bound as parameters.
         rows = self.conn.execute(
-            f"SELECT id FROM finance_transactions WHERE id IN ({placeholders})",
+            f"SELECT id FROM finance_transactions WHERE id IN ({placeholders})",  # noqa: S608
             transaction_ids,
         ).fetchall()
         existing = {int(row["id"]) for row in rows}
@@ -462,12 +466,13 @@ class FinanceService(BaseService):
             return 0
 
         placeholders = ",".join("?" for _ in unique_ids)
+        # Safe: IN list is only "?"; transaction id integers are bound via unique_ids.
         row = self.conn.execute(
             f"""
             SELECT COALESCE(SUM(amount_cents), 0) AS total_cents
             FROM finance_transactions
             WHERE id IN ({placeholders})
-            """,
+            """,  # noqa: S608
             unique_ids,
         ).fetchone()
         return int(row["total_cents"])

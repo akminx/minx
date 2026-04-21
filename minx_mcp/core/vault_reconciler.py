@@ -224,7 +224,7 @@ class VaultReconciler:
                 if result.warning.kind == "conflict":
                     counts.conflicts += 1
             _count_outcome(counts, result.outcome)
-        except _SkipNote as exc:
+        except _SkipNoteError as exc:
             _skip_with_warning(counts, warnings, exc.warning)
         finally:
             if self._conn.in_transaction:
@@ -278,7 +278,7 @@ class VaultReconciler:
                     try:
                         staged = self._vault_writer.stage_replace_frontmatter(doc.relative_path, canonical)
                     except Exception as exc:
-                        raise _SkipNote(
+                        raise _SkipNoteError(
                             VaultReconcileWarning(
                                 kind="write_failed",
                                 vault_path=doc.relative_path,
@@ -299,7 +299,7 @@ class VaultReconciler:
                     content_hash=content_hash,
                 )
                 self._conn.commit()
-            except _SkipNote as exc:
+            except _SkipNoteError as exc:
                 if self._conn.in_transaction:
                     self._conn.rollback()
                 if staged is not None:
@@ -323,9 +323,8 @@ class VaultReconciler:
                 try:
                     staged.commit()
                 except Exception as exc:
-                    logger.error(
+                    logger.exception(
                         "vault rename failed after DB commit; will self-heal on next reconcile",
-                        exc_info=True,
                         extra={
                             "vault_path": doc.relative_path,
                             "memory_id": result.memory_id,
@@ -361,7 +360,7 @@ class VaultReconciler:
         status = str(row["status"])
         memory_id = int(row["id"])
         if status in {"rejected", "expired"}:
-            raise _SkipNote(
+            raise _SkipNoteError(
                 VaultReconcileWarning(
                     kind="terminal_state",
                     vault_path=doc.relative_path,
@@ -392,7 +391,7 @@ class VaultReconciler:
             (_canonical_payload_json(payload), memory_id),
         )
         if cur.rowcount != 1:
-            raise _SkipNote(
+            raise _SkipNoteError(
                 VaultReconcileWarning(
                     kind="conflict",
                     vault_path=doc.relative_path,
@@ -418,7 +417,7 @@ class VaultReconciler:
                 (identity.memory_id,),
             ).fetchone()
             if row is None:
-                raise _SkipNote(
+                raise _SkipNoteError(
                     VaultReconcileWarning(
                         kind="missing_memory",
                         vault_path=vault_path,
@@ -467,10 +466,10 @@ class VaultReconciler:
         db_updated_at = str(row["updated_at"])
         if identity.sync_base_updated_at is not None:
             if db_updated_at != identity.sync_base_updated_at:
-                raise _SkipNote(_conflict_warning(row, identity, vault_path))
+                raise _SkipNoteError(_conflict_warning(row, identity, vault_path))
             return
         if identity.memory_id is not None:
-            raise _SkipNote(
+            raise _SkipNoteError(
                 VaultReconcileWarning(
                     kind="conflict",
                     vault_path=vault_path,
@@ -481,7 +480,7 @@ class VaultReconciler:
                 )
             )
         if str(row["source"]) != "vault_sync":
-            raise _SkipNote(
+            raise _SkipNoteError(
                 VaultReconcileWarning(
                     kind="conflict",
                     vault_path=vault_path,
@@ -501,7 +500,7 @@ class VaultReconciler:
         if identity.sync_base_updated_at is None:
             return
         if str(row["updated_at"]) != identity.sync_base_updated_at:
-            raise _SkipNote(_conflict_warning(row, identity, vault_path))
+            raise _SkipNoteError(_conflict_warning(row, identity, vault_path))
 
     def _create_memory(
         self,
@@ -525,7 +524,7 @@ class VaultReconciler:
             ),
         )
         if cur.lastrowid is None:
-            raise _SkipNote(
+            raise _SkipNoteError(
                 VaultReconcileWarning(
                     kind="write_failed",
                     vault_path=doc.relative_path,
@@ -571,7 +570,7 @@ class VaultReconciler:
             (_canonical_payload_json(payload), memory_id),
         )
         if cur.rowcount != 1:
-            raise _SkipNote(
+            raise _SkipNoteError(
                 VaultReconcileWarning(
                     kind="conflict",
                     vault_path=doc.relative_path,
@@ -662,7 +661,7 @@ class VaultReconciler:
         )
 
 
-class _SkipNote(Exception):
+class _SkipNoteError(Exception):
     def __init__(self, warning: VaultReconcileWarning) -> None:
         super().__init__(warning.message)
         self.warning = warning
@@ -698,7 +697,7 @@ def _require_identity_match(row: Row, identity: MemoryIdentity, vault_path: str)
         or str(row["memory_type"]) != identity.memory_type
         or str(row["subject"]) != identity.subject
     ):
-        raise _SkipNote(
+        raise _SkipNoteError(
             VaultReconcileWarning(
                 kind="identity_mismatch",
                 vault_path=vault_path,

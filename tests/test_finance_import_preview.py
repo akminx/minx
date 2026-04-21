@@ -55,7 +55,7 @@ def test_finance_import_preview_rejects_paths_outside_import_root(tmp_path):
 
     try:
         service.finance_import_preview(str(outside), "DCU")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         assert str(exc) == "source_ref must be inside the allowed import root"
     else:
         raise AssertionError("expected preview to reject sources outside import_root")

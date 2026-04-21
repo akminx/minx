@@ -91,7 +91,8 @@ class StagedVaultWrite:
         if self.is_finalized:
             raise RuntimeError("staged vault write has already been finalized")
         temp_path = self._temp_path
-        assert temp_path is not None
+        if temp_path is None:
+            raise RuntimeError("internal: staged write missing temp_path after is_finalized check")
         try:
             temp_path.replace(self._target)
             self._committed = True
@@ -211,7 +212,7 @@ class VaultWriter:
         lock_path = self._lock_path(path)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + _LOCK_ACQUIRE_TIMEOUT_S
-        lock_handle = open(lock_path, "a+", encoding="utf-8")  # noqa: SIM115 - released by caller
+        lock_handle = lock_path.open("a+", encoding="utf-8")
         try:
             while True:
                 try:

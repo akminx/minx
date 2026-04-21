@@ -498,7 +498,8 @@ async def _finance_query(
                 limit=limit,
             )
 
-    assert effective_message is not None
+    if effective_message is None:
+        raise RuntimeError("internal: natural finance_query requires a message")
     _require_non_empty("message" if message is not None else "natural_query", effective_message)
     effective_review_date = resolve_date_or_today(review_date, field_name="review_date")
     resolved_llm = _resolve_finance_query_llm(service, llm)

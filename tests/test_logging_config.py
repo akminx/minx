@@ -92,11 +92,11 @@ def test_json_formatter_redacts_listed_secret_fields():
         args=(),
         exc_info=None,
     )
-    record.token = "super-secret-value"  # type: ignore[attr-defined]
+    record.token = "super-secret-value"  # type: ignore[attr-defined]  # noqa: S105 - fixture secret for redaction test
     record._secret_fields = ["token"]  # type: ignore[attr-defined]
 
     payload = json.loads(formatter.format(record))
-    assert payload["token"] == "[REDACTED]"
+    assert payload["token"] == "[REDACTED]"  # noqa: S105 - literal is expected redacted placeholder
     assert "super-secret-value" not in json.dumps(payload)
 
 

@@ -61,6 +61,7 @@ def match_pantry(conn: Connection, ingredient_names: list[str]) -> dict[str, Mat
     if not normalized:
         return {}
     placeholders = ",".join("?" for _ in normalized)
+    # Safe: IN has len(normalized) "?" placeholders; normalized names are bound, not embedded in SQL.
     rows = conn.execute(
         f"""
         SELECT id, display_name, normalized_name, quantity, unit, expiration_date,
@@ -68,7 +69,7 @@ def match_pantry(conn: Connection, ingredient_names: list[str]) -> dict[str, Mat
         FROM meals_pantry_items
         WHERE normalized_name IN ({placeholders})
         ORDER BY normalized_name ASC, id ASC
-        """,
+        """,  # noqa: S608
         normalized,
     ).fetchall()
     grouped: dict[str, list[Row]] = defaultdict(list)

@@ -74,22 +74,21 @@ def detect_spending_spike(read_models: ReadModels) -> DetectorResult:
 
 
 def detect_open_loops(read_models: ReadModels) -> DetectorResult:
-    insights: list[InsightCandidate] = []
-    for loop in read_models.open_loops.loops:
-        insights.append(
-            InsightCandidate(
-                insight_type="finance.open_loop",
-                dedupe_key=_open_loop_dedupe_key(read_models.open_loops.date, loop),
-                summary=loop.description,
-                supporting_signals=[loop.description],
-                confidence=0.9 if loop.loop_type in _ACTION_NEEDED_LOOP_TYPES else 0.8,
-                severity=loop.severity,
-                actionability=(
-                    "action_needed" if loop.loop_type in _ACTION_NEEDED_LOOP_TYPES else "suggestion"
-                ),
-                source="detector",
-            )
+    insights = [
+        InsightCandidate(
+            insight_type="finance.open_loop",
+            dedupe_key=_open_loop_dedupe_key(read_models.open_loops.date, loop),
+            summary=loop.description,
+            supporting_signals=[loop.description],
+            confidence=0.9 if loop.loop_type in _ACTION_NEEDED_LOOP_TYPES else 0.8,
+            severity=loop.severity,
+            actionability=(
+                "action_needed" if loop.loop_type in _ACTION_NEEDED_LOOP_TYPES else "suggestion"
+            ),
+            source="detector",
         )
+        for loop in read_models.open_loops.loops
+    ]
     return DetectorResult(tuple(insights), ())
 
 

@@ -444,7 +444,7 @@ def test_built_wheel_includes_packaged_resources(tmp_path):
     )
     wheel_dir.mkdir()
 
-    subprocess.run(
+    subprocess.run(  # noqa: S603 - test builds wheel using sys.executable and inline setuptools hook
         [
             sys.executable,
             "-c",

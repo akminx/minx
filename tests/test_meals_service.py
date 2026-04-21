@@ -342,16 +342,16 @@ def test_list_meals_uses_timezone_local_day_boundaries(db_path) -> None:
 
 def test_set_nutrition_profile_goal_cut_lowers_calories_vs_maintenance(db_path) -> None:
     svc = MealsService(db_path)
-    base = dict(
-        sex="male",
-        age_years=30,
-        height_cm=180.0,
-        weight_kg=80.0,
-        activity_level="moderately_active",
-        calorie_deficit_kcal=400,
-        protein_g_per_kg=2.0,
-        fat_g_per_kg=0.77,
-    )
+    base = {
+        "sex": "male",
+        "age_years": 30,
+        "height_cm": 180.0,
+        "weight_kg": 80.0,
+        "activity_level": "moderately_active",
+        "calorie_deficit_kcal": 400,
+        "protein_g_per_kg": 2.0,
+        "fat_g_per_kg": 0.77,
+    }
     with svc:
         maintenance = svc.set_nutrition_profile(goal="maintenance", **base)
         cut = svc.set_nutrition_profile(goal="cut", **base)

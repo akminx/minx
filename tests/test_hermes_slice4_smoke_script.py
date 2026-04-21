@@ -12,7 +12,7 @@ def test_smoke_script_is_non_destructive_by_default(tmp_path: Path) -> None:
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
 
-    completed = subprocess.run(
+    completed = subprocess.run(  # noqa: S603 - integration test runs repo smoke script with fixed argv
         [
             sys.executable,
             "scripts/hermes_slice4_smoke.py",
@@ -48,7 +48,7 @@ def test_smoke_script_in_place_writes_seed_data(tmp_path: Path) -> None:
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
 
-    completed = subprocess.run(
+    completed = subprocess.run(  # noqa: S603 - integration test runs repo smoke script with fixed argv
         [
             sys.executable,
             "scripts/hermes_slice4_smoke.py",
@@ -82,7 +82,7 @@ def test_smoke_script_rejects_invalid_review_date(tmp_path: Path) -> None:
     db_path = tmp_path / "minx.db"
     get_connection(db_path).close()
 
-    completed = subprocess.run(
+    completed = subprocess.run(  # noqa: S603 - integration test runs repo smoke script with fixed argv
         [
             sys.executable,
             "scripts/hermes_slice4_smoke.py",
