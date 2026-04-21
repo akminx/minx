@@ -50,6 +50,13 @@ def test_uncategorized_id_cached_per_thread(tmp_path):
             results[idx] = category_id
         except Exception as exc:
             errors.append(exc)
+        finally:
+            # Close the thread-owned sqlite connection inside its owning thread.
+            # sqlite3's default check_same_thread=True forbids closing from
+            # another thread, and BaseService.close() only affects the current
+            # context; skipping this leaks the connection and surfaces as a
+            # PytestUnraisableExceptionWarning under -W error.
+            service.close()
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
     for t in threads:
@@ -71,15 +78,18 @@ def test_thread_local_caches_value_independently(tmp_path):
     lock = threading.Lock()
 
     def worker() -> None:
-        # First call populates thread-local cache
-        first = service._uncategorized_id()
-        # Read the cached value from thread-local directly
-        cached = getattr(service._local, "uncategorized_category_id", None)
-        with lock:
-            cached_values.append(cached)
-        # Second call should return the same cached value
-        second = service._uncategorized_id()
-        assert first == second
+        try:
+            # First call populates thread-local cache
+            first = service._uncategorized_id()
+            # Read the cached value from thread-local directly
+            cached = getattr(service._local, "uncategorized_category_id", None)
+            with lock:
+                cached_values.append(cached)
+            # Second call should return the same cached value
+            second = service._uncategorized_id()
+            assert first == second
+        finally:
+            service.close()  # close this thread's owned connection
 
     threads = [threading.Thread(target=worker) for _ in range(4)]
     for t in threads:
@@ -107,6 +117,8 @@ def test_concurrent_uncategorized_id_no_race(tmp_path):
                 service._uncategorized_id()
         except Exception as exc:
             errors.append(exc)
+        finally:
+            service.close()  # close this thread's owned connection
 
     threads = [threading.Thread(target=worker) for _ in range(10)]
     for t in threads:

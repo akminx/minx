@@ -69,3 +69,9 @@ select = ["E", "F", "I", "W", "UP", "B", "SIM"]
 markers = [
   "slow: marks transport and end-to-end smoke tests",
 ]
+# Treat warnings as errors so resource leaks (unclosed sqlite connections,
+# orphaned asyncio event loops) surface as test failures instead of silently
+# accumulating. ``tests/conftest.py`` installs an autouse fixture that tracks
+# and closes both sqlite connections and asyncio event loops per-test to keep
+# this clean; new leaks will fail fast rather than silently regress.
+filterwarnings = ["error"]

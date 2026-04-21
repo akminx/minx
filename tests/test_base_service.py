@@ -36,7 +36,14 @@ def test_base_service_distinct_connections_per_thread(tmp_path: Path) -> None:
     found: dict[str, object] = {}
 
     def capture() -> None:
-        found[threading.current_thread().name] = svc.conn
+        # Capture the connection *and* close it in its owning thread. Sqlite3
+        # raises ProgrammingError if close() is called from a non-owning thread
+        # (default ``check_same_thread=True``), so closing in the main thread
+        # later would leak the handle and trigger a session-end
+        # PytestUnraisableExceptionWarning under ``-W error``.
+        conn = svc.conn
+        found[threading.current_thread().name] = conn
+        conn.close()
 
     t1 = threading.Thread(target=capture, name="t-one")
     t2 = threading.Thread(target=capture, name="t-two")
