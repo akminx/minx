@@ -176,6 +176,7 @@ def test_create_llm_builds_openai_compatible_provider(monkeypatch):
     assert created.base_url == "https://api.example.com/v1"
     assert created.model == "gpt-4o-mini"
     assert created.api_key_env == "OPENAI_API_KEY"
+    assert created.provider_preferences is None
 
 
 @pytest.mark.asyncio
@@ -241,6 +242,79 @@ async def test_openai_compatible_llm_posts_chat_completion_and_normalizes_json(
     assert result.next_day_focus == ["Stay under budget"]
     assert captured["url"] == "https://api.example.com/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["json"] == {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": captured["json"]["messages"][0]["content"]}],
+        "response_format": {"type": "json_object"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_llm_includes_provider_preferences_when_configured(
+    monkeypatch,
+):
+    from minx_mcp.core.llm_openai import OpenAICompatibleLLM
+
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"additional_insights": [], "narrative": "Pinned route.", "next_day_focus": []}'
+                        }
+                    }
+                ]
+            }
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, headers: dict[str, str], json: dict[str, object]):
+            captured["json"] = json
+            return _FakeResponse()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("minx_mcp.core.llm_openai.httpx.AsyncClient", _FakeClient)
+
+    llm = OpenAICompatibleLLM(
+        base_url="https://openrouter.ai/api/v1",
+        model="nvidia/nemotron-3-super-120b-a12b",
+        api_key_env="OPENAI_API_KEY",
+        provider_preferences={
+            "only": ["deepinfra"],
+            "quantizations": ["bf16"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        },
+    )
+
+    result = await llm.evaluate_review(
+        timeline=_timeline(),
+        spending=_spending(),
+        open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
+        detector_insights=[],
+    )
+
+    assert result.narrative == "Pinned route."
+    assert captured["json"]["provider"] == {
+        "only": ["deepinfra"],
+        "quantizations": ["bf16"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
 
 
 @pytest.mark.asyncio

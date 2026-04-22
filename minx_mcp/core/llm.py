@@ -103,11 +103,13 @@ class JSONBackedLLM:
 def _build_openai_compatible(config: dict[str, Any]) -> LLMInterface:
     from minx_mcp.core.llm_openai import OpenAICompatibleLLM
 
+    provider_preferences = config.get("provider_preferences")
     return OpenAICompatibleLLM(
         base_url=str(config["base_url"]),
         model=str(config["model"]),
         api_key_env=str(config["api_key_env"]),
         timeout_seconds=float(config.get("timeout_seconds", 30.0)),
+        provider_preferences=provider_preferences if isinstance(provider_preferences, dict) else None,
     )
 
 

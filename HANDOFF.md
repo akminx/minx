@@ -1,6 +1,6 @@
 # Project Handoff
 
-Status as of 2026-04-22: Slices 1 through 4, consolidation/code-quality hardening, Slice 6a-6f durable memory, and **Slice 8 Core-side Proactive Autonomy surfaces are implemented**. `main` is synced with upstream quality waves (ruff expansion + strict mypy + test hardening) and includes Slice 8 playbook registry/run auditing (`playbook://registry`, `start_playbook_run`, `complete_playbook_run`, `log_playbook_run`, `playbook_history`, `playbook_reconcile_crashed`) plus migration `019_playbook_runs.sql`.
+Status as of 2026-04-22: Slices 1 through 4, consolidation/code-quality hardening, Slice 6a-6f durable memory, and **Slice 8 Core-side Proactive Autonomy surfaces are implemented and validated against Hermes end-to-end**. `main` is synced with upstream quality waves (ruff expansion + strict mypy + test hardening) and includes Slice 8 playbook registry/run auditing (`playbook://registry`, `start_playbook_run`, `complete_playbook_run`, `log_playbook_run`, `playbook_history`, `playbook_reconcile_crashed`) plus migration `019_playbook_runs.sql`. **Slice 9 (Agentic Investigations) is designed but not yet implemented.**
 
 ### 2026-04-22 Handoff Update
 
@@ -12,6 +12,27 @@ Status as of 2026-04-22: Slices 1 through 4, consolidation/code-quality hardenin
   - `tests/test_vault_reconciler.py`
 - New modular tool registration file added: `minx_mcp/core/tools/playbooks.py` and wired into `core/server.py`.
 - Current local (not yet pushed) follow-up: Ruff remediation in `minx_mcp/core/playbooks.py` is complete and validated; commit/push is still pending.
+
+### 2026-04-22 Operational Validation Update
+
+- `main` is currently at `bab7c92` (`fix(playbooks): accept dict for result_json / payload_json in playbook tools`), which fixed the Hermes-triggered dict-payload validation failure uncovered by the first Slice 8 smoke.
+- Hermes-side Slice 8 is now operationally validated:
+  - all 5 playbooks (`daily_review`, `wiki_update`, `memory_review`, `goal_nudge`, `weekly_report`) have terminal audit rows in `playbook_runs`
+  - no `playbook_runs` rows remain stuck in `status='running'`
+  - a dedicated Hermes cron job `playbook-reconcile-sweep` now calls `playbook_reconcile_crashed(stale_after_minutes=15)` every 15 minutes
+- Recent validated production-like rows in `~/.minx/data/minx.db`:
+  - `id=7 weekly_report succeeded`
+  - `id=6 goal_nudge skipped`
+  - `id=5 memory_review skipped`
+  - `id=4 wiki_update skipped`
+  - `id=3 daily_review succeeded`
+- Hermes runtime hardening landed outside this repo but matters for future Core work:
+  - all Minx playbook jobs are pinned to `nvidia/nemotron-3-super-120b-a12b` via OpenRouter instead of inheriting the flaky free default
+  - Hermes main + auxiliary text-model paths are now pinned through OpenRouter provider routing to `deepinfra` with `bf16` quantization
+  - Core now supports forwarding OpenRouter `provider_preferences` from `core/llm_config`, and the live `core/llm_config` preference points at the same Nemotron + DeepInfra + BF16 route
+  - `memory-review` was rewritten as a non-blocking “surface now, resolve later” flow so it fits Hermes' cron timeout / reconcile budget
+  - `minx-hermes/scripts/smoke-playbooks.sh` now waits for a terminal `playbook_runs` row instead of reporting success immediately after `hermes cron tick`
+  - `#finances` Discord uploads now have a dedicated `finance-import` path: Hermes auto-loads the finance-import skill in that channel and treats supported Robinhood/Discover/DCU CSV/PDF attachments as import requests by default
 
 Hermes cutover snapshot (2026-04-14):
 
@@ -31,13 +52,27 @@ Hermes cutover snapshot (2026-04-14):
 
 ## Immediate Next Steps (2026-04-22)
 
-1. Commit and push the local Ruff-only fix in `minx_mcp/core/playbooks.py`.
-2. Re-run CI parity locally after push:
+1. Start **Slice 9a** from the designed spec:
+   - add `020_investigations.sql`
+   - implement `start_investigation`, `append_investigation_step`, `complete_investigation`, `log_investigation`, `investigation_history`, `investigation_get`
+   - mirror the Slice 8 two-phase + convenience-wrapper API shape
+2. Follow immediately with **Slice 9b**:
+   - trajectory-digest helpers
+   - redaction pass for `context_json` / step digests / `answer_md`
+   - operator runbook for investigation retention, replay, and PII handling
+3. Keep Hermes operational hardening moving in parallel because it directly de-risks Slice 9d:
+   - add a `sync-hermes-overlay.sh`-style workflow so `~/Documents/minx-hermes` can deterministically refresh `~/.hermes/`
+   - add cron-config validation that fails if any Minx job is missing `model`, `provider`, or `next_run_at`
+   - normalize `trigger_ref` naming across playbooks for cleaner audit/history analysis
+   - add a lightweight “playbook health” report that summarizes recent failures / long skip streaks from `playbook_history`
+4. After 9a/9b, implement **Slice 9d** in Hermes:
+   - a budgeted `minx_investigate` loop that logs investigation steps into Core
+   - re-use the Slice 8 audit discipline: explicit start, append per step, explicit terminal completion
+5. Keep the normal CI parity checks as the merge gate for any Core-side Slice 9 work:
    - `uv sync --all-extras`
    - `uv run ruff check minx_mcp tests`
    - `uv run mypy minx_mcp`
    - `uv run pytest tests/ -x -q`
-3. Finish Hermes-side Slice 8 integration (playbook runner + cron/automation wiring against shipped Core playbook tools).
 
 ## What Is Minx
 
@@ -57,6 +92,7 @@ Key architectural decisions that govern future work:
 2. **Memory tiers (Slice 6)**: Three-tier memory: SQLite for structured facts (Tier 1), SQLite for episodic archives (Tier 2), Obsidian vault as a living wiki (Tier 3, LLM Wiki pattern). Core reads the vault and stores facts. Harness writes wiki pages using LLM via Core tools.
 3. **Autonomy split (Slice 8)**: Core provides an audit trail (`playbook_runs`), logging/history MCP tools, and a `playbook://registry` resource. Hermes owns scheduling (uses existing cron), playbook execution scripts, confirmation conversations, and wiki maintenance. No scheduling library in Core.
 4. **LLM Wiki pattern (Slices 6+8)**: Inspired by Karpathy — Obsidian is the IDE, the LLM is the programmer, the wiki is the codebase. Minx incrementally builds and maintains structured wiki pages in Obsidian rather than re-deriving knowledge on every query.
+5. **Agentic investigations split (Slice 9)**: Core owns durable investigation storage + retrieval; Hermes owns the budgeted agent loop, step selection, and user-facing investigation UX. Investigations are one-shot and user-initiated; they are not recurring playbooks.
 
 ## Implemented Slices
 

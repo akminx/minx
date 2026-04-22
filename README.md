@@ -126,13 +126,19 @@ Set the `core/llm_config` preference to a payload like:
 ```json
 {
   "provider": "openai_compatible",
-  "base_url": "https://api.openai.com/v1",
-  "model": "gpt-4o-mini",
-  "api_key_env": "OPENAI_API_KEY"
+  "base_url": "https://openrouter.ai/api/v1",
+  "model": "nvidia/nemotron-3-super-120b-a12b",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "provider_preferences": {
+    "only": ["deepinfra"],
+    "quantizations": ["bf16"],
+    "allow_fallbacks": false,
+    "require_parameters": true
+  }
 }
 ```
 
-`api_key_env` must point to an environment variable; API keys are not stored in preferences.
+`api_key_env` must point to an environment variable; API keys are not stored in preferences. `provider_preferences` is optional and is forwarded verbatim to the OpenAI-compatible provider request body, which is useful for OpenRouter provider routing.
 
 ## Known limitations
 

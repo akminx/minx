@@ -30,6 +30,7 @@ class OpenAICompatibleLLM:
     model: str
     api_key_env: str
     timeout_seconds: float = 30.0
+    provider_preferences: dict[str, Any] | None = None
 
     async def run_json_prompt(self, prompt: str) -> str:
         payload = await self._post_chat_completion(prompt)
@@ -86,16 +87,20 @@ class OpenAICompatibleLLM:
         if not api_key:
             raise LLMProviderError(f"Missing API key environment variable: {self.api_key_env}")
 
+        request_json: dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": response_format or {"type": "json_object"},
+        }
+        if self.provider_preferences:
+            request_json["provider"] = self.provider_preferences
+
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                 response = await client.post(
                     f"{self.base_url.rstrip('/')}/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}"},
-                    json={
-                        "model": self.model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "response_format": response_format or {"type": "json_object"},
-                    },
+                    json=request_json,
                 )
                 response.raise_for_status()
         except httpx.HTTPError as exc:
