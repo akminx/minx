@@ -157,15 +157,6 @@ def start_playbook_run(
             raise RuntimeError("playbook_runs insert did not return a row id")
         run_id = int(cur.lastrowid)
         conn.commit()
-        _log_playbook_event(
-            message="playbook run started",
-            playbook_id=normalized_playbook_id,
-            run_id=run_id,
-            trigger_type=normalized_trigger_type,
-            status="running",
-            started=started,
-        )
-        return run_id
     except sqlite3.IntegrityError as exc:
         if conn.in_transaction:
             conn.rollback()
@@ -183,6 +174,16 @@ def start_playbook_run(
         if conn.in_transaction:
             conn.rollback()
         raise
+    else:
+        _log_playbook_event(
+            message="playbook run started",
+            playbook_id=normalized_playbook_id,
+            run_id=run_id,
+            trigger_type=normalized_trigger_type,
+            status="running",
+            started=started,
+        )
+        return run_id
 
 
 def complete_playbook_run(
@@ -243,6 +244,11 @@ def complete_playbook_run(
                 data={"run_id": normalized_run_id},
             )
         conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    else:
         _log_playbook_event(
             message="playbook run completed",
             playbook_id=str(row["playbook_id"]),
@@ -252,10 +258,6 @@ def complete_playbook_run(
             started=started,
         )
         return normalized_run_id
-    except Exception:
-        if conn.in_transaction:
-            conn.rollback()
-        raise
 
 
 def log_playbook_run(
@@ -327,15 +329,6 @@ def log_playbook_run(
             ),
         )
         conn.commit()
-        _log_playbook_event(
-            message="playbook run logged",
-            playbook_id=normalized_playbook_id,
-            run_id=run_id,
-            trigger_type=normalized_trigger_type,
-            status=normalized_status,
-            started=started,
-        )
-        return run_id
     except sqlite3.IntegrityError as exc:
         if conn.in_transaction:
             conn.rollback()
@@ -351,6 +344,16 @@ def log_playbook_run(
         if conn.in_transaction:
             conn.rollback()
         raise
+    else:
+        _log_playbook_event(
+            message="playbook run logged",
+            playbook_id=normalized_playbook_id,
+            run_id=run_id,
+            trigger_type=normalized_trigger_type,
+            status=normalized_status,
+            started=started,
+        )
+        return run_id
 
 
 def playbook_history(
@@ -369,28 +372,28 @@ def playbook_history(
     cutoff = _resolve_history_cutoff(since, days)
     normalized_limit = _normalize_limit(limit)
 
-    clauses = ["triggered_at >= ?"]
-    params: list[object] = [cutoff]
-
-    if normalized_playbook is not None:
-        clauses.append("playbook_id = ?")
-        params.append(normalized_playbook)
-    if normalized_harness is not None:
-        clauses.append("harness = ?")
-        params.append(normalized_harness)
-    if normalized_status is not None:
-        clauses.append("status = ?")
-        params.append(normalized_status)
-
-    where_sql = " AND ".join(clauses)
-    query = (
-        "SELECT * FROM playbook_runs "
-        f"WHERE {where_sql} "
-        "ORDER BY triggered_at DESC, id DESC "
-        "LIMIT ?"
-    )
-    params.append(normalized_limit + 1)
-    rows = conn.execute(query, tuple(params)).fetchall()
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM playbook_runs
+        WHERE triggered_at >= ?
+          AND (? IS NULL OR playbook_id = ?)
+          AND (? IS NULL OR harness = ?)
+          AND (? IS NULL OR status = ?)
+        ORDER BY triggered_at DESC, id DESC
+        LIMIT ?
+        """,
+        (
+            cutoff,
+            normalized_playbook,
+            normalized_playbook,
+            normalized_harness,
+            normalized_harness,
+            normalized_status,
+            normalized_status,
+            normalized_limit + 1,
+        ),
+    ).fetchall()
 
     truncated = len(rows) > normalized_limit
     visible_rows = rows[:normalized_limit]
@@ -426,18 +429,17 @@ def playbook_reconcile_crashed(
         ).fetchall()
         run_ids = [int(row["id"]) for row in rows]
         if run_ids:
-            placeholders = ",".join("?" for _ in run_ids)
-            conn.execute(
-                f"""
+            conn.executemany(
+                """
                 UPDATE playbook_runs
                 SET status = 'failed',
                     conditions_met = 0,
                     action_taken = 0,
                     error_message = 'harness crash suspected',
                     completed_at = ?
-                WHERE id IN ({placeholders})
+                WHERE id = ? AND status = 'running'
                 """,
-                (completed_at, *run_ids),
+                ((completed_at, run_id) for run_id in run_ids),
             )
         conn.commit()
         for row in rows:

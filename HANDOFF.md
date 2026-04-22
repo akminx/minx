@@ -1,6 +1,17 @@
 # Project Handoff
 
-Status as of 2026-04-19: Slices 1 through 4 are implemented, consolidation/code-quality/observability hardening is complete, and **Slice 6 phases 6a-6f are implemented in the current working tree**. Slice 6a/6b provide durable memory schema/service/MCP tools, first detectors, and snapshot archives. Slice 6c adds migration `018_vault_index.sql`, the `VaultScanner`, `vault_index`, `memory_events.vault_synced`, the diagnostic `vault_scan` MCP tool, structured memory-ingest failure reports, stricter event/drop logging, and the folded hardening items from the 6c plan. Slice 6d finishes snapshot `MemoryContext` DTOs for harness context. Slice 6e completes deterministic wiki write surfaces with `vault_replace_section`, `vault_replace_frontmatter`, package-data wiki templates, and the new `memory.md` `type: minx-memory` seed template. Slice 6f adds `VaultReconciler` plus the `vault_reconcile_memories(dry_run?)` MCP tool for bounded frontmatter-to-SQLite reconciliation with `memory_id`/`memory_key` identity checks, `sync_base_updated_at` conflict detection, terminal-state skips, idempotent re-apply without note rewrites, note-frontmatter refresh, and per-note transaction rollback on write failure. Post-review fixes in this working tree harden the frontmatter scalar roundtrip for apostrophes and escaped multiline string values, align vault JSON serialization with the DB canonical form, share the reserved memory-frontmatter key set across scanner/reconciler, preserve CRLF during frontmatter replacement, convert the defensive no-rowid insert case into a `write_failed` warning, log malformed DB `updated_at` values during stale-candidate checks, and add regression coverage for the full 6f checklist paths called out in review. Slice 8 (Proactive Autonomy) is fully designed and queued next.
+Status as of 2026-04-22: Slices 1 through 4, consolidation/code-quality hardening, Slice 6a-6f durable memory, and **Slice 8 Core-side Proactive Autonomy surfaces are implemented**. `main` is synced with upstream quality waves (ruff expansion + strict mypy + test hardening) and includes Slice 8 playbook registry/run auditing (`playbook://registry`, `start_playbook_run`, `complete_playbook_run`, `log_playbook_run`, `playbook_history`, `playbook_reconcile_crashed`) plus migration `019_playbook_runs.sql`.
+
+### 2026-04-22 Handoff Update
+
+- Remote sync/rebase completed and pushed: local Slice 8 commits were rebased onto `origin/main` and published.
+- Merge conflicts were resolved in:
+  - `minx_mcp/core/server.py`
+  - `minx_mcp/core/vault_reconciler.py`
+  - `tests/test_core_mcp_stdio.py`
+  - `tests/test_vault_reconciler.py`
+- New modular tool registration file added: `minx_mcp/core/tools/playbooks.py` and wired into `core/server.py`.
+- Current local (not yet pushed) follow-up: Ruff remediation in `minx_mcp/core/playbooks.py` is complete and validated; commit/push is still pending.
 
 Hermes cutover snapshot (2026-04-14):
 
@@ -11,9 +22,22 @@ Hermes cutover snapshot (2026-04-14):
 ## Repo And Branch
 
 - Remote: `github.com/akminx/minx`
-- Branch: `codex/slice6def` (branched from `main`; project default remains `main`)
+- Branch: `main`
 - Stack: Python 3.12, FastMCP, SQLite, Pydantic, pytest, mypy
-- Current health: test suite passing (`uv run pytest -q` -> 912 passed); production mypy clean (`uv run mypy minx_mcp` -> 0 errors); Ruff clean (`uv run ruff check .`); verify via commands below
+- Current health (2026-04-22):
+  - `uv run ruff check minx_mcp tests` passes
+  - `uv run mypy minx_mcp` passes
+  - `uv run --with hypothesis pytest tests/ -x -q` passes (`962 passed`)
+
+## Immediate Next Steps (2026-04-22)
+
+1. Commit and push the local Ruff-only fix in `minx_mcp/core/playbooks.py`.
+2. Re-run CI parity locally after push:
+   - `uv sync --all-extras`
+   - `uv run ruff check minx_mcp tests`
+   - `uv run mypy minx_mcp`
+   - `uv run pytest tests/ -x -q`
+3. Finish Hermes-side Slice 8 integration (playbook runner + cron/automation wiring against shipped Core playbook tools).
 
 ## What Is Minx
 
@@ -71,7 +95,7 @@ Key architectural decisions that govern future work:
 | Slice 6a–6b: Durable Memory foundations                                        | Shipped 2026-04-17            | [slice6-durable-memory.md](docs/superpowers/specs/2026-04-15-slice6-durable-memory.md)                       |
 | Slice 6c: Vault scanner + `vault_index` + scanner hardening                    | Implemented 2026-04-18        | [2026-04-17-slice6c-vault-scanner.md](docs/superpowers/plans/2026-04-17-slice6c-vault-scanner.md), [6c-6f revised spec](docs/superpowers/specs/2026-04-18-slice6cdef-vault-scanner-memory-context-wiki-sync.md) |
 | Slice 6d–6f: MemoryContext hardening, wiki primitives, vault reconciliation    | Implemented 2026-04-19        | [6c-6f revised spec](docs/superpowers/specs/2026-04-18-slice6cdef-vault-scanner-memory-context-wiki-sync.md)  |
-| Slice 8: Proactive Autonomy                                                    | Next (designed)               | [slice8-proactive-autonomy.md](docs/superpowers/specs/2026-04-15-slice8-proactive-autonomy.md)               |
+| Slice 8: Proactive Autonomy (Core-side)                                        | Implemented 2026-04-22        | [slice8-proactive-autonomy.md](docs/superpowers/specs/2026-04-15-slice8-proactive-autonomy.md)               |
 | Slice 7: Journal MCP                                                           | Deferred                      | Standard CRUD, same pattern as Meals/Training, build when wanted                                             |
 | Slice 5: Harness Adaptation                                                    | Deferred                      | One harness (Hermes) today; add harness-specific behavior directly to Core/Hermes as needed                  |
 | Slice 9: Dashboard                                                             | Deferred                      | Independent technology layer, no MCP dependencies                                                            |
@@ -80,6 +104,7 @@ Key architectural decisions that govern future work:
 ## Current MCP Surface (High Level)
 
 - Core tools: `get_daily_snapshot`, `get_insight_history`, `get_goal_trajectory`, `persist_note`, `vault_replace_section`, `vault_replace_frontmatter`, `vault_scan`, `vault_reconcile_memories`
+- Core playbook tools/resources (Slice 8): `start_playbook_run`, `complete_playbook_run`, `log_playbook_run`, `playbook_history`, `playbook_reconcile_crashed`, resource `playbook://registry`
 - Goal tools: `goal_parse`, `goal_create`, `goal_list`, `goal_get`, `goal_update`, `goal_archive`
 - Finance tools: `finance_query` (+ existing finance domain operations)
 - Meals domain: meal logging/planning + nutrition summary flows + `recipe_template` (returns the packaged `recipe-starter.md` scaffold for users/harness to author indexer-compatible recipe notes)
@@ -93,23 +118,22 @@ Tool names are not uniform across domains today: Meals exposes short, unprefixed
 
 ### Planned MCP Surface Additions
 
-Slice 6d–6f surface is now implemented. Remaining planned additions are:
+Slice 6d-6f and Slice 8 Core-side surfaces are now implemented. Remaining planned additions are:
 
 Meals Phase 3 (deferred) will add:
 
 - A `minx_mcp/meals/templates/shopping-list.md` `string.Template` scaffold (same packaging pattern as the finance templates and the Phase 6e wiki scaffolds) for deterministic SQL-backed shopping-list renders — see Slice 3 spec §"Phase 3: Shopping List Generation"
 
-Slice 8 will add:
+Slice 8 harness-side work remaining:
 
-- `log_playbook_run`, `playbook_history`
-- `playbook://registry` MCP resource
+- Hermes playbook runner scripts and cron wiring for autonomous execution/confirmation loops
 
 ## Hermes Harness Readiness
 
 - Startup helper is available at `scripts/start_hermes_stack.sh` for bringing up Finance/Core/Meals/Training MCP services.
 - Slice 4 smoke script exists at `scripts/hermes_slice4_smoke.py` for harness-facing integration checks.
 - A real Hermes-style streamable HTTP MCP smoke test exists at `tests/test_hermes_http_smoke.py`; it starts all four servers on temporary ports and verifies cross-domain tool calls over `/mcp`. As of 2026-04-17 the smoke also drives the full Slice 6a durable-memory lifecycle end-to-end over HTTP (candidate creation at confidence 0.5, high-confidence auto-promote at 0.9, `get_pending_memory_candidates` with scope filter, `memory_confirm`, `memory_expire`, plus a duplicate-live-triple `CONFLICT` structured error envelope) and calls `recipe_template` on minx-meals to prove the packaged recipe scaffold renders verbatim through a real streamable HTTP transport.
-- Slice 8 will add playbook runner scripts and wiki maintenance to Hermes cron.
+- Slice 8 Core tools are shipped; Hermes-side playbook runner and cron automation wiring are still pending.
 
 ## Canonical Specs And Inputs
 
@@ -130,9 +154,10 @@ Slice 8 will add:
 Run these before handoff, PR, or harness integration runs:
 
 ```bash
-uv run pytest -q
+uv sync --all-extras
+uv run pytest tests/ -x -q
 uv run mypy minx_mcp
-uv run ruff check .
+uv run ruff check minx_mcp tests
 ```
 
 Record the date and command outcome in the current handoff/PR notes, but do not freeze long-term health in this file with fixed counts.
