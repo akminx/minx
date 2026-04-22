@@ -155,6 +155,7 @@ def test_memory_create_duplicate_live_triple_returns_conflict(tmp_path: Path) ->
         "",
     )
     assert first["success"] is True
+    first_id = int(first["data"]["memory"]["id"])
 
     dup = create_fn(
         "preference",
@@ -168,6 +169,8 @@ def test_memory_create_duplicate_live_triple_returns_conflict(tmp_path: Path) ->
     assert dup["success"] is False
     assert dup["error_code"] == "CONFLICT"
     assert dup["data"] == {
+        "conflict_kind": "structural_triple",
+        "memory_id": first_id,
         "memory_type": "preference",
         "scope": "core",
         "subject": "tz",

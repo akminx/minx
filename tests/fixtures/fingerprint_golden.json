@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "description": "Pinned SHA-256 digests for minx_mcp.core.fingerprint.content_fingerprint. Any digest change MUST be accompanied by a re-fingerprinting migration per §11 of slice6g spec.",
+  "vectors": [
+    {
+      "name": "empty_no_parts",
+      "parts": [],
+      "expected_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "single_empty_part",
+      "parts": [""],
+      "expected_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "two_empty_parts",
+      "parts": ["", ""],
+      "expected_sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+    }
+  ]
+}

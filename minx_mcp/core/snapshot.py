@@ -191,6 +191,20 @@ def _ingest_memory_proposals_best_effort(
             sink="memory_proposals",
             message="Memory proposal ingestion failed; snapshot memory state may be incomplete.",
         )
+    if report.suppressed:
+        suppressed_desc = ", ".join(
+            f"{s.memory_type}:{s.scope}:{s.subject}" for s in report.suppressed[:5]
+        )
+        suffix = (
+            "" if len(report.suppressed) <= 5 else f" (+{len(report.suppressed) - 5} more)"
+        )
+        # Info-level: suppressions are the "don't pester the user again"
+        # contract working as intended, not a snapshot degradation.
+        logger.info(
+            "Memory proposal suppressed (prior rejection): %s%s",
+            suppressed_desc,
+            suffix,
+        )
     if report.failures:
         failed = ", ".join(
             f"{failure.memory_type}:{failure.scope}:{failure.subject}" for failure in report.failures[:5]

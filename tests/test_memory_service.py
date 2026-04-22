@@ -581,7 +581,8 @@ def test_migration_set_includes_015_memories_unique_live() -> None:
     assert "017_recipes_vault_synced_at.sql" in names
     assert "018_vault_index.sql" in names
     assert "019_playbook_runs.sql" in names
-    assert names[-1] == "019_playbook_runs.sql"
+    assert "020_memory_content_fingerprint.sql" in names
+    assert names[-1] == "020_memory_content_fingerprint.sql"
 
 
 def test_unique_index_rejects_duplicate_live_triple(tmp_path) -> None:
@@ -966,11 +967,13 @@ def test_create_memory_duplicate_live_triple_raises_conflict(tmp_path) -> None:
     Without explicit mapping, ``sqlite3.IntegrityError`` would surface as a
     generic INTERNAL_ERROR to MCP clients — obscuring an actionable operator
     mistake (trying to manually create a memory that already has a live row).
+
+    Slice 6g: ``ConflictError.data`` gains ``conflict_kind`` and ``memory_id``.
     """
     from minx_mcp.contracts import ConflictError
 
     svc = _fresh_memory_service(tmp_path)
-    svc.create_memory(
+    created = svc.create_memory(
         memory_type="preference",
         scope="core",
         subject="tz",
@@ -990,6 +993,8 @@ def test_create_memory_duplicate_live_triple_raises_conflict(tmp_path) -> None:
             actor="user",
         )
     assert excinfo.value.data == {
+        "conflict_kind": "structural_triple",
+        "memory_id": created.id,
         "memory_type": "preference",
         "scope": "core",
         "subject": "tz",
@@ -1526,3 +1531,819 @@ def test_update_payload_allows_valid_payload(tmp_path) -> None:
     updated = svc.update_payload(rec.id, payload={"note": "hello", "value": "x"})
     assert updated.payload["note"] == "hello"
     assert updated.payload["value"] == "x"
+
+
+# ======================================================================
+# Slice 6g: Content Fingerprint Dedup — integration tests (§10.2 / §10.3)
+# ======================================================================
+
+
+def _fingerprint_of(svc: MemoryService, memory_id: int) -> str | None:
+    row = svc.conn.execute(
+        "SELECT content_fingerprint FROM memories WHERE id = ?", (memory_id,)
+    ).fetchone()
+    return None if row["content_fingerprint"] is None else str(row["content_fingerprint"])
+
+
+def test_create_memory_persists_content_fingerprint(tmp_path) -> None:
+    """§10.2: all known types persist a non-null fingerprint on create."""
+    svc = _fresh_memory_service(tmp_path)
+
+    pref = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="tz",
+        confidence=0.9,
+        payload={"category": "timezone", "value": "UTC"},
+        source="user",
+        actor="user",
+    )
+    pat = svc.create_memory(
+        memory_type="pattern",
+        scope="focus",
+        subject="morning",
+        confidence=0.7,
+        payload={"signal": "deep_work"},
+        source="user",
+        actor="user",
+    )
+    ent = svc.create_memory(
+        memory_type="entity_fact",
+        scope="people",
+        subject="nate",
+        confidence=0.9,
+        payload={"aliases": ["Nate", "NATHAN"]},
+        source="user",
+        actor="user",
+    )
+    con = svc.create_memory(
+        memory_type="constraint",
+        scope="spend",
+        subject="groceries",
+        confidence=0.9,
+        payload={"limit_value": "150"},
+        source="user",
+        actor="user",
+    )
+
+    for rec in (pref, pat, ent, con):
+        fp = _fingerprint_of(svc, rec.id)
+        assert fp is not None, f"{rec.memory_type} row missing fingerprint"
+        assert len(fp) == 64, f"{rec.memory_type} fingerprint is not sha256 hex"
+
+
+def test_create_memory_content_fingerprint_collision_raises_conflict(tmp_path) -> None:
+    """§10.2: different-case subjects with equivalent content collide on the partial unique index."""
+    svc = _fresh_memory_service(tmp_path)
+    first = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="Netflix",
+        confidence=0.8,
+        payload={"value": "yes"},
+        source="user",
+        actor="user",
+    )
+    with pytest.raises(ConflictError) as excinfo:
+        svc.create_memory(
+            memory_type="preference",
+            scope="core",
+            subject="netflix",
+            confidence=0.5,
+            payload={"value": "yes"},
+            source="user",
+            actor="user",
+        )
+    assert excinfo.value.data == {
+        "conflict_kind": "content_fingerprint",
+        "memory_id": first.id,
+        "existing_subject": "Netflix",
+        "memory_type": "preference",
+        "scope": "core",
+        "subject": "netflix",
+    }
+
+
+def test_update_payload_content_fingerprint_collision_raises_conflict(tmp_path) -> None:
+    """§10.2: update_payload collision with another live row surfaces as typed CONFLICT.
+
+    Under normal operation the row-fixed ``(memory_type, scope, subject)`` tuple
+    guarantees two live rows cannot share a content fingerprint (the structural
+    unique index prevents same-triple duplicates). The ``content_fingerprint_update``
+    path still ships as defence-in-depth against stale / manually-corrupted
+    fingerprints (e.g., from a partial backfill, or an operator fixing a row via
+    SQLite shell). This test simulates that scenario by poisoning row A's stored
+    fingerprint to match what row B's update WILL produce, then asserting the
+    typed error maps correctly.
+    """
+    from minx_mcp.core.fingerprint import content_fingerprint
+    from minx_mcp.core.memory_service import _memory_fingerprint_input
+
+    svc = _fresh_memory_service(tmp_path)
+    a = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="snack",
+        confidence=0.9,
+        payload={"value": "popcorn"},
+        source="user",
+        actor="user",
+    )
+    b = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="drink",
+        confidence=0.9,
+        payload={"value": "water"},
+        source="user",
+        actor="user",
+    )
+
+    # Poison row A's stored fingerprint to match what row B's new fingerprint
+    # WILL be once we update B's payload.
+    new_b_payload = {"value": "soda"}
+    fp_new_b = content_fingerprint(
+        *_memory_fingerprint_input(
+            "preference",
+            new_b_payload,
+            scope="core",
+            subject="drink",
+        )
+    )
+    svc.conn.execute(
+        "UPDATE memories SET content_fingerprint = ? WHERE id = ?",
+        (fp_new_b, a.id),
+    )
+    svc.conn.commit()
+
+    with pytest.raises(ConflictError) as excinfo:
+        svc.update_payload(b.id, payload=new_b_payload)
+    assert excinfo.value.data["conflict_kind"] == "content_fingerprint_update"
+    assert excinfo.value.data["memory_id"] == b.id
+    assert excinfo.value.data["blocking_memory_id"] == a.id
+
+
+def test_ingest_proposals_content_equivalence_merges_across_case(tmp_path) -> None:
+    """§10.2 load-bearing v5 fix: different subject casing, same content → single row, merged event."""
+    svc = _fresh_memory_service(tmp_path)
+    existing = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="Netflix",
+        confidence=0.5,
+        payload={"value": "yes"},
+        source="user",
+        actor="user",
+    )
+    prop = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="netflix",
+        confidence=0.9,
+        payload={"value": "yes"},
+        source="detector:test",
+        reason="case-collision",
+    )
+    report = svc.ingest_proposals((prop,), actor="detector")
+    assert report.failures == []
+    assert report.suppressed == []
+    assert len(report.succeeded) == 1
+    assert report.succeeded[0].id == existing.id
+
+    live_rows = svc.conn.execute(
+        "SELECT id FROM memories WHERE status IN ('candidate','active')"
+    ).fetchall()
+    assert [r["id"] for r in live_rows] == [existing.id]
+
+    events = svc.conn.execute(
+        """
+        SELECT event_type, payload_json
+        FROM memory_events
+        WHERE memory_id = ?
+        ORDER BY id
+        """,
+        (existing.id,),
+    ).fetchall()
+    merge_events = [
+        (e["event_type"], json.loads(e["payload_json"])) for e in events if e["event_type"] == "payload_updated"
+    ]
+    assert merge_events, "expected a payload_updated event from content-equivalence merge"
+    evtype, payload_obj = merge_events[-1]
+    assert evtype == "payload_updated"
+    assert payload_obj.get("merge_trigger") == "content_fingerprint"
+    assert payload_obj.get("prior_identity") == {
+        "memory_type": "preference",
+        "scope": "core",
+        "subject": "netflix",
+    }
+
+
+def test_ingest_proposals_same_triple_merge_updates_fingerprint(tmp_path) -> None:
+    """§10.2 'same-row overlap' case: one row remains; fp stays consistent with merged payload."""
+    svc = _fresh_memory_service(tmp_path)
+    p1 = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="pizza",
+        confidence=0.5,
+        payload={"value": "cheese"},
+        source="detector:test",
+        reason="first",
+    )
+    p2 = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="pizza",
+        confidence=0.7,
+        payload={"value": "cheese", "note": "favorite"},
+        source="detector:test",
+        reason="update",
+    )
+    report = svc.ingest_proposals((p1, p2), actor="detector")
+    assert report.failures == []
+    assert report.suppressed == []
+    assert len(report.succeeded) == 2
+    assert report.succeeded[0].id == report.succeeded[1].id
+    live_rows = svc.conn.execute(
+        "SELECT id FROM memories WHERE status IN ('candidate','active')"
+    ).fetchall()
+    assert len(live_rows) == 1
+
+    fp = _fingerprint_of(svc, report.succeeded[0].id)
+    assert fp is not None and len(fp) == 64
+
+
+def test_ingest_proposals_structural_rejected_prior_suppresses(tmp_path) -> None:
+    """§10.2: rejected structural prior → suppressed, not created, not failed."""
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="coffee",
+        confidence=0.5,
+        payload={"value": "yes"},
+        source="user",
+        actor="user",
+    )
+    svc.reject_memory(rec.id, reason="user said no", actor="user")
+
+    prop = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="coffee",
+        confidence=0.9,
+        payload={"value": "yes"},
+        source="detector:test",
+        reason="reappeared",
+    )
+    report = svc.ingest_proposals((prop,), actor="detector")
+    assert report.succeeded == []
+    assert report.failures == []
+    assert len(report.suppressed) == 1
+    suppression = report.suppressed[0]
+    assert suppression.memory_type == "preference"
+    assert suppression.scope == "core"
+    assert suppression.subject == "coffee"
+    assert suppression.reason == "structural_rejected_prior"
+
+
+def test_ingest_proposals_structural_rejected_prior_suppresses_invalid_payload(tmp_path) -> None:
+    """§10.2: invalid payload + rejected structural prior → suppression, *not* failure (ordering guard)."""
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="gym",
+        confidence=0.5,
+        payload={"value": "daily"},
+        source="user",
+        actor="user",
+    )
+    svc.reject_memory(rec.id, reason="not relevant", actor="user")
+
+    prop = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="gym",
+        confidence=0.9,
+        payload={"bogus_key": 1},
+        source="detector:test",
+        reason="bad",
+    )
+    report = svc.ingest_proposals((prop,), actor="detector")
+    assert report.succeeded == []
+    assert report.failures == []
+    assert len(report.suppressed) == 1
+    assert report.suppressed[0].reason == "structural_rejected_prior"
+
+
+def test_ingest_proposals_content_fingerprint_rejected_prior_suppresses(tmp_path) -> None:
+    """§10.2: rejected-fingerprint prior at a different triple → suppression under new triple."""
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="Netflix",
+        confidence=0.7,
+        payload={"value": "yes"},
+        source="user",
+        actor="user",
+    )
+    svc.reject_memory(rec.id, reason="not a preference", actor="user")
+
+    prop = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="netflix",
+        confidence=0.9,
+        payload={"value": "yes"},
+        source="detector:test",
+        reason="recurred",
+    )
+    report = svc.ingest_proposals((prop,), actor="detector")
+    assert report.succeeded == []
+    assert report.failures == []
+    assert len(report.suppressed) == 1
+    assert report.suppressed[0].reason == "content_fingerprint_rejected_prior"
+
+
+def test_reject_memory_releases_fingerprint_slot(tmp_path) -> None:
+    """§10.2: reject releases the partial-unique-index slot; new same-content create succeeds."""
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="walk",
+        confidence=0.5,
+        payload={"value": "morning"},
+        source="user",
+        actor="user",
+    )
+    svc.reject_memory(rec.id, reason="irrelevant", actor="user")
+
+    # Now we create a row with the same content AT A DIFFERENT TRIPLE (same
+    # content fingerprint). Without the partial (live-only) index, this would
+    # still collide. With it, rejected rows no longer compete.
+    fresh = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="stroll",
+        confidence=0.7,
+        payload={"value": "morning"},
+        source="user",
+        actor="user",
+    )
+    assert fresh.id != rec.id
+    assert _fingerprint_of(svc, fresh.id) is not None
+
+
+def test_expire_memory_releases_fingerprint_slot(tmp_path) -> None:
+    """§10.2: expire releases the partial-unique-index slot the same way reject does."""
+    svc = _fresh_memory_service(tmp_path)
+    # create_memory with confidence >= 0.8 already lands as active, so expire
+    # can be called directly. If confidence < 0.8, confirm first.
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="Netflix",
+        confidence=0.9,
+        payload={"value": "yes"},
+        source="user",
+        actor="user",
+    )
+    svc.expire_memory(rec.id, actor="system")
+
+    # Different triple, same content → must succeed since the prior row expired.
+    fresh = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="Hulu",
+        confidence=0.6,
+        payload={"value": "yes"},
+        source="user",
+        actor="user",
+    )
+    assert fresh.id != rec.id
+
+
+def test_ingest_proposals_report_equality_includes_suppressed(tmp_path) -> None:
+    """§10.3: IngestProposalsReport.__eq__ default compares all three lists."""
+    from minx_mcp.core.memory_service import IngestProposalsReport, MemoryProposalSuppression
+
+    empty = IngestProposalsReport(succeeded=[], failures=[], suppressed=[])
+    with_suppression = IngestProposalsReport(
+        succeeded=[],
+        failures=[],
+        suppressed=[
+            MemoryProposalSuppression(
+                memory_type="preference",
+                scope="core",
+                subject="x",
+                reason="structural_rejected_prior",
+            )
+        ],
+    )
+    assert empty == empty
+    assert empty != with_suppression
+    assert with_suppression == with_suppression
+
+
+def test_ingest_proposals_report_equality_with_list_unchanged(tmp_path) -> None:
+    """§10.3: report == [records] behavior unchanged by the new suppressed field."""
+    svc = _fresh_memory_service(tmp_path)
+    prop = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="reading",
+        confidence=0.8,
+        payload={"value": "novels"},
+        source="detector:test",
+        reason="first",
+    )
+    report = svc.ingest_proposals((prop,), actor="detector")
+    assert report == report.succeeded
+    assert list(report) == report.succeeded
+
+
+@pytest.mark.parametrize(
+    ("memory_type", "scope", "subject", "payload"),
+    [
+        ("preference", "meals", "friday", {"category": "food", "value": "pizza", "note": "Friday nights"}),
+        ("pattern", "focus", "morning", {"signal": "deep_work", "note": "best 9-11am"}),
+        ("entity_fact", "people", "nate", {"aliases": ["Nate", "NATHAN"], "note": "coworker"}),
+        ("constraint", "spend", "groceries", {"limit_value": "150", "note": "weekly budget"}),
+    ],
+    ids=["preference", "pattern", "entity_fact", "constraint"],
+)
+def test_per_type_fingerprint_matches_helper(
+    tmp_path, memory_type: str, scope: str, subject: str, payload: dict[str, object]
+) -> None:
+    """Stored fingerprint equals content_fingerprint(*_memory_fingerprint_input(...))
+    for every known type (§10.2 L1140).
+    """
+    from minx_mcp.core.fingerprint import content_fingerprint
+    from minx_mcp.core.memory_service import _memory_fingerprint_input
+
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type=memory_type,
+        scope=scope,
+        subject=subject,
+        confidence=0.8,
+        payload=payload,
+        source="user",
+        actor="user",
+    )
+    expected_parts = _memory_fingerprint_input(
+        memory_type,
+        dict(rec.payload),
+        scope=scope,
+        subject=subject,
+    )
+    expected_fp = content_fingerprint(*expected_parts)
+    assert _fingerprint_of(svc, rec.id) == expected_fp
+
+
+def test_unknown_memory_type_fallback_fingerprint(tmp_path) -> None:
+    """§10.2: unknown types fall through to JSON-canonical payload fingerprint.
+
+    Since ``validate_memory_payload`` *rejects* unknown types at the public
+    ``create_memory`` boundary, we simulate a pre-existing unknown-type row by
+    writing it directly and asserting ``_memory_fingerprint_input``'s
+    unknown-type fallback is what the backfill / dedup path would produce.
+    """
+    from minx_mcp.core.fingerprint import content_fingerprint
+    from minx_mcp.core.memory_service import _memory_fingerprint_input
+
+    payload = {"foo": "bar", "baz": 123}
+    parts = _memory_fingerprint_input(
+        "zzz_unregistered_type",
+        payload,
+        scope="odd",
+        subject="row",
+    )
+    assert parts == (
+        "zzz_unregistered_type",
+        "odd",
+        "row",
+        "",
+        json.dumps(payload, sort_keys=True, ensure_ascii=False),
+    )
+    # And ensure content_fingerprint is a valid sha256 hex.
+    fp = content_fingerprint(*parts)
+    assert len(fp) == 64 and all(c in "0123456789abcdef" for c in fp)
+
+
+def test_content_equivalence_merge_promotes_candidate_to_active(tmp_path) -> None:
+    """Content-equivalence merge promotes candidate→active when max confidence ≥ 0.8
+    and emits a 'promoted' event (§10.2 L1132).
+    """
+    svc = _fresh_memory_service(tmp_path)
+    # Seed a candidate row (confidence 0.5 < 0.8 → candidate).
+    existing = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="Spotify",
+        confidence=0.5,
+        payload={"value": "premium"},
+        source="user",
+        actor="user",
+    )
+    assert existing.status == "candidate"
+
+    # Cross-triple proposal with bumping confidence — should trip the merge
+    # AND promote to active AND emit a 'promoted' event on the matched row.
+    prop = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="spotify",
+        confidence=0.9,
+        payload={"value": "premium"},
+        source="detector:test",
+        reason="case-collision-promotion",
+    )
+    report = svc.ingest_proposals((prop,), actor="detector")
+    assert report.failures == []
+    assert report.suppressed == []
+    assert len(report.succeeded) == 1
+    assert report.succeeded[0].id == existing.id
+
+    after = svc.get_memory(existing.id)
+    assert after.status == "active", "merge with max confidence ≥ 0.8 must promote"
+    assert after.confidence == 0.9
+
+    events = svc.conn.execute(
+        """
+        SELECT event_type, payload_json
+        FROM memory_events
+        WHERE memory_id = ?
+        ORDER BY id
+        """,
+        (existing.id,),
+    ).fetchall()
+    event_types = [e["event_type"] for e in events]
+    assert "payload_updated" in event_types
+    assert "promoted" in event_types, (
+        "content-equivalence merge must emit 'promoted' alongside 'payload_updated' "
+        "when auto-promoting (parallels structural merge semantics)"
+    )
+
+
+def test_content_equivalence_merge_skip_write_short_circuits(tmp_path) -> None:
+    """§10.2 L1133: content-equivalence merge produces no UPDATE and no event when everything matches."""
+    svc = _fresh_memory_service(tmp_path)
+    existing = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="Hulu",
+        confidence=0.9,
+        payload={"value": "yes"},
+        source="user",
+        reason="seed-reason",
+        actor="user",
+    )
+    # Snapshot events and updated_at before the second ingest.
+    events_before = svc.conn.execute(
+        "SELECT id FROM memory_events WHERE memory_id = ? ORDER BY id",
+        (existing.id,),
+    ).fetchall()
+    updated_before = svc.conn.execute(
+        "SELECT updated_at FROM memories WHERE id = ?", (existing.id,)
+    ).fetchone()["updated_at"]
+
+    # Cross-triple proposal (case difference) with byte-identical payload,
+    # same confidence, same reason. The merge branch should short-circuit:
+    # no UPDATE issued, no payload_updated event emitted.
+    prop = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="HULU",
+        confidence=0.9,
+        payload={"value": "yes"},
+        source="detector:test",
+        reason="seed-reason",
+    )
+    report = svc.ingest_proposals((prop,), actor="detector")
+    assert report.failures == []
+    assert report.suppressed == []
+    assert len(report.succeeded) == 1
+    assert report.succeeded[0].id == existing.id
+
+    events_after = svc.conn.execute(
+        "SELECT id FROM memory_events WHERE memory_id = ? ORDER BY id",
+        (existing.id,),
+    ).fetchall()
+    assert [e["id"] for e in events_after] == [e["id"] for e in events_before], (
+        "skip-write branch must not emit any new memory_events"
+    )
+
+    updated_after = svc.conn.execute(
+        "SELECT updated_at FROM memories WHERE id = ?", (existing.id,)
+    ).fetchone()["updated_at"]
+    assert updated_after == updated_before, (
+        "skip-write branch must not bump updated_at (would indicate a stealth UPDATE)"
+    )
+
+
+def test_ingest_proposals_expired_fingerprint_reopens_fresh_row(tmp_path) -> None:
+    """A proposal matching an expired fingerprint creates a fresh row
+    (existing expired-reopen contract, §10.2 L1137).
+    """
+    svc = _fresh_memory_service(tmp_path)
+    existing = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="Disney",
+        confidence=0.9,
+        payload={"value": "yes"},
+        source="user",
+        actor="user",
+    )
+    expired_id = existing.id
+    svc.expire_memory(existing.id, actor="system")
+    stored_fp = _fingerprint_of(svc, expired_id)
+    assert stored_fp is not None
+
+    prop = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="Disney",
+        confidence=0.9,
+        payload={"value": "yes"},
+        source="user",
+        reason="resurfaced",
+    )
+    report = svc.ingest_proposals((prop,), actor="detector")
+    assert report.failures == []
+    assert report.suppressed == []
+    assert len(report.succeeded) == 1
+
+    new_row = report.succeeded[0]
+    assert new_row.id != expired_id, "expired fingerprint must NOT prevent re-insertion"
+    assert new_row.status in {"candidate", "active"}
+
+    fresh_fp = _fingerprint_of(svc, new_row.id)
+    assert fresh_fp == stored_fp, (
+        "the fresh row should fingerprint identically to the expired one; "
+        "the partial unique index lets them coexist because the expired row "
+        "is excluded from the WHERE status IN ('candidate','active') predicate"
+    )
+
+    live_ids = [
+        r["id"]
+        for r in svc.conn.execute(
+            "SELECT id FROM memories WHERE status IN ('candidate','active') AND content_fingerprint = ?",
+            (fresh_fp,),
+        ).fetchall()
+    ]
+    assert live_ids == [new_row.id]
+
+
+def test_corrupted_payload_fingerprints_as_degraded_tuple(tmp_path) -> None:
+    """Rows whose payload_json fails coercion degrade to
+    content_fingerprint(type, scope, subject, '', '') (§10.2 L1142).
+    """
+    from minx_mcp.core.fingerprint import content_fingerprint
+
+    svc = _fresh_memory_service(tmp_path)
+    # Seed a legitimate row so we have an anchor, then poke a corrupted row
+    # directly into SQLite. The service's coercion path would normally reject
+    # such junk, but this test simulates a pre-6a row surfacing via backfill.
+    svc.conn.execute(
+        """
+        INSERT INTO memories (
+            memory_type, scope, subject, status, confidence,
+            payload_json, source, reason, created_at, updated_at
+        ) VALUES (
+            'preference', 'core', 'broken',
+            'active', 0.9,
+            '{"not_a_preference_field": true, "also_junk": 42}',
+            'legacy', '', datetime('now'), datetime('now')
+        )
+        """
+    )
+    svc.conn.commit()
+    _broken_row_exists = int(
+        svc.conn.execute(
+            "SELECT id FROM memories WHERE subject = 'broken'"
+        ).fetchone()["id"]
+    )
+    assert _broken_row_exists > 0, "seeded row must be queryable"
+
+    # Now verify the degraded-dedup path computes the correct fingerprint for
+    # this kind of row. We reuse _compute_fingerprint_for_row (the backfill
+    # helper) which is the canonical degraded-dedup implementation.
+    from scripts.backfill_memory_fingerprints import _compute_fingerprint_for_row
+
+    degraded_fp = _compute_fingerprint_for_row(
+        memory_type="preference",
+        scope="core",
+        subject="broken",
+        payload_json='{"not_a_preference_field": true, "also_junk": 42}',
+    )
+    expected_fp = content_fingerprint("preference", "core", "broken", "", "")
+    assert degraded_fp == expected_fp, (
+        "a row whose payload has no preference fields (value/note) must "
+        "degrade to content_fingerprint(type, scope, subject, '', '') "
+        "per §5.2 degraded-dedup path"
+    )
+
+
+def test_empty_content_clean_row_fingerprints_as_degraded_5tuple(tmp_path) -> None:
+    """A preference with value=None,note=None fingerprints to
+    content_fingerprint(type, scope, subject, '', '') (§10.2 L1143).
+
+    This documents that a "clean" empty-content row and a "corrupted" row on
+    the same triple collapse to the exact same fingerprint — i.e. the
+    degraded-dedup 5-tuple per §5.2. The partial unique index on the content
+    fingerprint then protects against *cross-triple* duplicates sharing that
+    tuple, but a second row with the SAME triple would always hit the
+    structural unique index (on memory_type/scope/subject) first, so we only
+    assert the fingerprint equivalence here, not a content-index collision
+    for two rows sharing every field.
+    """
+    from minx_mcp.core.fingerprint import content_fingerprint
+
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="emptyfield",
+        confidence=0.9,
+        payload={"category": "misc"},  # no 'value', no 'note' keys
+        source="user",
+        actor="user",
+    )
+    stored_fp = _fingerprint_of(svc, rec.id)
+    expected_fp = content_fingerprint("preference", "core", "emptyfield", "", "")
+    assert stored_fp == expected_fp, (
+        "a preference with no value/note fingerprints to "
+        "content_fingerprint(type, scope, subject, '', '') — the same "
+        "degraded tuple as a corrupted row with this triple (§5.2)"
+    )
+
+    # Sibling row on a *different triple* but also empty-content: its
+    # fingerprint changes only in the subject slot, confirming the degraded
+    # 5-tuple stays content-free but remains triple-scoped (no cross-triple
+    # false collision).
+    sibling = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="emptyfield2",
+        confidence=0.9,
+        payload={"category": "other"},
+        source="user",
+        actor="user",
+    )
+    sibling_fp = _fingerprint_of(svc, sibling.id)
+    assert sibling_fp == content_fingerprint(
+        "preference", "core", "emptyfield2", "", ""
+    )
+    assert sibling_fp != stored_fp, (
+        "degraded 5-tuple must still differ across subjects — the content-index "
+        "only matches on identical tuples"
+    )
+
+
+def test_entity_fact_alias_order_and_unicode_stable(tmp_path) -> None:
+    """aliases=[NFC,upper] and aliases=[NFD,lower] fingerprint identically
+    (canonical normalization + sort, §10.2 L1144).
+    """
+    from minx_mcp.core.fingerprint import content_fingerprint
+    from minx_mcp.core.memory_service import _memory_fingerprint_input
+
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="entity_fact",
+        scope="people",
+        subject="cafe_lover",
+        confidence=0.9,
+        payload={"aliases": ["café", "NETFLIX"]},  # NFC é, uppercase
+        source="user",
+        actor="user",
+    )
+    stored_fp = _fingerprint_of(svc, rec.id)
+
+    # Recompute what an NFD+lowercase aliases payload would produce on the
+    # same triple. It must fingerprint identically after normalization.
+    nfd_parts = _memory_fingerprint_input(
+        "entity_fact",
+        {"aliases": ["cafe\u0301", "netflix"]},  # NFD e + combining acute, lowercase
+        scope="people",
+        subject="cafe_lover",
+    )
+    equivalent_fp = content_fingerprint(*nfd_parts)
+    assert stored_fp == equivalent_fp, (
+        "entity_fact aliases must be stable under NFC/NFD and case differences — "
+        "_canonical_aliases normalizes each alias and sorts the result"
+    )
+
+    # And reversing the alias order must not change the fingerprint.
+    reversed_parts = _memory_fingerprint_input(
+        "entity_fact",
+        {"aliases": ["NETFLIX", "café"]},  # same entries, different order
+        scope="people",
+        subject="cafe_lover",
+    )
+    reversed_fp = content_fingerprint(*reversed_parts)
+    assert stored_fp == reversed_fp, "alias order must not affect the fingerprint"

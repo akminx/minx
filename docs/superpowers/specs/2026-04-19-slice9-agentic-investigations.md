@@ -51,7 +51,7 @@ Common shape: **one question in, one report out, unpredictable middle.**
 
 ## 5) Schema (Core)
 
-`020_investigations.sql` (next migration after `019_playbook_runs.sql`):
+`021_investigations.sql` (Slice 6g ships as `020_memory_content_fingerprint.sql`, which is the first migration to land after `019_playbook_runs.sql` per the coordination note in that slice's spec):
 
 ```sql
 CREATE TABLE investigations (
@@ -142,7 +142,7 @@ Split so Core can ship independently and the harness can build against a stable 
 
 | Phase | What | Where | Effort | Dependencies |
 |---|---|---|---|---|
-| 9a | `investigations` table (`020_investigations.sql`) + `start_/append_/complete_/log_investigation` + `investigation_history` + `investigation_get` + tests | Core | 1.5 days | Slice 8a merged |
+| 9a | `investigations` table (`021_investigations.sql`) + `start_/append_/complete_/log_investigation` + `investigation_history` + `investigation_get` + tests | Core | 1.5 days | Slice 8a merged |
 | 9b | Trajectory-digest helpers (tool name + arg hash + result digest) + PII-redaction pass for `context_json`/`answer_md` + operator runbook | Core | 1 day | 9a |
 | 9c | Investigation MCP resource surface: `investigation://recent`, `investigation://{id}` (read-only) for harness UIs that want to render history without hitting the tool API | Core | 0.5 day | 9a |
 | 9d | Reference harness loop (Hermes) for `minx_investigate` — budget wrapper, LLM tool-picker, digest-and-log loop | Hermes | 3-4 days | 9a, 9b |

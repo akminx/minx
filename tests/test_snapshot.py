@@ -203,6 +203,83 @@ async def test_build_daily_snapshot_surfaces_memory_ingest_failures(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_build_daily_snapshot_emits_suppressed_info_log_alongside_failures_warning(
+    tmp_path, monkeypatch, caplog
+):
+    """Snapshot emits BOTH an info-level suppressed log AND a warning
+    persistence_warning on the same run (spec §10.4 L1170).
+    """
+    import logging
+
+    db_path = tmp_path / "minx.db"
+    get_connection(db_path).close()
+
+    # Seed a rejected row so that subsequent identical proposals are "suppressed"
+    # (not counted as failures, but worth an info-level log).
+    svc = MemoryService(db_path)
+    try:
+        rejectable = svc.create_memory(
+            memory_type="preference",
+            scope="core",
+            subject="streaming",
+            confidence=0.6,
+            payload={"value": "old"},
+            source="detector:test",
+            reason="seed",
+            actor="detector",
+        )
+        svc.reject_memory(rejectable.id, actor="user", reason="not-relevant")
+    finally:
+        svc.close()
+
+    suppressed_proposal = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="streaming",
+        confidence=0.6,
+        payload={"value": "old"},
+        source="detector:test",
+        reason="re-proposed",
+    )
+    bad_proposal = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="bad-fail",
+        confidence=0.9,
+        payload={"not_a_field": "nope"},
+        source="detector:test",
+        reason="invalid",
+    )
+    monkeypatch.setattr(
+        snapshot_module,
+        "_run_detectors",
+        lambda _read_models: DetectorResult((), (suppressed_proposal, bad_proposal)),
+    )
+
+    with caplog.at_level(logging.INFO, logger=snapshot_module.logger.name):
+        snapshot = await build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path))
+
+    # Failure path still surfaces as a persistence_warning.
+    assert snapshot.persistence_warning is not None
+    assert snapshot.persistence_warning.sink == "memory_proposals"
+    assert "bad-fail" in snapshot.persistence_warning.message
+
+    # Suppressed path still logs an info record (doesn't pester the user via
+    # the warning channel, but must remain observable to operators).
+    info_records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.INFO
+        and "Memory proposal suppressed" in r.getMessage()
+    ]
+    assert info_records, (
+        "suppressed rejected-prior proposals must still emit an info log "
+        "even when a separate failure in the same batch drives the warning"
+    )
+    assert "streaming" in info_records[0].getMessage()
+
+
+@pytest.mark.asyncio
 async def test_build_daily_snapshot_refreshes_existing_detector_rows_on_rerun(
     tmp_path, monkeypatch
 ):
