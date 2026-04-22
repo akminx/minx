@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from sqlite3 import Connection, Row
 from time import monotonic
+from typing import Any
 
 from minx_mcp.contracts import InvalidInputError, NotFoundError, PlaybookConflictError
 from minx_mcp.time_utils import utc_now_isoformat
@@ -193,7 +194,7 @@ def complete_playbook_run(
     status: str,
     conditions_met: bool,
     action_taken: bool,
-    result_json: str | None,
+    result_json: dict[str, Any] | str | None,
     error_message: str | None,
 ) -> int:
     started = monotonic()
@@ -270,7 +271,7 @@ def log_playbook_run(
     status: str,
     conditions_met: bool,
     action_taken: bool,
-    result_json: str | None,
+    result_json: dict[str, Any] | str | None,
     error_message: str | None,
 ) -> int:
     started = monotonic()
@@ -554,7 +555,11 @@ def _normalize_history_status(status: str | None) -> str | None:
     return lowered
 
 
-def _normalize_result_json(result_json: str | None) -> str | None:
+def _normalize_result_json(result_json: dict[str, Any] | str | None) -> str | None:
+    if result_json is None:
+        return None
+    if isinstance(result_json, dict):
+        return json.dumps(result_json, separators=(",", ":"), sort_keys=True)
     normalized = _normalize_optional_text(result_json)
     if normalized is None:
         return None

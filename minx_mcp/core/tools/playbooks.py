@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -44,7 +45,7 @@ def register_playbook_tools(mcp: FastMCP, config: CoreServiceConfig) -> None:
         status: str,
         conditions_met: bool,
         action_taken: bool,
-        result_json: str | None = None,
+        result_json: dict[str, Any] | str | None = None,
         error_message: str | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
@@ -69,7 +70,7 @@ def register_playbook_tools(mcp: FastMCP, config: CoreServiceConfig) -> None:
         status: str = "succeeded",
         conditions_met: bool = True,
         action_taken: bool = True,
-        result_json: str | None = None,
+        result_json: dict[str, Any] | str | None = None,
         error_message: str | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
@@ -144,7 +145,7 @@ def _complete_playbook_run(
     status: str,
     conditions_met: bool,
     action_taken: bool,
-    result_json: str | None,
+    result_json: dict[str, Any] | str | None,
     error_message: str | None,
 ) -> dict[str, object]:
     with scoped_connection(Path(config.db_path)) as conn:
@@ -170,7 +171,7 @@ def _log_playbook_run(
     status: str,
     conditions_met: bool,
     action_taken: bool,
-    result_json: str | None,
+    result_json: dict[str, Any] | str | None,
     error_message: str | None,
 ) -> dict[str, object]:
     with scoped_connection(Path(config.db_path)) as conn:

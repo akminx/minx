@@ -487,3 +487,147 @@ def test_playbook_registry_resource_is_json_manifest(tmp_path: Path) -> None:
     payload = json.loads(asyncio.run(_read_resource(server, "playbook://registry")))
     assert isinstance(payload, dict)
     assert "playbooks" in payload
+
+
+def test_complete_playbook_run_accepts_dict_result_json(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+
+    start = get_tool(server, "start_playbook_run").fn
+    complete = get_tool(server, "complete_playbook_run").fn
+    history = get_tool(server, "playbook_history").fn
+
+    run_id = int(start("daily_review", "hermes", "cron", "0 21 * * *")["data"]["run_id"])
+    original = {"review_path": "Minx/Reviews/2026-04-22.md", "count": 3}
+    done = complete(run_id, "succeeded", True, True, original, None)
+    assert done["success"] is True
+
+    rows = history("daily_review", "hermes", "succeeded", None, 30, 20)
+    assert rows["success"] is True
+    assert rows["data"]["runs"][0]["result_json"] == original
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT result_json FROM playbook_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert json.loads(row["result_json"]) == original
+
+
+def test_complete_playbook_run_still_accepts_string_result_json(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+
+    start = get_tool(server, "start_playbook_run").fn
+    complete = get_tool(server, "complete_playbook_run").fn
+    history = get_tool(server, "playbook_history").fn
+
+    run_id = int(start("daily_review", "hermes", "cron", "0 21 * * *")["data"]["run_id"])
+    done = complete(run_id, "succeeded", True, True, '{"ok": true}', None)
+    assert done["success"] is True
+    rows = history("daily_review", "hermes", "succeeded", None, 30, 20)
+    assert rows["data"]["runs"][0]["result_json"] == {"ok": True}
+
+
+def test_complete_playbook_run_rejects_invalid_json_string(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+
+    start = get_tool(server, "start_playbook_run").fn
+    complete = get_tool(server, "complete_playbook_run").fn
+
+    run_id = int(start("daily_review", "hermes", "cron", "0 21 * * *")["data"]["run_id"])
+    result = complete(run_id, "succeeded", True, True, "not json at all", None)
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_log_playbook_run_accepts_dict_result_json(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+
+    log_run = get_tool(server, "log_playbook_run").fn
+    history = get_tool(server, "playbook_history").fn
+
+    original = {"generated": True, "files": ["a.md", "b.md"]}
+    result = log_run(
+        "weekly_report",
+        "hermes",
+        "cron",
+        "0 10 * * 1",
+        "succeeded",
+        True,
+        True,
+        original,
+        None,
+    )
+    assert result["success"] is True
+    run_id = int(result["data"]["run_id"])
+
+    rows = history("weekly_report", "hermes", "succeeded", None, 30, 20)
+    assert rows["success"] is True
+    assert rows["data"]["runs"][0]["result_json"] == original
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT result_json FROM playbook_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert json.loads(row["result_json"]) == original
+
+
+def test_log_playbook_run_still_accepts_string_result_json(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+
+    log_run = get_tool(server, "log_playbook_run").fn
+    history = get_tool(server, "playbook_history").fn
+
+    result = log_run(
+        "weekly_report",
+        "hermes",
+        "cron",
+        "0 10 * * 1",
+        "succeeded",
+        True,
+        True,
+        '{"generated": true}',
+        None,
+    )
+    assert result["success"] is True
+
+    rows = history("weekly_report", "hermes", "succeeded", None, 30, 20)
+    assert rows["data"]["runs"][0]["result_json"] == {"generated": True}
+
+
+def test_log_playbook_run_rejects_invalid_json_string(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+
+    log_run = get_tool(server, "log_playbook_run").fn
+
+    result = log_run(
+        "weekly_report",
+        "hermes",
+        "cron",
+        "0 10 * * 1",
+        "succeeded",
+        True,
+        True,
+        "not json at all",
+        None,
+    )
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
