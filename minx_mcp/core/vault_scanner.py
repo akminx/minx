@@ -9,6 +9,12 @@ from sqlite3 import Connection
 
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.core.memory_payloads import validate_memory_payload
+from minx_mcp.core.memory_service import (
+    _raise_secret_detected,
+    _redaction_event_payload,
+    _scan_memory_input,
+)
+from minx_mcp.core.secret_scanner import SecretVerdictKind, scan_for_secrets
 from minx_mcp.core.vault_memory_frontmatter import (
     MemoryIdentity,
     optional_str,
@@ -18,6 +24,7 @@ from minx_mcp.core.vault_memory_frontmatter import (
 )
 from minx_mcp.time_utils import utc_now_isoformat
 from minx_mcp.vault_reader import VaultDocument, VaultReader
+from minx_mcp.vault_writer import _scan_frontmatter_for_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +187,7 @@ class VaultScanner:
             try:
                 documents.append(self._vault_reader.read_document(relative_path))
             except (InvalidInputError, OSError) as exc:
-                warnings.append(f"{relative_path}: vault walk skipped: {exc}")
+                warnings.append(f"{relative_path}: vault walk skipped: {_sanitize_scan_exception(exc)}")
                 skipped_paths.add(relative_path)
         return True, documents, skipped_paths
 
@@ -226,6 +233,11 @@ class VaultScanner:
         prior_by_path = self._preload_index(documents)
         for doc in documents:
             counts.scanned += 1
+            try:
+                _scan_frontmatter_for_secrets(doc.frontmatter)
+            except InvalidInputError:
+                warnings.append(f"{doc.relative_path}: secret detected in vault frontmatter; skipped")
+                continue
             prior = prior_by_path.get(doc.relative_path)
             note_type = optional_str(doc.frontmatter.get("type"))
             scope = parse_note_scope(doc.frontmatter)
@@ -394,7 +406,31 @@ class VaultScanner:
         try:
             identity = parse_memory_identity(doc.frontmatter)
             payload = parse_memory_payload(doc.frontmatter, allow_implicit=True)
-            payload = validate_memory_payload(identity.memory_type, payload)
+            raw_scan = _scan_memory_input(
+                memory_type=identity.memory_type,
+                scope=identity.scope,
+                subject=identity.subject,
+                payload=payload,
+                source="vault_sync",
+                reason=f"vault sync from {doc.relative_path}",
+                scan_payload_values=False,
+            )
+            if raw_scan.verdict is SecretVerdictKind.BLOCK:
+                _raise_secret_detected(raw_scan)
+            payload = validate_memory_payload(raw_scan.memory_type, raw_scan.payload)
+            validated_scan = _scan_memory_input(
+                memory_type=raw_scan.memory_type,
+                scope=raw_scan.scope,
+                subject=raw_scan.subject,
+                payload=payload,
+                source=raw_scan.source,
+                reason=raw_scan.reason,
+            )
+            if validated_scan.verdict is SecretVerdictKind.BLOCK:
+                _raise_secret_detected(validated_scan)
+            payload = validated_scan.payload
+            reason = validated_scan.reason
+            redaction_payload = _redaction_event_payload(raw_scan, validated_scan)
         except InvalidInputError as exc:
             warnings.append(f"{doc.relative_path}: invalid minx-memory frontmatter: {exc}")
             # Current file no longer satisfies the sync contract. Do not leave
@@ -412,7 +448,15 @@ class VaultScanner:
             (identity.memory_type, identity.scope, identity.subject),
         ).fetchone()
         if row is None:
-            return _MemorySyncResult(memory_id=self._create_vault_memory(doc, identity, payload))
+            return _MemorySyncResult(
+                memory_id=self._create_vault_memory(
+                    doc,
+                    identity,
+                    payload,
+                    reason=reason,
+                    redaction_payload=redaction_payload,
+                )
+            )
 
         status = str(row["status"])
         memory_id = int(row["id"])
@@ -444,7 +488,7 @@ class VaultScanner:
             self._insert_memory_event(
                 memory_id,
                 "payload_updated",
-                {"payload": payload},
+                _event_payload_with_redaction({"payload": payload}, redaction_payload),
             )
             self._insert_memory_event(
                 memory_id,
@@ -469,7 +513,11 @@ class VaultScanner:
                 f" (expected status=active); skipped"
             )
             return _MemorySyncResult(memory_id=None, clear_memory_id=True)
-        self._insert_memory_event(memory_id, "payload_updated", {"payload": payload})
+        self._insert_memory_event(
+            memory_id,
+            "payload_updated",
+            _event_payload_with_redaction({"payload": payload}, redaction_payload),
+        )
         self._insert_memory_event(memory_id, "vault_synced", _vault_event_payload(doc, "update"))
         return _MemorySyncResult(memory_id=memory_id)
 
@@ -478,6 +526,9 @@ class VaultScanner:
         doc: VaultDocument,
         identity: MemoryIdentity,
         payload: dict[str, object],
+        *,
+        reason: str,
+        redaction_payload: dict[str, object] | None,
     ) -> int:
         cur = self._conn.execute(
             """
@@ -491,13 +542,13 @@ class VaultScanner:
                 identity.scope,
                 identity.subject,
                 json.dumps(payload, sort_keys=True),
-                f"vault sync from {doc.relative_path}",
+                reason,
             ),
         )
         if cur.lastrowid is None:
             raise RuntimeError("memories insert did not return a row id")
         memory_id = int(cur.lastrowid)
-        self._insert_memory_event(memory_id, "created", {})
+        self._insert_memory_event(memory_id, "created", redaction_payload or {})
         self._insert_memory_event(memory_id, "promoted", {})
         self._insert_memory_event(memory_id, "vault_synced", _vault_event_payload(doc, "create"))
         return memory_id
@@ -525,6 +576,22 @@ def _terminal_memory_status(conn: Connection, memory_id: int) -> str | None:
     if status in {"rejected", "expired"}:
         return status
     return None
+
+
+def _sanitize_scan_exception(exc: Exception) -> str:
+    message = str(exc)
+    if scan_for_secrets(message).findings:
+        return "error contained secret-shaped content"
+    return message
+
+
+def _event_payload_with_redaction(
+    payload: dict[str, object],
+    redaction_payload: dict[str, object] | None,
+) -> dict[str, object]:
+    if redaction_payload is None:
+        return payload
+    return {**payload, **redaction_payload}
 
 
 def _vault_event_payload(doc: VaultDocument, change: str) -> dict[str, object]:

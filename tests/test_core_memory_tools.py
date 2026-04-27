@@ -4,9 +4,25 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from minx_mcp.core.server import create_core_server
 from minx_mcp.db import get_connection
 from tests.helpers import MinxTestConfig, get_tool
+
+
+def _fake_github_token() -> str:
+    return "".join(("gh", "p_", "a" * 36))
+
+
+def _fake_private_key_block() -> str:
+    return "\n".join(
+        (
+            "-----" + "BEGIN PRIVATE KEY" + "-----",
+            "a" * 64,
+            "-----" + "END PRIVATE KEY" + "-----",
+        )
+    )
 
 
 def test_memory_tools_round_trip(tmp_path: Path) -> None:
@@ -73,6 +89,92 @@ def test_memory_tools_round_trip(tmp_path: Path) -> None:
     exp = get_tool(server, "memory_expire").fn(mid, "done")
     assert exp["success"] is True
     assert exp["data"]["memory"]["status"] == "expired"
+
+
+def test_memory_create_secret_block_surfaces_invalid_input_without_secret(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    create_fn = get_tool(server, "memory_create").fn
+    secret = _fake_private_key_block()
+
+    blocked = create_fn("preference", "core", "blocked", 0.9, {"value": secret}, "user", "")
+
+    assert blocked["success"] is False
+    assert blocked["error_code"] == "INVALID_INPUT"
+    assert blocked["data"]["kind"] == "secret_detected"
+    assert blocked["data"]["surface"] == "memory"
+    assert secret not in str(blocked)
+
+
+def test_memory_create_redacted_payload_returns_redacted_memory(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    create_fn = get_tool(server, "memory_create").fn
+    secret = _fake_github_token()
+
+    created = create_fn("preference", "core", "redacted", 0.9, {"value": secret}, "user", "")
+
+    assert created["success"] is True
+    assert created["data"]["memory"]["payload"] == {"value": "[REDACTED:github_token]"}
+    assert secret not in str(created)
+
+
+def test_persist_note_blocks_secret_bearing_frontmatter(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    vault = tmp_path / "vault"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, vault))
+    persist_fn = get_tool(server, "persist_note").fn
+    secret = _fake_github_token()
+    content = "---\n" f"token: {secret}\n" "---\n# Title\n"
+
+    blocked = persist_fn("Minx/secret.md", content, False)
+
+    assert blocked["success"] is False
+    assert blocked["error_code"] == "INVALID_INPUT"
+    assert blocked["data"]["kind"] == "secret_detected"
+    assert blocked["data"]["surface"] == "vault_frontmatter"
+    assert secret not in str(blocked)
+    assert not (vault / "Minx" / "secret.md").exists()
+
+
+def test_persist_note_blocks_bom_prefixed_secret_bearing_frontmatter(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    vault = tmp_path / "vault"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, vault))
+    persist_fn = get_tool(server, "persist_note").fn
+    secret = _fake_github_token()
+    content = "\ufeff---\n" f"token: {secret}\n" "---\n# Title\n"
+
+    blocked = persist_fn("Minx/bom-secret.md", content, False)
+
+    assert blocked["success"] is False
+    assert blocked["error_code"] == "INVALID_INPUT"
+    assert blocked["data"]["kind"] == "secret_detected"
+    assert secret not in str(blocked)
+    assert not (vault / "Minx" / "bom-secret.md").exists()
+
+
+@pytest.mark.parametrize("prefix", ["---\n", "\ufeff---\n"])
+def test_persist_note_blocks_unclosed_secret_bearing_frontmatter(tmp_path: Path, prefix: str) -> None:
+    db_path = tmp_path / "m.db"
+    vault = tmp_path / "vault"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, vault))
+    persist_fn = get_tool(server, "persist_note").fn
+    secret = _fake_github_token()
+    content = prefix + f"token: {secret}\n# Title\n"
+
+    blocked = persist_fn("Minx/unclosed-secret.md", content, False)
+
+    assert blocked["success"] is False
+    assert blocked["error_code"] == "INVALID_INPUT"
+    assert blocked["data"]["kind"] == "secret_detected"
+    assert secret not in str(blocked)
+    assert not (vault / "Minx" / "unclosed-secret.md").exists()
 
 
 def test_vault_scan_tool_syncs_memory_note(tmp_path: Path) -> None:

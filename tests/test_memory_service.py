@@ -21,6 +21,20 @@ def _fresh_memory_service(tmp_path) -> MemoryService:
     return MemoryService(db_path)
 
 
+def _fake_github_token() -> str:
+    return "".join(("gh", "p_", "a" * 36))
+
+
+def _fake_private_key_block() -> str:
+    return "\n".join(
+        (
+            "-----" + "BEGIN PRIVATE KEY" + "-----",
+            "a" * 64,
+            "-----" + "END PRIVATE KEY" + "-----",
+        )
+    )
+
+
 def _proxy_conn_first_memory_id_select(
     inner: sqlite3.Connection,
     *,
@@ -1543,6 +1557,297 @@ def _fingerprint_of(svc: MemoryService, memory_id: int) -> str | None:
         "SELECT content_fingerprint FROM memories WHERE id = ?", (memory_id,)
     ).fetchone()
     return None if row["content_fingerprint"] is None else str(row["content_fingerprint"])
+
+
+def test_create_memory_redacts_secret_payload_and_audits_fields(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    secret = _fake_github_token()
+
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="api_token_note",
+        confidence=0.9,
+        payload={"value": f"token {secret}"},
+        source=f"detector {secret}",
+        reason="captured from safe test fixture",
+        actor="user",
+    )
+
+    assert rec.payload == {"value": "token [REDACTED:github_token]"}
+    assert rec.source == "detector [REDACTED:github_token]"
+    assert secret not in json.dumps(rec.payload)
+    assert secret not in rec.source
+
+    row = svc.conn.execute(
+        "SELECT event_type, payload_json FROM memory_events WHERE memory_id = ? AND event_type = 'created'",
+        (rec.id,),
+    ).fetchone()
+    assert row is not None
+    event_payload = json.loads(str(row["payload_json"]))
+    assert event_payload == {
+        "secret_redacted": {
+            "detected_kinds": ["github_token"],
+            "fields": ["payload.value", "source"],
+        }
+    }
+
+    from minx_mcp.core.fingerprint import content_fingerprint
+    from minx_mcp.core.memory_service import _memory_fingerprint_input
+
+    expected_fp = content_fingerprint(
+        *_memory_fingerprint_input(
+            "preference",
+            rec.payload,
+            scope="core",
+            subject="api_token_note",
+        )
+    )
+    assert _fingerprint_of(svc, rec.id) == expected_fp
+
+
+def test_create_memory_blocks_secret_identity_and_writes_no_row(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    secret = _fake_github_token()
+
+    with pytest.raises(InvalidInputError) as excinfo:
+        svc.create_memory(
+            memory_type="preference",
+            scope="core",
+            subject=secret,
+            confidence=0.9,
+            payload={"value": "safe"},
+            source="user",
+            actor="user",
+        )
+
+    assert excinfo.value.data["kind"] == "secret_detected"
+    assert excinfo.value.data["surface"] == "memory"
+    assert excinfo.value.data["detected_kinds"] == ["github_token"]
+    assert secret not in json.dumps(excinfo.value.data)
+    assert svc.conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()["c"] == 0
+
+
+def test_update_payload_blocks_private_key_and_leaves_row_unchanged(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="key_note",
+        confidence=0.9,
+        payload={"value": "safe"},
+        source="user",
+        actor="user",
+    )
+    before_fp = _fingerprint_of(svc, rec.id)
+    before_events = svc.conn.execute("SELECT COUNT(*) AS c FROM memory_events").fetchone()["c"]
+
+    with pytest.raises(InvalidInputError) as excinfo:
+        svc.update_payload(rec.id, payload={"value": _fake_private_key_block()})
+
+    assert excinfo.value.data["kind"] == "secret_detected"
+    assert svc.get_memory(rec.id).payload == {"value": "safe"}
+    assert _fingerprint_of(svc, rec.id) == before_fp
+    assert svc.conn.execute("SELECT COUNT(*) AS c FROM memory_events").fetchone()["c"] == before_events
+
+
+def test_update_payload_redacts_secret_and_audits_payload_updated_event(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    secret = _fake_github_token()
+    rec = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="update_redact",
+        confidence=0.9,
+        payload={"value": "safe"},
+        source="user",
+        actor="user",
+    )
+
+    updated = svc.update_payload(rec.id, payload={"value": secret})
+
+    assert updated.payload == {"value": "[REDACTED:github_token]"}
+    event = svc.conn.execute(
+        """
+        SELECT payload_json FROM memory_events
+        WHERE memory_id = ? AND event_type = 'payload_updated'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (rec.id,),
+    ).fetchone()
+    event_payload = json.loads(str(event["payload_json"]))
+    assert event_payload == {
+        "payload": {"value": "[REDACTED:github_token]"},
+        "secret_redacted": {"detected_kinds": ["github_token"], "fields": ["payload.value"]},
+    }
+    assert secret not in json.dumps(event_payload)
+
+
+def test_reject_and_expire_memory_redact_secret_reasons_in_events(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    secret = _fake_github_token()
+    rejected = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="reject_reason",
+        confidence=0.5,
+        payload={"value": "safe"},
+        source="user",
+        actor="user",
+    )
+    expired = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="expire_reason",
+        confidence=0.9,
+        payload={"value": "safe"},
+        source="user",
+        actor="user",
+    )
+
+    svc.reject_memory(rejected.id, actor="user", reason=secret)
+    svc.expire_memory(expired.id, actor="user", reason=secret)
+
+    payloads = [
+        json.loads(str(row["payload_json"]))
+        for row in svc.conn.execute(
+            "SELECT payload_json FROM memory_events WHERE event_type IN ('rejected', 'expired') ORDER BY id"
+        ).fetchall()
+    ]
+    assert payloads == [
+        {
+            "reason": "[REDACTED:github_token]",
+            "secret_redacted": {"detected_kinds": ["github_token"], "fields": ["reason"]},
+        },
+        {
+            "reason": "[REDACTED:github_token]",
+            "secret_redacted": {"detected_kinds": ["github_token"], "fields": ["reason"]},
+        },
+    ]
+    assert secret not in json.dumps(payloads)
+
+
+def test_ingest_proposals_secret_identity_records_sanitized_failure(tmp_path, caplog) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    secret = _fake_github_token()
+    proposal = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject=secret,
+        confidence=0.9,
+        payload={"not_a_field": _fake_private_key_block()},
+        source=f"detector {secret}",
+        reason=f"reason {secret}",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        report = svc.ingest_proposals((proposal,), actor="detector")
+
+    assert report.succeeded == []
+    assert report.suppressed == []
+    assert report.failures == [
+        type(report.failures[0])(
+            memory_type="preference",
+            scope="core",
+            subject="[REDACTED_SUBJECT]",
+            reason="secret_detected",
+        )
+    ]
+    assert secret not in caplog.text
+    assert secret not in repr(report.failures)
+    assert svc.conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()["c"] == 0
+
+
+def test_ingest_proposals_rejected_prior_suppresses_before_secret_payload_value_scan(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    first = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="rejected_secret_payload",
+        confidence=0.5,
+        payload={"value": "safe"},
+        source="user",
+        actor="user",
+    )
+    svc.reject_memory(first.id, actor="user")
+    proposal = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="rejected_secret_payload",
+        confidence=0.9,
+        payload={"value": _fake_private_key_block()},
+        source="detector:test",
+        reason="again",
+    )
+
+    report = svc.ingest_proposals((proposal,), actor="detector")
+
+    assert report.failures == []
+    assert len(report.suppressed) == 1
+    assert report.suppressed[0].reason == "structural_rejected_prior"
+
+
+def test_ingest_proposals_uses_fixed_reason_for_invalid_payload(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    bad = MemoryProposal(
+        memory_type="preference",
+        scope="core",
+        subject="bad_payload",
+        confidence=0.9,
+        payload={"not_a_field": 1},
+        source="detector:test",
+        reason="bad",
+    )
+
+    report = svc.ingest_proposals((bad,), actor="detector")
+
+    assert report.failures[0].reason == "invalid_payload"
+
+
+def test_content_fingerprint_conflict_redacts_historical_existing_subject(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    secret = _fake_github_token()
+    first = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="safe_subject",
+        confidence=0.9,
+        payload={"value": "sparkling water"},
+        source="user",
+        actor="user",
+    )
+    from minx_mcp.core.fingerprint import content_fingerprint
+    from minx_mcp.core.memory_service import _memory_fingerprint_input
+
+    colliding_fp = content_fingerprint(
+        *_memory_fingerprint_input(
+            "preference",
+            {"value": "sparkling water"},
+            scope="core",
+            subject="different_subject",
+        )
+    )
+    svc.conn.execute(
+        "UPDATE memories SET subject = ?, content_fingerprint = ? WHERE id = ?",
+        (secret, colliding_fp, first.id),
+    )
+    svc.conn.commit()
+
+    with pytest.raises(ConflictError) as excinfo:
+        svc.create_memory(
+            memory_type="preference",
+            scope="core",
+            subject="different_subject",
+            confidence=0.9,
+            payload={"value": "sparkling water"},
+            source="user",
+            actor="user",
+        )
+
+    assert excinfo.value.data["conflict_kind"] == "content_fingerprint"
+    assert excinfo.value.data["memory_id"] == first.id
+    assert secret not in json.dumps(excinfo.value.data)
+    assert excinfo.value.data.get("existing_subject") in {None, "[REDACTED_EXISTING_SUBJECT]"}
 
 
 def test_create_memory_persists_content_fingerprint(tmp_path) -> None:

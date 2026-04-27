@@ -21,6 +21,7 @@ from tempfile import NamedTemporaryFile
 from typing import IO, Any
 
 from minx_mcp.contracts import ConflictError, InvalidInputError
+from minx_mcp.core.secret_scanner import scan_for_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,7 @@ class VaultWriter:
 
     def write_markdown(self, relative_path: str, content: str) -> Path:
         path = self._resolve(relative_path)
+        _scan_markdown_frontmatter_for_secrets(content)
         self._locked_write(path, lambda _existing: content)
         return path
 
@@ -180,6 +182,7 @@ class VaultWriter:
         exactly once (via commit or abort, ideally through ``with``).
         """
         path = self._resolve(relative_path)
+        _scan_frontmatter_for_secrets(frontmatter)
         lock_handle, lock_path = self._acquire_lock(path)
         try:
             if path.exists():
@@ -337,6 +340,65 @@ def _serialize_frontmatter(frontmatter: dict[str, object], *, newline: str = "\n
         lines.append(f"{key}: {_serialize_yaml_scalar(value)}")
     lines.append("---")
     return newline.join(lines) + newline
+
+
+def _scan_frontmatter_for_secrets(frontmatter: dict[str, object]) -> None:
+    detected: set[str] = set()
+    locations: list[dict[str, object]] = []
+    for key, value in frontmatter.items():
+        field = str(key) if isinstance(key, str) and key else "[INVALID_KEY]"
+        key_verdict = scan_for_secrets(field)
+        if key_verdict.findings:
+            field = "[REDACTED_KEY]"
+            for finding in key_verdict.findings:
+                detected.add(finding.kind)
+                locations.append({"field": field, "start": finding.start, "end": finding.end})
+        if isinstance(key, str) and key and "\n" not in key and ":" not in key:
+            value_text = _serialize_yaml_scalar(value)
+            value_verdict = scan_for_secrets(value_text)
+            if value_verdict.findings:
+                for finding in value_verdict.findings:
+                    detected.add(finding.kind)
+                    locations.append({"field": field, "start": finding.start, "end": finding.end})
+    if detected:
+        raise InvalidInputError(
+            "Secret detected in vault frontmatter",
+            data={
+                "kind": "secret_detected",
+                "verdict": "block",
+                "surface": "vault_frontmatter",
+                "detected_kinds": sorted(detected),
+                "locations": locations,
+            },
+        )
+
+
+def _scan_markdown_frontmatter_for_secrets(content: str) -> None:
+    lines = content.splitlines(keepends=True)
+    if not lines or lines[0].lstrip("\ufeff").strip() != "---":
+        return
+    end_index: int | None = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            end_index = index
+            break
+    frontmatter_text = "".join(lines if end_index is None else lines[: end_index + 1])
+    verdict = scan_for_secrets(frontmatter_text)
+    if not verdict.findings:
+        return
+    raise InvalidInputError(
+        "Secret detected in vault frontmatter",
+        data={
+            "kind": "secret_detected",
+            "verdict": "block",
+            "surface": "vault_frontmatter",
+            "detected_kinds": sorted({finding.kind for finding in verdict.findings}),
+            "locations": [
+                {"field": "frontmatter", "start": finding.start, "end": finding.end}
+                for finding in verdict.findings
+            ],
+        },
+    )
 
 
 def _detect_newline(text: str) -> str:

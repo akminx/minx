@@ -31,6 +31,14 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _fake_github_token() -> str:
+    return "".join(("gh", "p_", "a" * 36))
+
+
+def _json_escaped_github_token() -> str:
+    return _fake_github_token().replace("p", "\\u0070", 1)
+
+
 def _memory_row(db_path: Path, subject: str) -> sqlite3.Row:
     conn = get_connection(db_path)
     try:
@@ -679,6 +687,67 @@ def test_vault_reconcile_invalid_payload_validation_is_invalid_note(tmp_path: Pa
     assert report["skipped"] == 1
     assert report["warnings"][0]["kind"] == "invalid_note"
     assert _count_rows(db_path, "memories") == 0
+
+
+def test_vault_reconcile_sanitizes_secret_decoded_from_payload_json_key(tmp_path: Path) -> None:
+    db_path, vault, server = _server(tmp_path)
+    secret_key = _fake_github_token()
+    escaped_key = _json_escaped_github_token()
+    note = vault / "Minx" / "Memory" / "secret-key.md"
+    _write(
+        note,
+        (
+            "---\n"
+            "type: minx-memory\n"
+            "scope: core\n"
+            "memory_key: core.preference.secret_key\n"
+            "memory_type: preference\n"
+            "subject: secret_key\n"
+            f"payload_json: '{{\"{escaped_key}\":\"value\"}}'\n"
+            "---\n"
+            "# Secret Key\n"
+        ),
+    )
+
+    result = get_tool(server, "vault_reconcile_memories").fn(False)
+
+    assert result["success"] is True
+    report = result["data"]["report"]
+    assert report["skipped"] == 1
+    assert report["warnings"][0]["kind"] == "invalid_note"
+    assert secret_key not in str(report)
+    assert _count_rows(db_path, "memories") == 0
+
+
+def test_vault_reconcile_redacts_secret_decoded_from_payload_json_value(tmp_path: Path) -> None:
+    db_path, vault, server = _server(tmp_path)
+    secret = _fake_github_token()
+    escaped = _json_escaped_github_token()
+    note = vault / "Minx" / "Memory" / "secret-value.md"
+    _write(
+        note,
+        (
+            "---\n"
+            "type: minx-memory\n"
+            "scope: core\n"
+            "memory_key: core.preference.secret_value\n"
+            "memory_type: preference\n"
+            "subject: secret_value\n"
+            f"payload_json: '{{\"value\":\"{escaped}\"}}'\n"
+            "---\n"
+            "# Secret Value\n"
+        ),
+    )
+
+    result = get_tool(server, "vault_reconcile_memories").fn(False)
+
+    assert result["success"] is True
+    report = result["data"]["report"]
+    assert report["created"] == 1
+    row = _memory_row(db_path, "secret_value")
+    assert json.loads(row["payload_json"]) == {"value": "[REDACTED:github_token]"}
+    assert secret not in str(report)
+    assert secret not in row["payload_json"]
 
 
 def test_vault_reconcile_hand_authored_implicit_payload_is_canonicalized(

@@ -28,6 +28,8 @@ from typing import cast
 
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.core.memory_payloads import validate_memory_payload
+from minx_mcp.core.memory_service import _raise_secret_detected, _redaction_event_payload, _scan_memory_input
+from minx_mcp.core.secret_scanner import SecretVerdictKind, scan_for_secrets
 from minx_mcp.core.vault_memory_frontmatter import (
     MemoryIdentity,
     optional_str,
@@ -36,7 +38,7 @@ from minx_mcp.core.vault_memory_frontmatter import (
     parse_optional_int,
 )
 from minx_mcp.vault_reader import VaultDocument, VaultReader
-from minx_mcp.vault_writer import StagedVaultWrite, VaultWriter
+from minx_mcp.vault_writer import StagedVaultWrite, VaultWriter, _scan_frontmatter_for_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +121,7 @@ class VaultReconciler:
             warning = VaultReconcileWarning(
                 kind="walk_failed",
                 vault_path=self._scope_prefix,
-                message=f"vault walk failed: {exc}",
+                message=f"vault walk failed: {_sanitize_scan_exception(exc)}",
             )
             return VaultReconcileReport(
                 scanned=0,
@@ -143,7 +145,7 @@ class VaultReconciler:
                     VaultReconcileWarning(
                         kind="invalid_note",
                         vault_path=relative_path,
-                        message=f"vault note could not be read: {exc}",
+                        message=f"vault note could not be read: {_sanitize_scan_exception(exc)}",
                     ),
                 )
                 continue
@@ -186,12 +188,37 @@ class VaultReconciler:
         dry_run: bool,
     ) -> None:
         try:
+            _scan_frontmatter_for_secrets(doc.frontmatter)
             identity = parse_memory_identity(doc.frontmatter)
             payload = parse_memory_payload(
                 doc.frontmatter,
                 allow_implicit=identity.memory_id is None,
             )
-            payload = validate_memory_payload(identity.memory_type, payload)
+            raw_scan = _scan_memory_input(
+                memory_type=identity.memory_type,
+                scope=identity.scope,
+                subject=identity.subject,
+                payload=payload,
+                source="vault_sync",
+                reason=f"vault reconcile from {doc.relative_path}",
+                scan_payload_values=False,
+            )
+            if raw_scan.verdict is SecretVerdictKind.BLOCK:
+                _raise_secret_detected(raw_scan)
+            payload = validate_memory_payload(raw_scan.memory_type, raw_scan.payload)
+            validated_scan = _scan_memory_input(
+                memory_type=raw_scan.memory_type,
+                scope=raw_scan.scope,
+                subject=raw_scan.subject,
+                payload=payload,
+                source=raw_scan.source,
+                reason=raw_scan.reason,
+            )
+            if validated_scan.verdict is SecretVerdictKind.BLOCK:
+                _raise_secret_detected(validated_scan)
+            payload = validated_scan.payload
+            reason = validated_scan.reason
+            redaction_payload = _redaction_event_payload(raw_scan, validated_scan)
         except InvalidInputError as exc:
             _skip_with_warning(
                 counts,
@@ -199,16 +226,32 @@ class VaultReconciler:
                 VaultReconcileWarning(
                     kind="invalid_note",
                     vault_path=doc.relative_path,
-                    message=str(exc),
+                    message=_sanitize_scan_exception(exc),
                 ),
             )
             return
 
         if dry_run:
-            self._reconcile_one_dry_run(doc, identity, payload, counts, warnings)
+            self._reconcile_one_dry_run(
+                doc,
+                identity,
+                payload,
+                counts,
+                warnings,
+                reason=reason,
+                redaction_payload=redaction_payload,
+            )
             return
 
-        self._reconcile_one_apply(doc, identity, payload, counts, warnings)
+        self._reconcile_one_apply(
+            doc,
+            identity,
+            payload,
+            counts,
+            warnings,
+            reason=reason,
+            redaction_payload=redaction_payload,
+        )
 
     def _reconcile_one_dry_run(
         self,
@@ -217,6 +260,9 @@ class VaultReconciler:
         payload: dict[str, object],
         counts: _ReconcileCounts,
         warnings: list[VaultReconcileWarning],
+        *,
+        reason: str,
+        redaction_payload: dict[str, object] | None,
     ) -> None:
         note_mtime_utc = _safe_note_mtime_utc(self._vault_writer.resolve_path(doc.relative_path))
         self._orphan_warning = None
@@ -227,6 +273,8 @@ class VaultReconciler:
                 identity,
                 payload,
                 note_mtime_utc=note_mtime_utc,
+                reason=reason,
+                redaction_payload=redaction_payload,
             )
             effective_warning = result.warning or self._orphan_warning
             if effective_warning is not None:
@@ -248,6 +296,9 @@ class VaultReconciler:
         payload: dict[str, object],
         counts: _ReconcileCounts,
         warnings: list[VaultReconcileWarning],
+        *,
+        reason: str,
+        redaction_payload: dict[str, object] | None,
     ) -> None:
         resolved_path = self._vault_writer.resolve_path(doc.relative_path)
         note_mtime_utc = _safe_note_mtime_utc(resolved_path)
@@ -275,6 +326,8 @@ class VaultReconciler:
                     identity,
                     payload,
                     note_mtime_utc=note_mtime_utc,
+                    reason=reason,
+                    redaction_payload=redaction_payload,
                 )
                 effective_warning = result.warning or self._orphan_warning
                 if effective_warning is not None:
@@ -376,10 +429,12 @@ class VaultReconciler:
         payload: dict[str, object],
         *,
         note_mtime_utc: datetime | None,
+        reason: str,
+        redaction_payload: dict[str, object] | None,
     ) -> _ApplyResult:
         row = self._resolve_row(identity, doc.relative_path)
         if row is None:
-            return self._create_memory(doc, identity, payload)
+            return self._create_memory(doc, identity, payload, reason=reason, redaction_payload=redaction_payload)
 
         status = str(row["status"])
         memory_id = int(row["id"])
@@ -401,6 +456,7 @@ class VaultReconciler:
                 row,
                 payload,
                 note_mtime_utc=note_mtime_utc,
+                redaction_payload=redaction_payload,
             )
 
         self._check_active_conflict(row, identity, doc.relative_path)
@@ -430,7 +486,11 @@ class VaultReconciler:
                     memory_key=identity.memory_key,
                 )
             )
-        self._insert_memory_event(memory_id, "payload_updated", {"payload": payload})
+        self._insert_memory_event(
+            memory_id,
+            "payload_updated",
+            _event_payload_with_redaction({"payload": payload}, redaction_payload),
+        )
         self._insert_memory_event(memory_id, "vault_synced", _vault_event_payload(doc, "update"))
         updated = self._get_memory_row(memory_id)
         return _ApplyResult(
@@ -551,6 +611,9 @@ class VaultReconciler:
         doc: VaultDocument,
         identity: MemoryIdentity,
         payload: dict[str, object],
+        *,
+        reason: str = "vault reconcile",
+        redaction_payload: dict[str, object] | None = None,
     ) -> _ApplyResult:
         cur = self._conn.execute(
             """
@@ -564,7 +627,7 @@ class VaultReconciler:
                 identity.scope,
                 identity.subject,
                 _canonical_payload_json(payload),
-                f"vault reconcile from {doc.relative_path}",
+                reason,
             ),
         )
         if cur.lastrowid is None:
@@ -577,7 +640,7 @@ class VaultReconciler:
                 )
             )
         memory_id = int(cur.lastrowid)
-        self._insert_memory_event(memory_id, "created", {})
+        self._insert_memory_event(memory_id, "created", redaction_payload or {})
         self._insert_memory_event(memory_id, "promoted", {})
         self._insert_memory_event(memory_id, "vault_synced", _vault_event_payload(doc, "create"))
         row = self._get_memory_row(memory_id)
@@ -596,6 +659,7 @@ class VaultReconciler:
         payload: dict[str, object],
         *,
         note_mtime_utc: datetime | None,
+        redaction_payload: dict[str, object] | None,
     ) -> _ApplyResult:
         memory_id = int(row["id"])
         prior_payload = _parse_payload_json(str(row["payload_json"]))
@@ -628,7 +692,11 @@ class VaultReconciler:
             )
         self._insert_memory_event(memory_id, "confirmed", {"reason": "vault note exists"})
         if payload_changed:
-            self._insert_memory_event(memory_id, "payload_updated", {"payload": payload})
+            self._insert_memory_event(
+                memory_id,
+                "payload_updated",
+                _event_payload_with_redaction({"payload": payload}, redaction_payload),
+            )
         self._insert_memory_event(
             memory_id,
             "vault_synced",
@@ -786,6 +854,22 @@ def _parse_payload_json(raw: str) -> dict[str, object]:
 
 def _canonical_payload_json(payload: dict[str, object]) -> str:
     return json.dumps(payload, sort_keys=True)
+
+
+def _event_payload_with_redaction(
+    payload: dict[str, object],
+    redaction_payload: dict[str, object] | None,
+) -> dict[str, object]:
+    if redaction_payload is None:
+        return payload
+    return {**payload, **redaction_payload}
+
+
+def _sanitize_scan_exception(exc: Exception) -> str:
+    message = str(exc)
+    if scan_for_secrets(message).findings:
+        return "error contained secret-shaped content"
+    return message
 
 
 _CANONICAL_KEYS = {

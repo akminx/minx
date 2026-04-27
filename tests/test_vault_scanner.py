@@ -24,6 +24,92 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _fake_github_token() -> str:
+    return "".join(("gh", "p_", "a" * 36))
+
+
+def _json_escaped_github_token() -> str:
+    return _fake_github_token().replace("p", "\\u0070", 1)
+
+
+def test_vault_scanner_skips_secret_bearing_frontmatter_without_index_or_memory_write(tmp_path: Path) -> None:
+    conn, scanner = _scanner(tmp_path)
+    secret = _fake_github_token()
+    note = tmp_path / "vault" / "Minx" / "Memory" / "secret.md"
+    _write(
+        note,
+        (
+            "---\n"
+            "type: minx-memory\n"
+            "scope: core\n"
+            "memory_key: core.preference.secret\n"
+            "memory_type: preference\n"
+            "subject: secret\n"
+            f"value: {secret}\n"
+            "---\n"
+        ),
+    )
+
+    report = scanner.scan()
+
+    assert report.scanned == 1
+    assert report.indexed == 0
+    assert report.memory_syncs == 0
+    assert len(report.warnings) == 1
+    assert "secret detected in vault frontmatter" in report.warnings[0].lower()
+    assert secret not in report.warnings[0]
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM vault_index").fetchone()[0] == 0
+
+
+def test_vault_scanner_sanitizes_secret_shaped_parse_error_warnings(tmp_path: Path) -> None:
+    _conn, scanner = _scanner(tmp_path)
+    secret_key = _fake_github_token()
+    note = tmp_path / "vault" / "Minx" / "Notes" / "duplicate-secret-key.md"
+    _write(
+        note,
+        (
+            "---\n"
+            f"{secret_key}: first\n"
+            f"{secret_key}: second\n"
+            "---\n"
+        ),
+    )
+
+    report = scanner.scan()
+
+    assert len(report.warnings) == 1
+    assert secret_key not in report.warnings[0]
+    assert "secret-shaped" in report.warnings[0]
+
+
+def test_vault_scanner_redacts_secret_decoded_from_payload_json_before_memory_write(tmp_path: Path) -> None:
+    conn, scanner = _scanner(tmp_path)
+    secret = _fake_github_token()
+    escaped = _json_escaped_github_token()
+    note = tmp_path / "vault" / "Minx" / "Memory" / "escaped-payload.md"
+    _write(
+        note,
+        (
+            "---\n"
+            "type: minx-memory\n"
+            "scope: core\n"
+            "memory_key: core.preference.escaped_payload\n"
+            "memory_type: preference\n"
+            "subject: escaped_payload\n"
+            f"payload_json: '{{\"value\":\"{escaped}\"}}'\n"
+            "---\n"
+        ),
+    )
+
+    report = scanner.scan()
+
+    assert report.memory_syncs == 1
+    row = conn.execute("SELECT payload_json FROM memories WHERE subject = 'escaped_payload'").fetchone()
+    assert json.loads(row["payload_json"]) == {"value": "[REDACTED:github_token]"}
+    assert secret not in row["payload_json"]
+
+
 def test_vault_scanner_indexes_new_changed_and_unchanged_notes(tmp_path: Path) -> None:
     conn, scanner = _scanner(tmp_path)
     note = tmp_path / "vault" / "Minx" / "Entities" / "starbucks.md"

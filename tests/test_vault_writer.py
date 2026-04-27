@@ -11,6 +11,10 @@ from minx_mcp.vault_reader import VaultReader
 from minx_mcp.vault_writer import VaultWriter
 
 
+def _fake_github_token() -> str:
+    return "".join(("gh", "p_", "a" * 36))
+
+
 def test_vault_writer_rejects_paths_outside_allowed_dirs(tmp_path):
     writer = VaultWriter(tmp_path, ("Finance",))
 
@@ -277,3 +281,58 @@ def test_write_markdown_uses_same_lock(tmp_path: Path, monkeypatch) -> None:
     assert ("from_write" in text and "from_replace" not in text) or (
         "from_replace" in text and "from_write" not in text
     )
+
+
+def test_replace_frontmatter_blocks_secret_value_and_leaves_file_unchanged(tmp_path: Path) -> None:
+    note = tmp_path / "Finance" / "secret.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    original = "---\ntype: minx-wiki\n---\n# Title\n"
+    note.write_text(original, encoding="utf-8")
+    writer = VaultWriter(tmp_path, ("Finance",))
+    secret = _fake_github_token()
+
+    with pytest.raises(InvalidInputError) as excinfo:
+        writer.replace_frontmatter("Finance/secret.md", {"type": "minx-wiki", "token": secret})
+
+    assert excinfo.value.data["kind"] == "secret_detected"
+    assert excinfo.value.data["surface"] == "vault_frontmatter"
+    assert secret not in str(excinfo.value.data)
+    assert note.read_text(encoding="utf-8") == original
+
+
+def test_replace_frontmatter_blocks_secret_key_and_releases_lock(tmp_path: Path) -> None:
+    note = tmp_path / "Finance" / "secret-key.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("---\ntype: minx-wiki\n---\n# Title\n", encoding="utf-8")
+    writer = VaultWriter(tmp_path, ("Finance",))
+    secret = _fake_github_token()
+
+    try:
+        staged = writer.stage_replace_frontmatter("Finance/secret-key.md", {secret: "value"})
+    except InvalidInputError:
+        pass
+    else:
+        staged.abort()
+        pytest.fail("secret-bearing frontmatter key was not blocked")
+
+    staged = writer.stage_replace_frontmatter("Finance/secret-key.md", {"type": "minx-wiki"})
+    staged.abort()
+
+
+def test_stage_replace_frontmatter_scans_json_serialized_nested_values(tmp_path: Path) -> None:
+    note = tmp_path / "Finance" / "nested.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("# Title\n", encoding="utf-8")
+    writer = VaultWriter(tmp_path, ("Finance",))
+    secret = _fake_github_token()
+
+    try:
+        staged = writer.stage_replace_frontmatter("Finance/nested.md", {"nested": {"token": secret}})
+    except InvalidInputError as exc:
+        excinfo = exc
+    else:
+        staged.abort()
+        pytest.fail("secret-bearing nested frontmatter value was not blocked")
+
+    assert excinfo.data["surface"] == "vault_frontmatter"
+    assert secret not in str(excinfo.data)
