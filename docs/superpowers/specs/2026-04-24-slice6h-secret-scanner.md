@@ -172,15 +172,15 @@ def redact_secrets(text: str) -> ScanVerdict:
 The detector set is exactly the repo-wide hardcoded-credentials recognition list, implemented as anchored or bounded regexes with tests. The spec intentionally describes patterns without embedding complete credential-looking literals.
 
 
-| Kind                | Detection rule                                                                                                    | Default policy                                                                              |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `aws_access_key_id` | AWS access-key prefixes from the workspace rule followed by the expected uppercase alphanumeric body length       | redacted on redactable memory fields; block on memory identity fields and vault writes      |
-| `stripe_key`        | Stripe public/secret live/test prefixes followed by a token body                                                  | redacted on redactable memory fields; block on memory identity fields and vault writes      |
-| `google_api_key`    | Google API key prefix followed by the documented token body length                                                | redacted on redactable memory fields; block on memory identity fields and vault writes      |
-| `github_token`      | GitHub token prefixes followed by a token body                                                                    | redacted on redactable memory fields; block on memory identity fields and vault writes      |
-| `jwt`               | Three base64url dot-separated sections beginning with a JWT header prefix                                         | redacted on redactable memory fields; block on memory identity fields and vault writes      |
-| `private_key`       | PEM private-key block from a `BEGIN PRIVATE KEY`-style marker through its matching `END PRIVATE KEY`-style marker | block everywhere                                                                            |
-| `credential_url`    | URL with userinfo containing both username and password before `@`                                                | redacted on redactable memory fields; block on memory identity fields and vault writes      |
+| Kind                | Detection rule                                                                                                    | Default policy                                                                         |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `aws_access_key_id` | AWS access-key prefixes from the workspace rule followed by the expected uppercase alphanumeric body length       | redacted on redactable memory fields; block on memory identity fields and vault writes |
+| `stripe_key`        | Stripe public/secret live/test prefixes followed by a token body                                                  | redacted on redactable memory fields; block on memory identity fields and vault writes |
+| `google_api_key`    | Google API key prefix followed by the documented token body length                                                | redacted on redactable memory fields; block on memory identity fields and vault writes |
+| `github_token`      | GitHub token prefixes followed by a token body                                                                    | redacted on redactable memory fields; block on memory identity fields and vault writes |
+| `jwt`               | Three base64url dot-separated sections beginning with a JWT header prefix                                         | redacted on redactable memory fields; block on memory identity fields and vault writes |
+| `private_key`       | PEM private-key block from a `BEGIN PRIVATE KEY`-style marker through its matching `END PRIVATE KEY`-style marker | block everywhere                                                                       |
+| `credential_url`    | URL with userinfo containing both username and password before `@`                                                | redacted on redactable memory fields; block on memory identity fields and vault writes |
 
 
 All regexes use bounded character classes and explicit lengths where the credential family has a stable length. No detector uses nested unbounded quantifiers. The private-key detector uses non-greedy matching across newlines with an upper bound so a malformed note cannot trigger catastrophic scanning over an entire vault file.
