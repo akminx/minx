@@ -4,7 +4,9 @@ A personal Life OS built as a set of MCP servers. Domain MCPs own facts (Finance
 
 **Architecture:** Domains emit events → Core builds read models → Detectors generate signals → Harness consumes structured data and owns narrative, coaching, and scheduling. See [architecture design](docs/superpowers/specs/2026-04-06-minx-life-os-architecture-design.md) for the full picture.
 
-**Current state:** Slices 1–4 implemented. Finance/Meals/Training domains are online. Core exposes `get_daily_snapshot`, `get_insight_history`, `get_goal_trajectory`, `persist_note`, `goal_parse`, goal CRUD, and `finance_query` (all with dual-path structured + natural language input), plus nutrition/training-aware detectors and snapshot context.
+**Current state:** Slices 1–4, Slice 6a–6l, and Core-side Slice 8 are implemented. Finance/Meals/Training domains are online. Core exposes structured snapshots, insight history, goal trajectories, vault/wiki primitives, durable memory CRUD/reconciliation/search/graph edges, recoverable enrichment queue sweeps, OpenRouter-backed queued memory embeddings when configured, FTS-backed hybrid search fallback, snapshot archives, secret-gated memory/vault writes, and playbook audit tools.
+
+**Next implementation focus:** Run CI parity and slow MCP smoke checks, then start Slice 9 Agentic Investigations on top of the completed Slice 6 retrieval/enrichment foundation.
 
 **Hermes cutover status (2026-04-14):**
 - Legacy MCPs (`financehub`, `souschef`) disabled in Hermes config for rollback-safe migration.
@@ -21,8 +23,9 @@ python3 -m venv .venv
 ## Verify
 
 ```bash
-.venv/bin/python -m pytest -q
-.venv/bin/python -m mypy
+uv run ruff check minx_mcp tests scripts
+uv run mypy minx_mcp
+uv run pytest tests/ -x -q
 ```
 
 ## Run finance over stdio
@@ -109,7 +112,7 @@ You can override these with:
 - Finance stores money internally as integer cents and renders dollars at the MCP/report boundary.
 - Weekly and monthly finance reports are generated with explicit lifecycle state in SQLite.
 - The Core snapshot pipeline is implemented and covered by tests. `get_daily_snapshot` returns structured read models, detector signals, and attention items, and surfaces detector persistence problems as an inline `persistence_warning` instead of failing the whole call.
-- The Core MCP server exposes `get_daily_snapshot`, `get_insight_history`, `get_goal_trajectory`, `persist_note`, `goal_parse`, `goal_create`, `goal_list`, `goal_get`, `goal_update`, and `goal_archive`.
+- The Core MCP server exposes `get_daily_snapshot`, `get_insight_history`, `get_goal_trajectory`, `persist_note`, `vault_replace_section`, `vault_replace_frontmatter`, `vault_scan`, `vault_reconcile_memories`, `goal_parse`, goal CRUD, memory CRUD/search/graph/embedding tools, enrichment queue tools, pending memory review, and playbook audit/history tools.
 - `goal_get` returns both the stored goal DTO and derived progress for an optional `review_date`; progress is `null` outside the goal lifetime.
 - Goal progress `summary` text is human-facing convenience copy, not a strict downstream machine contract; clients should rely on structured fields like `status`, `actual_value`, `target_value`, and the current window instead of parsing summary wording.
 - `goal_list()` defaults to active goals, while `goal_list(status=...)` can query other lifecycle states explicitly.
@@ -117,7 +120,8 @@ You can override these with:
 - Goal drift/category drift work for category-, merchant-, and account-scoped finance goals, and non-`normal` events are excluded from the review timeline/output path.
 - `goal_parse` supports both natural-language parsing and a structured-input validation path.
 - `finance_query` supports both natural-language interpretation and a structured `intent` + `filters` path.
-- A real stdio MCP smoke test now exists at [tests/test_core_mcp_stdio.py](/Users/akmini/Documents/minx-mcp/tests/test_core_mcp_stdio.py).
+- A real stdio MCP smoke test now exists at [tests/test_core_mcp_stdio.py](tests/test_core_mcp_stdio.py).
+- New memory/vault writes are scanned locally for secret-shaped values before persistence or external embedding; run `python scripts/scan_memory_for_secrets.py` once against existing databases after pulling Slice 6h.
 
 ## LLM config
 
@@ -139,6 +143,14 @@ Set the `core/llm_config` preference to a payload like:
 ```
 
 `api_key_env` must point to an environment variable; API keys are not stored in preferences. `provider_preferences` is optional and is forwarded verbatim to the OpenAI-compatible provider request body, which is useful for OpenRouter provider routing.
+
+## Memory Embeddings
+
+Memory embeddings are offline-safe by default. `memory_hybrid_search` always works through SQLite FTS5; it reranks FTS candidates with stored embeddings only when OpenRouter is configured and compatible candidate embeddings exist.
+
+Set `MINX_OPENROUTER_API_KEY` to enable `memory_embedding_enqueue` and `enrichment_sweep` processing for `memory.embedding` jobs. Optional knobs are `MINX_EMBEDDING_MODEL` (default `openai/text-embedding-3-small`), `MINX_EMBEDDING_DIMENSIONS`, `MINX_EMBEDDING_REQUEST_TIMEOUT_S`, and `MINX_EMBEDDING_MAX_COST_MICROUSD`. API keys are read from the environment only and are not returned in MCP responses.
+
+For existing databases, run `python -m scripts.rebuild_memory_fts` after pulling Slice 6i and `python -m scripts.backfill_memory_fingerprints` for rows that pre-date Slice 6g fingerprints.
 
 ## Known limitations
 

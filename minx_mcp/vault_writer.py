@@ -145,11 +145,14 @@ class VaultWriter:
     def write_markdown(self, relative_path: str, content: str) -> Path:
         path = self._resolve(relative_path)
         _scan_markdown_frontmatter_for_secrets(content)
+        _scan_markdown_body_for_secrets(content)
         self._locked_write(path, lambda _existing: content)
         return path
 
     def replace_section(self, relative_path: str, heading: str, body: str) -> Path:
         path = self._resolve(relative_path)
+        _scan_text_for_vault_body_secrets(heading, field="heading")
+        _scan_text_for_vault_body_secrets(body, field="body")
         marker = f"## {heading}"
         replacement = f"{marker}\n\n{body.strip()}\n"
 
@@ -193,6 +196,7 @@ class VaultWriter:
             newline = _detect_newline(current_text)
             frontmatter_text = _serialize_frontmatter(frontmatter, newline=newline)
             body = _body_after_frontmatter(current_text)
+            _scan_text_for_vault_body_secrets(body, field="body")
             new_text = f"{frontmatter_text}{body}"
             temp_path = self._stage_write(path, new_text)
         except Exception:
@@ -395,6 +399,30 @@ def _scan_markdown_frontmatter_for_secrets(content: str) -> None:
             "detected_kinds": sorted({finding.kind for finding in verdict.findings}),
             "locations": [
                 {"field": "frontmatter", "start": finding.start, "end": finding.end}
+                for finding in verdict.findings
+            ],
+        },
+    )
+
+
+def _scan_markdown_body_for_secrets(content: str) -> None:
+    body = _body_after_frontmatter(content)
+    _scan_text_for_vault_body_secrets(body, field="body")
+
+
+def _scan_text_for_vault_body_secrets(text: str, *, field: str) -> None:
+    verdict = scan_for_secrets(text)
+    if not verdict.findings:
+        return
+    raise InvalidInputError(
+        "Secret detected in vault body",
+        data={
+            "kind": "secret_detected",
+            "verdict": "block",
+            "surface": "vault_body",
+            "detected_kinds": sorted({finding.kind for finding in verdict.findings}),
+            "locations": [
+                {"field": field, "start": finding.start, "end": finding.end}
                 for finding in verdict.findings
             ],
         },

@@ -65,6 +65,70 @@ def test_database_bootstrap_creates_memory_tables(tmp_path):
     assert "playbook_runs" in names
 
 
+def test_latest_schema_includes_memory_fts(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    rows = conn.execute(
+        "SELECT name, type FROM sqlite_master WHERE name IN "
+        "('memory_fts', 'memories_ai_fts', 'memories_au_fts', 'memories_ad_fts')"
+    ).fetchall()
+
+    assert {(row["name"], row["type"]) for row in rows} == {
+        ("memory_fts", "table"),
+        ("memories_ai_fts", "trigger"),
+        ("memories_au_fts", "trigger"),
+        ("memories_ad_fts", "trigger"),
+    }
+
+
+def test_memory_fts_migration_is_raw_rerun_safe(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    sql = (migration_dir() / "021_memory_fts5.sql").read_text(encoding="utf-8")
+
+    conn.executescript(sql)
+
+    rows = conn.execute(
+        "SELECT name, type FROM sqlite_master WHERE name IN "
+        "('memory_fts', 'memories_ai_fts', 'memories_au_fts', 'memories_ad_fts')"
+    ).fetchall()
+    assert {(row["name"], row["type"]) for row in rows} == {
+        ("memory_fts", "table"),
+        ("memories_ai_fts", "trigger"),
+        ("memories_au_fts", "trigger"),
+        ("memories_ad_fts", "trigger"),
+    }
+
+
+def test_latest_schema_includes_memory_edges(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    indexes = {row["name"] for row in conn.execute("PRAGMA index_list(memory_edges)").fetchall()}
+
+    assert "memory_edges" in tables
+    assert "idx_memory_edges_source" in indexes
+    assert "idx_memory_edges_target" in indexes
+    assert "idx_memory_edges_predicate" in indexes
+
+
+def test_latest_schema_includes_enrichment_queue(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    indexes = {row["name"] for row in conn.execute("PRAGMA index_list(enrichment_jobs)").fetchall()}
+
+    assert "enrichment_jobs" in tables
+    assert "idx_enrichment_jobs_status_available" in indexes
+    assert "idx_enrichment_jobs_subject" in indexes
+
+
+def test_latest_schema_includes_memory_embeddings(tmp_path):
+    conn = get_connection(tmp_path / "minx.db")
+    tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    indexes = {row["name"] for row in conn.execute("PRAGMA index_list(memory_embeddings)").fetchall()}
+
+    assert "memory_embeddings" in tables
+    assert "idx_memory_embeddings_model" in indexes
+    assert "idx_memory_embeddings_fingerprint" in indexes
+
+
 def test_memory_events_accept_vault_synced_after_slice6c_migration(tmp_path):
     conn = get_connection(tmp_path / "minx.db")
     conn.execute(

@@ -596,7 +596,11 @@ def test_migration_set_includes_015_memories_unique_live() -> None:
     assert "018_vault_index.sql" in names
     assert "019_playbook_runs.sql" in names
     assert "020_memory_content_fingerprint.sql" in names
-    assert names[-1] == "020_memory_content_fingerprint.sql"
+    assert "021_memory_fts5.sql" in names
+    assert "022_memory_edges.sql" in names
+    assert "023_enrichment_queue.sql" in names
+    assert "024_memory_embeddings.sql" in names
+    assert names[-1] == "024_memory_embeddings.sql"
 
 
 def test_unique_index_rejects_duplicate_live_triple(tmp_path) -> None:
@@ -1802,6 +1806,313 @@ def test_ingest_proposals_uses_fixed_reason_for_invalid_payload(tmp_path) -> Non
     report = svc.ingest_proposals((bad,), actor="detector")
 
     assert report.failures[0].reason == "invalid_payload"
+
+
+def test_search_memories_finds_active_memory_by_payload_value(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    record = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="coffee",
+        confidence=0.95,
+        payload={"value": "prefers espresso after training"},
+        source="user",
+        reason="manual",
+    )
+
+    results = svc.search_memories(query="espresso", limit=10)
+
+    assert [result.memory.id for result in results] == [record.id]
+    assert "espresso" in results[0].snippet.lower()
+
+
+def test_search_memories_updates_index_when_payload_changes(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    record = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="drink",
+        confidence=0.95,
+        payload={"value": "espresso"},
+        source="user",
+        reason="manual",
+    )
+
+    svc.update_payload(record.id, payload={"value": "tea"}, actor="user")
+
+    assert svc.search_memories(query="espresso") == []
+    assert [result.memory.id for result in svc.search_memories(query="tea")] == [record.id]
+
+
+def test_search_memories_defaults_to_active_status(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    active = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="active",
+        confidence=0.95,
+        payload={"value": "matchable"},
+        source="user",
+        reason="manual",
+    )
+    rejected = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="rejected",
+        confidence=0.4,
+        payload={"value": "matchable"},
+        source="user",
+        reason="manual",
+    )
+    svc.reject_memory(rejected.id, actor="user", reason="no")
+
+    assert [result.memory.id for result in svc.search_memories(query="matchable")] == [active.id]
+    assert {result.memory.id for result in svc.search_memories(query="matchable", status=None)} == {
+        active.id,
+        rejected.id,
+    }
+
+
+def test_search_memories_scope_and_type_filters(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    keep = svc.create_memory(
+        memory_type="preference",
+        scope="finance",
+        subject="merchant",
+        confidence=0.95,
+        payload={"value": "coffee"},
+        source="user",
+        reason="manual",
+    )
+    svc.create_memory(
+        memory_type="constraint",
+        scope="finance",
+        subject="budget",
+        confidence=0.95,
+        payload={"limit_value": "coffee"},
+        source="user",
+        reason="manual",
+    )
+
+    results = svc.search_memories(query="coffee", scope="finance", memory_type="preference")
+
+    assert [result.memory.id for result in results] == [keep.id]
+
+
+def test_search_memories_rejects_invalid_query_and_limit(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+
+    with pytest.raises(InvalidInputError):
+        svc.search_memories(query='"unterminated')
+    with pytest.raises(InvalidInputError):
+        svc.search_memories(query="coffee", limit=0)
+
+
+def test_search_memories_excludes_expired_active_rows(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    record = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="coffee",
+        confidence=0.95,
+        payload={"value": "espresso"},
+        source="user",
+        reason="manual",
+    )
+    svc.conn.execute(
+        "UPDATE memories SET expires_at = ? WHERE id = ?",
+        ((datetime.now(UTC) - timedelta(days=1)).isoformat(), record.id),
+    )
+    svc.conn.commit()
+
+    assert svc.list_active_memories() == []
+    assert svc.search_memories(query="espresso") == []
+
+
+def test_search_memories_skips_legacy_rows_with_malformed_payload_json(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    valid = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="valid legacy",
+        confidence=0.95,
+        payload={"value": "legacy"},
+        source="user",
+        reason="manual",
+    )
+    svc.conn.execute(
+        """
+        INSERT INTO memories (
+            memory_type, scope, subject, confidence, status, payload_json, source, reason
+            ) VALUES ('preference', 'core', 'broken legacy', 0.95, 'active', '{not-json', 'legacy', '')
+        """
+    )
+    svc.conn.commit()
+
+    assert [result.memory.id for result in svc.search_memories(query="legacy")] == [valid.id]
+
+
+def test_ingest_proposals_legacy_secret_merge_records_failure_without_batch_abort(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    private_key = _fake_private_key_block()
+    svc.conn.execute(
+        """
+        INSERT INTO memories (
+            memory_type, scope, subject, confidence, status, payload_json, source, reason
+        ) VALUES (?, ?, ?, 0.6, 'candidate', ?, 'legacy', 'legacy import')
+        """,
+        ("unknown_type", "core", "legacy", json.dumps({"legacy_secret": private_key})),
+    )
+    svc.conn.commit()
+    safe = MemoryProposal(
+        memory_type="unknown_type",
+        scope="core",
+        subject="safe",
+        confidence=0.9,
+        payload={"safe": "value"},
+        source="detector",
+        reason="safe proposal",
+    )
+    merging = MemoryProposal(
+        memory_type="unknown_type",
+        scope="core",
+        subject="legacy",
+        confidence=0.7,
+        payload={"safe": "value"},
+        source="detector",
+        reason="merge proposal",
+    )
+
+    report = svc.ingest_proposals([safe, merging], actor="detector")
+
+    assert [record.subject for record in report.succeeded] == ["safe"]
+    assert len(report.failures) == 1
+    assert report.failures[0].reason == "secret_detected"
+    assert private_key not in repr(report)
+
+
+def test_memory_edges_create_list_and_delete(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    source = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="new",
+        confidence=0.95,
+        payload={"value": "new value"},
+        source="user",
+        reason="manual",
+    )
+    target = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="old",
+        confidence=0.95,
+        payload={"value": "old value"},
+        source="user",
+        reason="manual",
+    )
+
+    edge = svc.create_memory_edge(
+        source_memory_id=source.id,
+        target_memory_id=target.id,
+        predicate="supersedes",
+        relation_note="newer version",
+        actor="user",
+    )
+
+    assert edge.source_memory_id == source.id
+    assert edge.target_memory_id == target.id
+    assert edge.predicate == "supersedes"
+    assert [listed.id for listed in svc.list_memory_edges(source.id, direction="outgoing")] == [edge.id]
+    assert [listed.id for listed in svc.list_memory_edges(target.id, direction="incoming")] == [edge.id]
+    assert svc.delete_memory_edge(edge.id) is True
+    assert svc.list_memory_edges(source.id) == []
+    assert svc.delete_memory_edge(edge.id) is False
+
+
+def test_memory_edges_reject_invalid_predicate_self_edge_and_duplicates(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    source = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="source",
+        confidence=0.95,
+        payload={"value": "source"},
+        source="user",
+        reason="manual",
+    )
+    target = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="target",
+        confidence=0.95,
+        payload={"value": "target"},
+        source="user",
+        reason="manual",
+    )
+
+    with pytest.raises(InvalidInputError):
+        svc.create_memory_edge(
+            source_memory_id=source.id,
+            target_memory_id=target.id,
+            predicate="explains",
+            actor="user",
+        )
+    with pytest.raises(InvalidInputError):
+        svc.create_memory_edge(
+            source_memory_id=source.id,
+            target_memory_id=source.id,
+            predicate="cites",
+            actor="user",
+        )
+
+    svc.create_memory_edge(
+        source_memory_id=source.id,
+        target_memory_id=target.id,
+        predicate="cites",
+        actor="user",
+    )
+    with pytest.raises(ConflictError):
+        svc.create_memory_edge(
+            source_memory_id=source.id,
+            target_memory_id=target.id,
+            predicate="cites",
+            actor="user",
+        )
+
+
+def test_memory_edge_relation_note_redacts_secrets(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    secret = _fake_github_token()
+    source = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="source",
+        confidence=0.95,
+        payload={"value": "source"},
+        source="user",
+        reason="manual",
+    )
+    target = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="target",
+        confidence=0.95,
+        payload={"value": "target"},
+        source="user",
+        reason="manual",
+    )
+
+    edge = svc.create_memory_edge(
+        source_memory_id=source.id,
+        target_memory_id=target.id,
+        predicate="contradicts",
+        relation_note=f"token {secret}",
+        actor="user",
+    )
+
+    assert edge.relation_note == "token [REDACTED:github_token]"
+    assert secret not in repr(edge)
 
 
 def test_content_fingerprint_conflict_redacts_historical_existing_subject(tmp_path) -> None:

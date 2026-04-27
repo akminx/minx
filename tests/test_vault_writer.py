@@ -336,3 +336,84 @@ def test_stage_replace_frontmatter_scans_json_serialized_nested_values(tmp_path:
 
     assert excinfo.data["surface"] == "vault_frontmatter"
     assert secret not in str(excinfo.data)
+
+
+def test_write_markdown_blocks_secret_body_and_leaves_existing_file_unchanged(tmp_path: Path) -> None:
+    note = tmp_path / "Finance" / "body-secret.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    original = "# Existing\n\nsafe\n"
+    note.write_text(original, encoding="utf-8")
+    writer = VaultWriter(tmp_path, ("Finance",))
+    secret = _fake_github_token()
+
+    with pytest.raises(InvalidInputError) as excinfo:
+        writer.write_markdown("Finance/body-secret.md", f"# Report\n\nToken: {secret}\n")
+
+    assert excinfo.value.data["kind"] == "secret_detected"
+    assert excinfo.value.data["surface"] == "vault_body"
+    assert secret not in str(excinfo.value.data)
+    assert note.read_text(encoding="utf-8") == original
+
+
+def test_write_markdown_blocks_secret_body_before_creating_file(tmp_path: Path) -> None:
+    note = tmp_path / "Finance" / "new-body-secret.md"
+    writer = VaultWriter(tmp_path, ("Finance",))
+    secret = _fake_github_token()
+
+    with pytest.raises(InvalidInputError) as excinfo:
+        writer.write_markdown("Finance/new-body-secret.md", f"# Report\n\nToken: {secret}\n")
+
+    assert excinfo.value.data["surface"] == "vault_body"
+    assert secret not in str(excinfo.value.data)
+    assert not note.exists()
+
+
+def test_replace_section_blocks_secret_body_and_leaves_existing_section_unchanged(tmp_path: Path) -> None:
+    note = tmp_path / "Finance" / "section-secret.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    original = "# Report\n\n## Summary\n\nOld safe body\n\n## Notes\n\nKeep\n"
+    note.write_text(original, encoding="utf-8")
+    writer = VaultWriter(tmp_path, ("Finance",))
+    secret = _fake_github_token()
+
+    with pytest.raises(InvalidInputError) as excinfo:
+        writer.replace_section("Finance/section-secret.md", "Summary", f"Token: {secret}")
+
+    assert excinfo.value.data["kind"] == "secret_detected"
+    assert excinfo.value.data["surface"] == "vault_body"
+    assert secret not in str(excinfo.value.data)
+    assert note.read_text(encoding="utf-8") == original
+
+
+def test_replace_section_blocks_secret_heading_and_leaves_existing_file_unchanged(tmp_path: Path) -> None:
+    note = tmp_path / "Finance" / "heading-secret.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    original = "# Report\n\n## Summary\n\nOld safe body\n"
+    note.write_text(original, encoding="utf-8")
+    writer = VaultWriter(tmp_path, ("Finance",))
+    secret = _fake_github_token()
+
+    with pytest.raises(InvalidInputError) as excinfo:
+        writer.replace_section("Finance/heading-secret.md", f"Summary {secret}", "Safe body")
+
+    assert excinfo.value.data["kind"] == "secret_detected"
+    assert excinfo.value.data["surface"] == "vault_body"
+    assert secret not in str(excinfo.value.data)
+    assert note.read_text(encoding="utf-8") == original
+
+
+def test_replace_frontmatter_blocks_existing_secret_body_and_leaves_file_unchanged(tmp_path: Path) -> None:
+    note = tmp_path / "Finance" / "frontmatter-preserved-body-secret.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    secret = _fake_github_token()
+    original = f"---\ntype: minx-wiki\n---\n# Report\n\nToken: {secret}\n"
+    note.write_text(original, encoding="utf-8")
+    writer = VaultWriter(tmp_path, ("Finance",))
+
+    with pytest.raises(InvalidInputError) as excinfo:
+        writer.replace_frontmatter("Finance/frontmatter-preserved-body-secret.md", {"type": "minx-memory"})
+
+    assert excinfo.value.data["kind"] == "secret_detected"
+    assert excinfo.value.data["surface"] == "vault_body"
+    assert secret not in str(excinfo.value.data)
+    assert note.read_text(encoding="utf-8") == original

@@ -1,7 +1,7 @@
 # Minx Life OS Roadmap — Implementation Slices
 
 **Date:** 2026-04-06
-**Status:** Active (updated 2026-04-14 after Slice 4 + Hermes cutover)
+**Status:** Active (updated 2026-04-27 after Slice 6 completion fixes + Slice 8 Core-side autonomy)
 **Parent:** [Minx Life OS Architecture Design](2026-04-06-minx-life-os-architecture-design.md)
 
 Each slice gets its own spec, plan, and implementation cycle. The roadmap is ordered by dependency and by trust: Minx should first become useful, then cross-domain, then harness-aware, then durable, and only after that more autonomous.
@@ -17,10 +17,10 @@ The roadmap now follows four arcs:
 
 From the current repo baseline, the next recommended execution order is:
 
-1. Slice 6: Durable Memory + Review Reproducibility
-2. Slice 7: Ideas/Journal MCP
-3. Slice 8: Proactive Autonomy
-4. Slice 9: Dashboard + Richer Surfaces
+1. Run CI parity and slow MCP smoke checks for completed Slice 6
+2. Slice 9: Agentic Investigations, built on the completed memory retrieval foundation
+3. Slice 7: Ideas/Journal MCP, when the journal domain becomes the next product priority
+4. Dashboard + Richer Surfaces, as a separate presentation layer
 
 Slice 5 (Harness Adaptation) has been removed. The MCP protocol itself provides portability. Harness-specific behavior lives in the harness (e.g. Hermes skill files), not in Core. See the MCP / Harness Responsibility Split section in the architecture design.
 
@@ -29,7 +29,7 @@ This ordering preserves the architecture doc's north star:
 - Minx Core stays the owner of interpretation
 - domains stay the owner of facts
 - harness-specific instance setup stays outside Core and arrives later than the reusable Core contracts
-- autonomy waits until memory, trust, and review durability are mature enough
+- autonomy waits until memory, trust, and review durability are mature enough; agentic investigations should wait for memory search/graph/enrichment to be usable
 
 ---
 
@@ -216,7 +216,7 @@ Ambient input ingestion (vault polling, journal scanning) remains harness-level 
 
 ## Slice 6: Durable Memory + Review Reproducibility
 
-**Status:** Not started
+**Status:** Partially implemented
 
 **Scope:**
 - structured durable memory store for stable preferences, recurring patterns, and constraints
@@ -227,9 +227,11 @@ Ambient input ingestion (vault polling, journal scanning) remains harness-level 
 - review pipeline integration for durable memory without collapsing into transcript recall
 - harness-facing wiki page template scaffolds (entity / pattern / review / goal) shipped with Core as packaged resources so LLM-generated vault notes have a stable frontmatter + section structure for the vault scanner and bidirectional sync to rely on — see Slice 6 spec §9
 
+**Implemented so far:** Slice 6a-6l shipped durable memory tables/tools, snapshot archives, vault indexing/reconciliation, wiki templates, content fingerprint dedup, the secret-scanner write gate, deterministic FTS5 memory search, typed memory graph edges, the durable enrichment queue with stale-job recovery, OpenRouter-backed queued memory embeddings when configured, and hybrid memory search with deterministic FTS fallback.
+
 **Delivers:** Minx becomes explainable and durable. Reviews gain long-term context, and future autonomy/dashboard work has a stable foundation to build on.
 
-**Dependencies:** Slice 1, plus meaningful domain activity from Slices 3-4 and ideally Slice 5
+**Dependencies:** Slice 1, plus meaningful domain activity from Slices 3-4
 
 **Why this comes before autonomy:**
 - bounded autonomy without durable memory and reproducibility is hard to trust
@@ -244,7 +246,7 @@ Ambient input ingestion (vault polling, journal scanning) remains harness-level 
 
 ## Slice 7: Ideas/Journal MCP
 
-**Status:** Not started
+**Status:** Deferred
 
 **Scope:**
 - Journal domain MCP server: entries, reflections, captured ideas, linked references
@@ -258,13 +260,13 @@ Ambient input ingestion (vault polling, journal scanning) remains harness-level 
 
 **Delivers:** Reflection becomes a first-class domain instead of a side channel, which makes Minx more like a real personal OS and less like a structured tracking stack.
 
-**Dependencies:** Slice 1, and benefits from Slice 5 for ambient-input posture
+**Dependencies:** Slice 1; benefits from the Slice 6 memory/search foundation when journal embeddings and recall become important.
 
 ---
 
 ## Slice 8: Proactive Autonomy
 
-**Status:** Not started
+**Status:** Implemented for Core-side audit/storage; Hermes automation operationally validated
 
 **Scope:**
 - Playbook infrastructure: trigger, bounded action, success metric, kill switch, owner
@@ -279,13 +281,29 @@ Ambient input ingestion (vault polling, journal scanning) remains harness-level 
 
 **Delivers:** Minx starts doing bounded, trustworthy work without drifting into a vague always-on agent loop.
 
-**Dependencies:** Slice 2, Slice 5, Slice 6, and stable scheduling infrastructure
+**Dependencies:** Slice 2, Slice 6, and stable harness scheduling infrastructure
 
 ---
 
-## Slice 9: Dashboard + Richer Surfaces
+## Slice 9: Agentic Investigations
 
-**Status:** Not started
+**Status:** Designed, deferred until Slice 6i-6l are complete
+
+**Scope:**
+- Core investigation storage and history APIs for user-initiated, one-off agentic investigations
+- trajectory digests that store tool names, argument/result digests, latency, and cost without raw tool outputs
+- redaction policy for context, answers, error messages, and stored trajectory metadata
+- later Hermes `minx_investigate` loop with explicit tool-call, token, and wall-clock budgets
+
+**Delivers:** Minx can answer open-ended questions with unknown tool sequences while Core keeps the durable audit/history layer and the harness owns the LLM loop.
+
+**Dependencies:** Completed Slice 6 retrieval/enrichment foundation, Slice 8 playbook audit patterns, and the existing domain tool surfaces.
+
+---
+
+## Dashboard + Richer Surfaces
+
+**Status:** Deferred
 
 **Scope:**
 - web dashboard serving review data, goal progress, domain summaries, and historical artifacts
@@ -318,14 +336,17 @@ Slice 1 (Events + Review)
     +---> Slice 6 (Memory + Reproducibility)
     |         |
     |         +---> Slice 8 (Autonomy)
+    |         |
+    |         +---> Slice 9 (Agentic Investigations)
     |
     +---> Slice 7 (Ideas/Journal MCP)
               |
-              +---> Slice 9 (Dashboard + Richer Surfaces)
+              +---> Dashboard + Richer Surfaces
 
 Slice 5 (Harness Adaptation) removed — portability is provided by MCP protocol.
 Slice 2.5 should be done before Slice 3 to establish the harness-ready tool surface.
-Slice 9 also depends on Slice 2 and benefits strongly from Slices 3-6.
+Agentic Investigations depend on the remaining Slice 6 retrieval/enrichment work.
+Dashboard work also depends on Slice 2 and benefits strongly from Slices 3-6.
 ```
 
 ## Principles Across All Slices

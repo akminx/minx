@@ -7,7 +7,14 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from minx_mcp.contracts import InvalidInputError, ToolResponse, wrap_tool_call
-from minx_mcp.core.memory_service import MemoryService, memory_record_as_dict
+from minx_mcp.core import memory_embeddings
+from minx_mcp.core.enrichment_queue import EnrichmentJob
+from minx_mcp.core.memory_embeddings import (
+    enqueue_memory_embedding,
+    hybrid_memory_search,
+    memory_embedding_status,
+)
+from minx_mcp.core.memory_service import MemoryService, memory_edge_as_dict, memory_record_as_dict
 from minx_mcp.core.tools._shared import CoreServiceConfig, coerce_limit
 from minx_mcp.db import scoped_connection
 from minx_mcp.validation import require_non_empty, require_payload_object
@@ -82,6 +89,83 @@ def register_memory_tools(mcp: FastMCP, config: CoreServiceConfig) -> None:
         return wrap_tool_call(
             lambda: _memory_expire(config, memory_id, reason, actor),
             tool_name="memory_expire",
+        )
+
+    @mcp.tool(name="memory_search")
+    def memory_search_tool(
+        query: str,
+        scope: str | None = None,
+        memory_type: str | None = None,
+        status: str | None = "active",
+        limit: int = 25,
+    ) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_search(config, query, scope, memory_type, status, limit),
+            tool_name="memory_search",
+        )
+
+    @mcp.tool(name="memory_hybrid_search")
+    def memory_hybrid_search_tool(
+        query: str,
+        scope: str | None = None,
+        memory_type: str | None = None,
+        status: str | None = "active",
+        limit: int = 25,
+    ) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_hybrid_search(config, query, scope, memory_type, status, limit),
+            tool_name="memory_hybrid_search",
+        )
+
+    @mcp.tool(name="memory_embedding_enqueue")
+    def memory_embedding_enqueue_tool(memory_id: int) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_embedding_enqueue(config, memory_id),
+            tool_name="memory_embedding_enqueue",
+        )
+
+    @mcp.tool(name="memory_embedding_status")
+    def memory_embedding_status_tool() -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_embedding_status(config),
+            tool_name="memory_embedding_status",
+        )
+
+    @mcp.tool(name="memory_edge_create")
+    def memory_edge_create_tool(
+        source_memory_id: int,
+        target_memory_id: int,
+        predicate: str,
+        relation_note: str = "",
+    ) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_edge_create(
+                config,
+                source_memory_id,
+                target_memory_id,
+                predicate,
+                relation_note,
+            ),
+            tool_name="memory_edge_create",
+        )
+
+    @mcp.tool(name="memory_edge_list")
+    def memory_edge_list_tool(
+        memory_id: int,
+        direction: str = "both",
+        predicate: str | None = None,
+        limit: int = 100,
+    ) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_edge_list(config, memory_id, direction, predicate, limit),
+            tool_name="memory_edge_list",
+        )
+
+    @mcp.tool(name="memory_edge_delete")
+    def memory_edge_delete_tool(edge_id: int) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _memory_edge_delete(config, edge_id),
+            tool_name="memory_edge_delete",
         )
 
     @mcp.tool(name="get_pending_memory_candidates")
@@ -199,6 +283,150 @@ def _memory_expire(
         return {"memory": memory_record_as_dict(record)}
 
 
+def _memory_search(
+    config: CoreServiceConfig,
+    query: str,
+    scope: str | None,
+    memory_type: str | None,
+    status: str | None,
+    limit: int,
+) -> dict[str, object]:
+    effective_scope = _normalize_optional_filter(scope)
+    effective_type = _normalize_optional_filter(memory_type)
+    effective_status = _normalize_optional_filter(status)
+    lim = coerce_limit(limit, maximum=100)
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        results = service.search_memories(
+            query=query,
+            scope=effective_scope,
+            memory_type=effective_type,
+            status=effective_status,
+            limit=lim,
+        )
+        return {
+            "results": [
+                {
+                    "memory": memory_record_as_dict(result.memory),
+                    "rank": result.rank,
+                    "snippet": result.snippet,
+                }
+                for result in results
+            ]
+        }
+
+
+def _memory_hybrid_search(
+    config: CoreServiceConfig,
+    query: str,
+    scope: str | None,
+    memory_type: str | None,
+    status: str | None,
+    limit: int,
+) -> dict[str, object]:
+    effective_scope = _normalize_optional_filter(scope)
+    effective_type = _normalize_optional_filter(memory_type)
+    effective_status = _normalize_optional_filter(status)
+    lim = coerce_limit(limit, maximum=100)
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        embedding_config = memory_embeddings.embedding_config_from_settings(config)
+        return hybrid_memory_search(
+            service,
+            query=query,
+            scope=effective_scope,
+            memory_type=effective_type,
+            status=effective_status,
+            limit=lim,
+            embedding_config=embedding_config,
+            embed=memory_embeddings.openrouter_embedder(embedding_config) if embedding_config is not None else None,
+        )
+
+
+def _memory_embedding_enqueue(config: CoreServiceConfig, memory_id: int) -> dict[str, object]:
+    if memory_embeddings.embedding_config_from_settings(config) is None:
+        raise InvalidInputError("memory embeddings require MINX_OPENROUTER_API_KEY")
+    mid = _coerce_memory_id(memory_id)
+    with scoped_connection(Path(config.db_path)) as conn:
+        job = enqueue_memory_embedding(conn, mid)
+        return {"job": _enrichment_job_as_dict(job)}
+
+
+def _memory_embedding_status(config: CoreServiceConfig) -> dict[str, object]:
+    with scoped_connection(Path(config.db_path)) as conn:
+        return {"status": memory_embedding_status(conn)}
+
+
+def _memory_edge_create(
+    config: CoreServiceConfig,
+    source_memory_id: int,
+    target_memory_id: int,
+    predicate: str,
+    relation_note: str,
+) -> dict[str, object]:
+    source_id = _coerce_memory_id(source_memory_id, field_name="source_memory_id")
+    target_id = _coerce_memory_id(target_memory_id, field_name="target_memory_id")
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        edge = service.create_memory_edge(
+            source_memory_id=source_id,
+            target_memory_id=target_id,
+            predicate=predicate,
+            relation_note=relation_note,
+            actor="user",
+        )
+        return {"edge": memory_edge_as_dict(edge)}
+
+
+def _memory_edge_list(
+    config: CoreServiceConfig,
+    memory_id: int,
+    direction: str,
+    predicate: str | None,
+    limit: int,
+) -> dict[str, object]:
+    mid = _coerce_memory_id(memory_id)
+    effective_predicate = _normalize_optional_filter(predicate)
+    lim = coerce_limit(limit, maximum=100)
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        edges = service.list_memory_edges(
+            mid,
+            direction=direction,
+            predicate=effective_predicate,
+            limit=lim,
+        )
+        return {"edges": [memory_edge_as_dict(edge) for edge in edges]}
+
+
+def _memory_edge_delete(config: CoreServiceConfig, edge_id: int) -> dict[str, object]:
+    eid = _coerce_memory_id(edge_id, field_name="edge_id")
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        return {"deleted": service.delete_memory_edge(eid)}
+
+
+def _enrichment_job_as_dict(job: EnrichmentJob) -> dict[str, object]:
+    return {
+        "id": job.id,
+        "job_type": job.job_type,
+        "subject_type": job.subject_type,
+        "subject_id": job.subject_id,
+        "payload_json": job.payload_json,
+        "status": job.status,
+        "priority": job.priority,
+        "attempts": job.attempts,
+        "max_attempts": job.max_attempts,
+        "available_at": job.available_at,
+        "locked_at": job.locked_at,
+        "completed_at": job.completed_at,
+        "last_error": job.last_error,
+        "result_json": job.result_json,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+    }
+
+
 def _get_pending_memory_candidates(
     config: CoreServiceConfig,
     scope: str | None,
@@ -222,11 +450,11 @@ def _normalize_optional_filter(value: str | None) -> str | None:
     return stripped or None
 
 
-def _coerce_memory_id(memory_id: int) -> int:
+def _coerce_memory_id(memory_id: int, *, field_name: str = "memory_id") -> int:
     if not isinstance(memory_id, int) or isinstance(memory_id, bool):
-        raise InvalidInputError("memory_id must be an integer")
+        raise InvalidInputError(f"{field_name} must be an integer")
     if memory_id < 1:
-        raise InvalidInputError("memory_id must be positive")
+        raise InvalidInputError(f"{field_name} must be positive")
     return memory_id
 
 

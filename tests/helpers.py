@@ -47,9 +47,14 @@ def call_server(server, tool_name: str, args: dict[str, object]) -> dict[str, ob
 class MinxTestConfig:
     """Minimal config accepted by ``create_core_server``."""
 
-    def __init__(self, db_path: Path, vault_path: Path) -> None:
+    def __init__(self, db_path: Path, vault_path: Path, *, openrouter_api_key: str | None = None) -> None:
         self.db_path = db_path
         self.vault_path = vault_path
+        self.openrouter_api_key = openrouter_api_key
+        self.embedding_model = "openai/text-embedding-3-small"
+        self.embedding_dimensions = None
+        self.embedding_request_timeout_s = 30.0
+        self.embedding_max_cost_microusd = 10_000
 
 
 class FinanceSeeder:

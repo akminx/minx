@@ -6,7 +6,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from sqlite3 import Connection
@@ -21,13 +21,25 @@ from minx_mcp.core.memory_payloads import (
     coerce_prior_payload_to_schema,
     validate_memory_payload,
 )
-from minx_mcp.core.secret_scanner import SecretVerdictKind, redact_secrets, scan_for_secrets
+from minx_mcp.core.memory_secret_scanning import (
+    MemorySecretScanResult,
+    merge_event_payload,
+    raise_secret_detected,
+    redaction_event_payload,
+    sanitize_existing_subject,
+    scan_event_reason,
+    scan_memory_input,
+    scan_payload_only,
+)
+from minx_mcp.core.secret_scanner import SecretVerdictKind, redact_secrets
 from minx_mcp.validation import require_non_empty
 
 logger = logging.getLogger(__name__)
 
 _ALLOWED_ACTORS = frozenset({"system", "detector", "user", "harness", "vault_sync"})
 _ALLOWED_STATUS = frozenset({"candidate", "active", "rejected", "expired"})
+_ALLOWED_EDGE_PREDICATES = frozenset({"supersedes", "contradicts", "cites"})
+_ALLOWED_EDGE_DIRECTIONS = frozenset({"incoming", "outgoing", "both"})
 
 REJECTED_MEMORY_TTL_DAYS = 30
 
@@ -85,55 +97,22 @@ class IngestProposalsReport:
 
 
 @dataclass(frozen=True)
-class SecretErrorLocation:
-    field: str
-    start: int
-    end: int
+class MemorySearchResult:
+    memory: MemoryRecord
+    rank: float
+    snippet: str
 
 
 @dataclass(frozen=True)
-class SecretAuditLocation:
-    field: str
-
-
-@dataclass(frozen=True)
-class MemorySecretScanResult:
-    verdict: SecretVerdictKind
-    memory_type: str
-    scope: str
-    subject: str
-    source: str
-    reason: str
-    payload: dict[str, object]
-    detected_kinds: tuple[str, ...]
-    error_locations: tuple[SecretErrorLocation, ...]
-    audit_locations: tuple[SecretAuditLocation, ...]
-
-
-@dataclass
-class _SecretScanAccumulator:
-    blocked: bool = False
-    redacted: bool = False
-    detected_kinds: set[str] = field(default_factory=set)
-    error_locations: list[SecretErrorLocation] = field(default_factory=list)
-    audit_fields: set[str] = field(default_factory=set)
-
-    def add_error(self, *, field: str, start: int, end: int, kind: str) -> None:
-        self.blocked = True
-        self.detected_kinds.add(kind)
-        self.error_locations.append(SecretErrorLocation(field=field, start=start, end=end))
-        self.audit_fields.add(field)
-
-    def add_redaction(self, *, field: str, kind: str) -> None:
-        self.redacted = True
-        self.detected_kinds.add(kind)
-        self.audit_fields.add(field)
-
-
-_REDACTED_MEMORY_TYPE = "[REDACTED_MEMORY_TYPE]"
-_REDACTED_SCOPE = "[REDACTED_SCOPE]"
-_REDACTED_SUBJECT = "[REDACTED_SUBJECT]"
-_REDACTED_EXISTING_SUBJECT = "[REDACTED_EXISTING_SUBJECT]"
+class MemoryEdge:
+    id: int
+    source_memory_id: int
+    target_memory_id: int
+    predicate: str
+    relation_note: str
+    actor: str
+    created_at: str
+    updated_at: str
 
 
 def _utc_reference_iso(now: datetime | None = None) -> str:
@@ -222,178 +201,6 @@ def _memory_fingerprint_input(
     return (memory_type, scope, subject, note, value_part)
 
 
-def _scan_memory_input(
-    *,
-    memory_type: str,
-    scope: str,
-    subject: str,
-    payload: dict[str, object],
-    source: str,
-    reason: str,
-    scan_payload_values: bool = True,
-) -> MemorySecretScanResult:
-    acc = _SecretScanAccumulator()
-    safe_memory_type = _scan_identity_field("memory_type", memory_type, _REDACTED_MEMORY_TYPE, acc)
-    safe_scope = _scan_identity_field("scope", scope, _REDACTED_SCOPE, acc)
-    safe_subject = _scan_identity_field("subject", subject, _REDACTED_SUBJECT, acc)
-    safe_source = _scan_redactable_field("source", source, acc)
-    safe_reason = _scan_redactable_field("reason", reason, acc)
-    safe_payload = _scan_payload_value(payload, "payload", acc, scan_values=scan_payload_values)
-    if acc.blocked:
-        verdict = SecretVerdictKind.BLOCK
-    elif acc.redacted:
-        verdict = SecretVerdictKind.REDACTED
-    else:
-        verdict = SecretVerdictKind.CLEAN
-    return MemorySecretScanResult(
-        verdict=verdict,
-        memory_type=safe_memory_type,
-        scope=safe_scope,
-        subject=safe_subject,
-        source=safe_source,
-        reason=safe_reason,
-        payload=cast(dict[str, object], safe_payload),
-        detected_kinds=tuple(sorted(acc.detected_kinds)),
-        error_locations=tuple(acc.error_locations),
-        audit_locations=tuple(SecretAuditLocation(field=field) for field in sorted(acc.audit_fields)),
-    )
-
-
-def _scan_payload_only(payload: dict[str, object], *, scan_payload_values: bool = True) -> MemorySecretScanResult:
-    return _scan_memory_input(
-        memory_type="memory",
-        scope="memory",
-        subject="memory",
-        payload=payload,
-        source="memory",
-        reason="",
-        scan_payload_values=scan_payload_values,
-    )
-
-
-def _scan_identity_field(
-    field: str,
-    value: str,
-    placeholder: str,
-    acc: _SecretScanAccumulator,
-) -> str:
-    verdict = scan_for_secrets(value)
-    if verdict.findings:
-        for finding in verdict.findings:
-            acc.add_error(field=field, start=finding.start, end=finding.end, kind=finding.kind)
-        return placeholder
-    return value
-
-
-def _scan_redactable_field(field: str, value: str, acc: _SecretScanAccumulator) -> str:
-    verdict = redact_secrets(value)
-    if verdict.verdict is SecretVerdictKind.BLOCK:
-        for finding in verdict.findings:
-            acc.add_error(field=field, start=finding.start, end=finding.end, kind=finding.kind)
-        return value
-    if verdict.verdict is SecretVerdictKind.REDACTED:
-        for finding in verdict.findings:
-            acc.add_redaction(field=field, kind=finding.kind)
-        return verdict.text
-    return value
-
-
-def _scan_payload_value(
-    value: object,
-    field: str,
-    acc: _SecretScanAccumulator,
-    *,
-    scan_values: bool,
-) -> object:
-    if isinstance(value, dict):
-        scanned: dict[str, object] = {}
-        for key, item in value.items():
-            key_text = str(key)
-            key_verdict = scan_for_secrets(key_text)
-            safe_key = key_text
-            key_field = f"{field}.{key_text}"
-            if key_verdict.findings:
-                safe_key = "[REDACTED_KEY]"
-                key_field = f"{field}.[REDACTED_KEY]"
-                for finding in key_verdict.findings:
-                    acc.add_error(field=key_field, start=finding.start, end=finding.end, kind=finding.kind)
-            scanned[safe_key] = _scan_payload_value(item, key_field, acc, scan_values=scan_values)
-        return scanned
-    if isinstance(value, list):
-        return [
-            _scan_payload_value(item, f"{field}[{index}]", acc, scan_values=scan_values)
-            for index, item in enumerate(value)
-        ]
-    if isinstance(value, str) and scan_values:
-        return _scan_redactable_field(field, value, acc)
-    return value
-
-
-def _raise_secret_detected(result: MemorySecretScanResult, *, surface: str = "memory") -> None:
-    raise InvalidInputError(
-        "Secret detected in memory input",
-        data={
-            "kind": "secret_detected",
-            "verdict": "block",
-            "surface": surface,
-            "detected_kinds": list(result.detected_kinds),
-            "locations": [
-                {"field": loc.field, "start": loc.start, "end": loc.end} for loc in result.error_locations
-            ],
-        },
-    )
-
-
-def _redaction_event_payload(*results: MemorySecretScanResult) -> dict[str, object] | None:
-    kinds = sorted(
-        {
-            kind
-            for result in results
-            for kind in result.detected_kinds
-            if result.verdict is not SecretVerdictKind.CLEAN
-        }
-    )
-    fields = sorted(
-        {
-            loc.field
-            for result in results
-            if result.verdict is SecretVerdictKind.REDACTED
-            for loc in result.audit_locations
-        }
-    )
-    if not kinds or not fields:
-        return None
-    return {"secret_redacted": {"detected_kinds": kinds, "fields": fields}}
-
-
-def _merge_event_payload(base: dict[str, object], *results: MemorySecretScanResult) -> dict[str, object]:
-    metadata = _redaction_event_payload(*results)
-    if metadata is None:
-        return base
-    return {**base, **metadata}
-
-
-def _scan_event_reason(reason: str) -> tuple[str, dict[str, object] | None]:
-    result = _scan_memory_input(
-        memory_type="memory",
-        scope="memory",
-        subject="memory",
-        payload={},
-        source="memory",
-        reason=reason,
-    )
-    if result.verdict is SecretVerdictKind.BLOCK:
-        _raise_secret_detected(result)
-    return result.reason, _redaction_event_payload(result)
-
-
-def _sanitize_existing_subject(subject: str) -> str:
-    verdict = scan_for_secrets(subject)
-    if verdict.findings:
-        return _REDACTED_EXISTING_SUBJECT
-    return subject
-
-
 class MemoryService(BaseService):
     """Persist memories and append lifecycle rows to ``memory_events``."""
 
@@ -429,7 +236,7 @@ class MemoryService(BaseService):
         src = require_non_empty("source", source)
         _validate_confidence(confidence)
         _validate_actor(actor)
-        raw_scan = _scan_memory_input(
+        raw_scan = scan_memory_input(
             memory_type=mt,
             scope=sc,
             subject=sj,
@@ -439,9 +246,9 @@ class MemoryService(BaseService):
             scan_payload_values=False,
         )
         if raw_scan.verdict is SecretVerdictKind.BLOCK:
-            _raise_secret_detected(raw_scan)
+            raise_secret_detected(raw_scan)
         payload = validate_memory_payload(mt, raw_scan.payload)
-        validated_scan = _scan_memory_input(
+        validated_scan = scan_memory_input(
             memory_type=raw_scan.memory_type,
             scope=raw_scan.scope,
             subject=raw_scan.subject,
@@ -450,7 +257,7 @@ class MemoryService(BaseService):
             reason=raw_scan.reason,
         )
         if validated_scan.verdict is SecretVerdictKind.BLOCK:
-            _raise_secret_detected(validated_scan)
+            raise_secret_detected(validated_scan)
         status: str = "active" if confidence >= 0.8 else "candidate"
         fp = content_fingerprint(
             *_memory_fingerprint_input(
@@ -472,7 +279,7 @@ class MemoryService(BaseService):
             actor=actor,
             emit_promoted=status == "active",
             fingerprint=fp,
-            created_event_payload=_redaction_event_payload(raw_scan, validated_scan),
+            created_event_payload=redaction_event_payload(raw_scan, validated_scan),
         )
 
     def list_memories(
@@ -507,11 +314,172 @@ class MemoryService(BaseService):
         rows = self.conn.execute(sql, params).fetchall()
         return [_row_to_record(row) for row in rows]
 
+    def search_memories(
+        self,
+        *,
+        query: str,
+        scope: str | None = None,
+        memory_type: str | None = None,
+        status: str | None = "active",
+        limit: int = 25,
+    ) -> list[MemorySearchResult]:
+        cleaned_query = require_non_empty("query", query)
+        _validate_search_limit(limit)
+        clauses = ["memory_fts MATCH ?"]
+        params: list[object] = [cleaned_query]
+        if status is not None:
+            if status not in _ALLOWED_STATUS:
+                raise InvalidInputError(f"status must be one of {sorted(_ALLOWED_STATUS)}")
+            clauses.append("memories.status = ?")
+            params.append(status)
+        if status != "expired":
+            clauses.append("(memories.expires_at IS NULL OR memories.expires_at > ?)")
+            params.append(_utc_reference_iso(None))
+        if memory_type is not None:
+            clauses.append("memories.memory_type = ?")
+            params.append(require_non_empty("memory_type", memory_type))
+        if scope is not None:
+            clauses.append("memories.scope = ?")
+            params.append(require_non_empty("scope", scope))
+        sql = f"""
+            SELECT
+                memories.*,
+                bm25(memory_fts) AS search_rank,
+                snippet(memory_fts, -1, '<mark>', '</mark>', '...', 12) AS search_snippet
+            FROM memory_fts
+            JOIN memories ON memories.id = memory_fts.rowid
+            WHERE {' AND '.join(clauses)}
+            ORDER BY search_rank ASC, memories.updated_at DESC, memories.id DESC
+            LIMIT ?
+        """  # noqa: S608 - clauses are static fragments; all values are bound params.
+        params.append(limit)
+        try:
+            rows = self.conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError as exc:
+            raise InvalidInputError("query is not valid FTS5 syntax") from exc
+        results: list[MemorySearchResult] = []
+        for row in rows:
+            try:
+                memory = _row_to_record(row)
+            except InvalidInputError as exc:
+                if "stored payload_json" not in str(exc):
+                    raise
+                continue
+            results.append(
+                MemorySearchResult(
+                    memory=memory,
+                    rank=float(row["search_rank"]),
+                    snippet=str(row["search_snippet"] or ""),
+                )
+            )
+        return results
+
+    def create_memory_edge(
+        self,
+        *,
+        source_memory_id: int,
+        target_memory_id: int,
+        predicate: str,
+        relation_note: str = "",
+        actor: str = "system",
+    ) -> MemoryEdge:
+        _validate_actor(actor)
+        source_id = _validate_positive_int("source_memory_id", source_memory_id)
+        target_id = _validate_positive_int("target_memory_id", target_memory_id)
+        if source_id == target_id:
+            raise InvalidInputError("source_memory_id and target_memory_id must differ")
+        pred = _validate_edge_predicate(predicate)
+        note = _scan_edge_relation_note(relation_note)
+        self._require_memory_exists(source_id)
+        self._require_memory_exists(target_id)
+        try:
+            cur = self.conn.execute(
+                """
+                INSERT INTO memory_edges (
+                    source_memory_id, target_memory_id, predicate, relation_note, actor
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (source_id, target_id, pred, note, actor),
+            )
+            self.conn.commit()
+        except sqlite3.IntegrityError as exc:
+            self.conn.rollback()
+            raise ConflictError(
+                "memory edge already exists",
+                data={
+                    "conflict_kind": "memory_edge",
+                    "source_memory_id": source_id,
+                    "target_memory_id": target_id,
+                    "predicate": pred,
+                },
+            ) from exc
+        if cur.lastrowid is None:
+            raise RuntimeError("memory edge insert did not return a row id")
+        edge_id = int(cur.lastrowid)
+        edge = self.get_memory_edge(edge_id)
+        if edge is None:
+            raise RuntimeError("memory edge insert did not return a readable row")
+        return edge
+
+    def get_memory_edge(self, edge_id: int) -> MemoryEdge | None:
+        eid = _validate_positive_int("edge_id", edge_id)
+        row = self.conn.execute("SELECT * FROM memory_edges WHERE id = ?", (eid,)).fetchone()
+        if row is None:
+            return None
+        return _row_to_edge(row)
+
+    def list_memory_edges(
+        self,
+        memory_id: int,
+        *,
+        direction: str = "both",
+        predicate: str | None = None,
+        limit: int = 100,
+    ) -> list[MemoryEdge]:
+        mid = _validate_positive_int("memory_id", memory_id)
+        _validate_edge_direction(direction)
+        _validate_search_limit(limit)
+        clauses: list[str] = []
+        params: list[object] = []
+        if direction == "incoming":
+            clauses.append("target_memory_id = ?")
+            params.append(mid)
+        elif direction == "outgoing":
+            clauses.append("source_memory_id = ?")
+            params.append(mid)
+        else:
+            clauses.append("(source_memory_id = ? OR target_memory_id = ?)")
+            params.extend((mid, mid))
+        if predicate is not None:
+            clauses.append("predicate = ?")
+            params.append(_validate_edge_predicate(predicate))
+        sql = f"""
+            SELECT *
+            FROM memory_edges
+            WHERE {' AND '.join(clauses)}
+            ORDER BY id DESC
+            LIMIT ?
+        """  # noqa: S608 - clauses are fixed fragments; values are bound params.
+        params.append(limit)
+        rows = self.conn.execute(sql, params).fetchall()
+        return [_row_to_edge(row) for row in rows]
+
+    def delete_memory_edge(self, edge_id: int) -> bool:
+        eid = _validate_positive_int("edge_id", edge_id)
+        cur = self.conn.execute("DELETE FROM memory_edges WHERE id = ?", (eid,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
     def get_memory(self, memory_id: int) -> MemoryRecord:
         row = self.conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"Memory {memory_id} not found")
         return _row_to_record(row)
+
+    def _require_memory_exists(self, memory_id: int) -> None:
+        row = self.conn.execute("SELECT 1 FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        if row is None:
+            raise NotFoundError(f"Memory {memory_id} not found")
 
     def confirm_memory(self, memory_id: int, *, actor: str = "user") -> MemoryRecord:
         _validate_actor(actor)
@@ -589,7 +557,7 @@ class MemoryService(BaseService):
                 if self.conn.in_transaction:
                     self.conn.rollback()
                 _raise_memory_status_conflict(memory_id, expected_status)
-            safe_reason, redaction_payload = _scan_event_reason(reason)
+            safe_reason, redaction_payload = scan_event_reason(reason)
             event_payload: dict[str, object] = {"reason": safe_reason}
             if redaction_payload is not None:
                 event_payload = {**event_payload, **redaction_payload}
@@ -649,7 +617,7 @@ class MemoryService(BaseService):
                 if self.conn.in_transaction:
                     self.conn.rollback()
                 _raise_memory_status_conflict(memory_id, expected_status)
-            safe_reason, redaction_payload = _scan_event_reason(reason)
+            safe_reason, redaction_payload = scan_event_reason(reason)
             event_payload: dict[str, object] = {"reason": safe_reason}
             if redaction_payload is not None:
                 event_payload = {**event_payload, **redaction_payload}
@@ -676,13 +644,13 @@ class MemoryService(BaseService):
         if expected_status in {"rejected", "expired"}:
             raise InvalidInputError("Cannot update payload for rejected or expired memories")
         memory_type = str(row["memory_type"])
-        raw_scan = _scan_payload_only(dict(payload), scan_payload_values=False)
+        raw_scan = scan_payload_only(dict(payload), scan_payload_values=False)
         if raw_scan.verdict is SecretVerdictKind.BLOCK:
-            _raise_secret_detected(raw_scan)
+            raise_secret_detected(raw_scan)
         payload = validate_memory_payload(memory_type, raw_scan.payload)
-        validated_scan = _scan_payload_only(payload)
+        validated_scan = scan_payload_only(payload)
         if validated_scan.verdict is SecretVerdictKind.BLOCK:
-            _raise_secret_detected(validated_scan)
+            raise_secret_detected(validated_scan)
         payload_json = json.dumps(validated_scan.payload, sort_keys=True)
         # Slice 6g: recompute fingerprint over the new payload. The row's
         # (memory_type, scope, subject) do not change on update_payload,
@@ -716,7 +684,7 @@ class MemoryService(BaseService):
                 self.conn,
                 memory_id,
                 "payload_updated",
-                _merge_event_payload({"payload": validated_scan.payload}, raw_scan, validated_scan),
+                merge_event_payload({"payload": validated_scan.payload}, raw_scan, validated_scan),
                 actor,
             )
             self.conn.commit()
@@ -893,7 +861,7 @@ class MemoryService(BaseService):
                 """,
                 (proposal.memory_type, proposal.scope, proposal.subject),
             ).fetchone()
-            raw_scan = _scan_memory_input(
+            raw_scan = scan_memory_input(
                 memory_type=proposal.memory_type,
                 scope=proposal.scope,
                 subject=proposal.subject,
@@ -973,7 +941,7 @@ class MemoryService(BaseService):
                     )
                 )
                 continue
-            validated_scan = _scan_memory_input(
+            validated_scan = scan_memory_input(
                 memory_type=raw_scan.memory_type,
                 scope=raw_scan.scope,
                 subject=raw_scan.subject,
@@ -1074,14 +1042,27 @@ class MemoryService(BaseService):
                 and fp_match_status in ("candidate", "active")
                 and not fp_match_same_triple
             ):
-                rec = self._content_equivalence_merge(
-                    fp_match=fp_match,
-                    proposal=safe_proposal,
-                    validated_payload=validated_scan.payload,
-                    actor=actor,
-                    stored_fingerprint=fp,
-                    secret_scan_results=(raw_scan, validated_scan),
-                )
+                try:
+                    rec = self._content_equivalence_merge(
+                        fp_match=fp_match,
+                        proposal=safe_proposal,
+                        validated_payload=validated_scan.payload,
+                        actor=actor,
+                        stored_fingerprint=fp,
+                        secret_scan_results=(raw_scan, validated_scan),
+                    )
+                except InvalidInputError as exc:
+                    if not _is_secret_detected_error(exc):
+                        raise
+                    failures.append(
+                        MemoryProposalFailure(
+                            memory_type=safe_proposal.memory_type,
+                            scope=safe_proposal.scope,
+                            subject=safe_proposal.subject,
+                            reason="secret_detected",
+                        )
+                    )
+                    continue
                 out.append(rec)
                 continue
 
@@ -1100,7 +1081,7 @@ class MemoryService(BaseService):
                     actor=actor,
                     emit_promoted=status == "active",
                     fingerprint=fp,
-                    created_event_payload=_redaction_event_payload(raw_scan, validated_scan),
+                    created_event_payload=redaction_event_payload(raw_scan, validated_scan),
                 )
                 out.append(rec)
                 continue
@@ -1123,9 +1104,19 @@ class MemoryService(BaseService):
                     safe_proposal.memory_type, prior_payload
                 )
                 merged: dict[str, object] = {**prior_payload_clean, **validated_scan.payload}
-                merged_scan = _scan_payload_only(merged)
+                merged_scan = scan_payload_only(merged)
                 if merged_scan.verdict is SecretVerdictKind.BLOCK:
-                    _raise_secret_detected(merged_scan)
+                    if self.conn.in_transaction:
+                        self.conn.rollback()
+                    failures.append(
+                        MemoryProposalFailure(
+                            memory_type=safe_proposal.memory_type,
+                            scope=safe_proposal.scope,
+                            subject=safe_proposal.subject,
+                            reason="secret_detected",
+                        )
+                    )
+                    continue
                 merged = merged_scan.payload
                 new_confidence = max(float(row["confidence"]), float(proposal.confidence))
                 new_status = prior_status
@@ -1186,7 +1177,7 @@ class MemoryService(BaseService):
                     self.conn,
                     memory_id,
                     "payload_updated",
-                    _merge_event_payload(
+                    merge_event_payload(
                         {"payload": merged, "prior_confidence": float(row["confidence"])},
                         raw_scan,
                         validated_scan,
@@ -1245,9 +1236,9 @@ class MemoryService(BaseService):
                 proposal.memory_type, prior_payload
             )
             merged: dict[str, object] = {**prior_payload_clean, **validated_payload}
-            merged_scan = _scan_payload_only(merged)
+            merged_scan = scan_payload_only(merged)
             if merged_scan.verdict is SecretVerdictKind.BLOCK:
-                _raise_secret_detected(merged_scan)
+                raise_secret_detected(merged_scan)
             merged = merged_scan.payload
             new_confidence = max(
                 float(fp_match["confidence"]), float(proposal.confidence)
@@ -1328,7 +1319,7 @@ class MemoryService(BaseService):
                 self.conn,
                 memory_id,
                 "payload_updated",
-                _merge_event_payload(
+                merge_event_payload(
                     {
                         "payload": merged,
                         "prior_confidence": float(fp_match["confidence"]),
@@ -1450,7 +1441,7 @@ class MemoryService(BaseService):
                         "memory_type": memory_type,
                         "scope": scope,
                         "subject": subject,
-                        "existing_subject": _sanitize_existing_subject(str(fp_match["subject"])),
+                        "existing_subject": sanitize_existing_subject(str(fp_match["subject"])),
                     },
                 ) from exc
             # Unknown violation — re-raise so it surfaces as INTERNAL_ERROR
@@ -1491,6 +1482,11 @@ def _parse_payload_json(raw: str) -> dict[str, object]:
     return cast(dict[str, object], data)
 
 
+def _is_secret_detected_error(exc: InvalidInputError) -> bool:
+    data = exc.data
+    return isinstance(data, dict) and data.get("kind") == "secret_detected"
+
+
 def _row_to_record(row: Any) -> MemoryRecord:
     return MemoryRecord(
         id=int(row["id"]),
@@ -1506,6 +1502,19 @@ def _row_to_record(row: Any) -> MemoryRecord:
         updated_at=str(row["updated_at"]),
         last_confirmed_at=row["last_confirmed_at"] if row["last_confirmed_at"] is not None else None,
         expires_at=row["expires_at"] if row["expires_at"] is not None else None,
+    )
+
+
+def _row_to_edge(row: Any) -> MemoryEdge:
+    return MemoryEdge(
+        id=int(row["id"]),
+        source_memory_id=int(row["source_memory_id"]),
+        target_memory_id=int(row["target_memory_id"]),
+        predicate=str(row["predicate"]),
+        relation_note=str(row["relation_note"]),
+        actor=str(row["actor"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
     )
 
 
@@ -1529,6 +1538,52 @@ def _validate_limit(limit: int) -> None:
         raise InvalidInputError("limit must be between 1 and 500")
 
 
+def _validate_search_limit(limit: int) -> None:
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        raise InvalidInputError("limit must be an integer")
+    if limit < 1 or limit > 100:
+        raise InvalidInputError("limit must be between 1 and 100")
+
+
+def _validate_positive_int(field: str, value: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise InvalidInputError(f"{field} must be an integer")
+    if value < 1:
+        raise InvalidInputError(f"{field} must be positive")
+    return value
+
+
+def _validate_edge_predicate(predicate: str) -> str:
+    pred = require_non_empty("predicate", predicate)
+    if pred not in _ALLOWED_EDGE_PREDICATES:
+        raise InvalidInputError(f"predicate must be one of {sorted(_ALLOWED_EDGE_PREDICATES)}")
+    return pred
+
+
+def _validate_edge_direction(direction: str) -> None:
+    if direction not in _ALLOWED_EDGE_DIRECTIONS:
+        raise InvalidInputError(f"direction must be one of {sorted(_ALLOWED_EDGE_DIRECTIONS)}")
+
+
+def _scan_edge_relation_note(note: str) -> str:
+    verdict = redact_secrets(note)
+    if verdict.verdict is SecretVerdictKind.BLOCK:
+        raise InvalidInputError(
+            "Secret detected in memory edge input",
+            data={
+                "kind": "secret_detected",
+                "verdict": "block",
+                "surface": "memory_graph",
+                "detected_kinds": sorted({finding.kind for finding in verdict.findings}),
+                "locations": [
+                    {"field": "relation_note", "start": finding.start, "end": finding.end}
+                    for finding in verdict.findings
+                ],
+            },
+        )
+    return verdict.text
+
+
 def memory_record_as_dict(record: MemoryRecord) -> dict[str, object]:
     return {
         "id": record.id,
@@ -1544,4 +1599,17 @@ def memory_record_as_dict(record: MemoryRecord) -> dict[str, object]:
         "updated_at": record.updated_at,
         "last_confirmed_at": record.last_confirmed_at,
         "expires_at": record.expires_at,
+    }
+
+
+def memory_edge_as_dict(edge: MemoryEdge) -> dict[str, object]:
+    return {
+        "id": edge.id,
+        "source_memory_id": edge.source_memory_id,
+        "target_memory_id": edge.target_memory_id,
+        "predicate": edge.predicate,
+        "relation_note": edge.relation_note,
+        "actor": edge.actor,
+        "created_at": edge.created_at,
+        "updated_at": edge.updated_at,
     }

@@ -111,6 +111,22 @@ PLAYBOOK_REGISTRY: tuple[PlaybookDefinition, ...] = (
         conditions_description="Run daily; only act when trajectory indicates attention needed.",
         requires_confirmation=True,
     ),
+    PlaybookDefinition(
+        id="enrichment_sweep",
+        name="Enrichment Queue Sweep",
+        description="Process bounded background enrichment jobs and surface queue health.",
+        recommended_schedule="*/15 * * * *",
+        required_tools=(
+            "core.enrichment_sweep",
+            "core.enrichment_status",
+            "core.start_playbook_run",
+            "core.complete_playbook_run",
+        ),
+        conditions_description=(
+            "Run periodically to keep asynchronous memory enrichment moving without blocking writes."
+        ),
+        requires_confirmation=False,
+    ),
 )
 
 

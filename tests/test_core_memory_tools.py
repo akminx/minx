@@ -37,6 +37,16 @@ def test_memory_tools_round_trip(tmp_path: Path) -> None:
         "memory_confirm",
         "memory_reject",
         "memory_expire",
+        "memory_search",
+        "memory_hybrid_search",
+        "memory_embedding_enqueue",
+        "memory_embedding_status",
+        "memory_edge_create",
+        "memory_edge_list",
+        "memory_edge_delete",
+        "enrichment_sweep",
+        "enrichment_status",
+        "enrichment_retry_dead_letter",
         "get_pending_memory_candidates",
         "vault_scan",
         "vault_reconcile_memories",
@@ -239,6 +249,99 @@ def test_memory_expire_tool_uses_system_actor_by_default(tmp_path: Path) -> None
         conn.close()
     assert row is not None
     assert row[0] == "system"
+
+
+def test_memory_search_tool_returns_ranked_results(tmp_path: Path) -> None:
+    db_path = tmp_path / "search.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    create_fn = get_tool(server, "memory_create").fn
+    search_fn = get_tool(server, "memory_search").fn
+
+    created = create_fn(
+        "preference",
+        "core",
+        "coffee",
+        0.95,
+        {"value": "prefers espresso after training"},
+        "user",
+        "manual",
+    )
+    assert created["success"] is True
+
+    searched = search_fn("espresso", None, None, "active", 10)
+
+    assert searched["success"] is True
+    assert searched["data"]["results"][0]["memory"]["subject"] == "coffee"
+    assert "espresso" in searched["data"]["results"][0]["snippet"].lower()
+    assert isinstance(searched["data"]["results"][0]["rank"], float)
+
+
+def test_memory_search_tool_invalid_inputs_return_invalid_input(tmp_path: Path) -> None:
+    db_path = tmp_path / "invalid-search.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    search_fn = get_tool(server, "memory_search").fn
+
+    blank = search_fn("   ", None, None, "active", 10)
+    bad_limit = search_fn("coffee", None, None, "active", 0)
+
+    assert blank["success"] is False
+    assert blank["error_code"] == "INVALID_INPUT"
+    assert bad_limit["success"] is False
+    assert bad_limit["error_code"] == "INVALID_INPUT"
+
+
+def test_memory_edge_tools_round_trip(tmp_path: Path) -> None:
+    db_path = tmp_path / "edge-tools.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    create_memory = get_tool(server, "memory_create").fn
+    create_edge = get_tool(server, "memory_edge_create").fn
+    list_edges = get_tool(server, "memory_edge_list").fn
+    delete_edge = get_tool(server, "memory_edge_delete").fn
+
+    source = create_memory("preference", "core", "new", 0.95, {"value": "new"}, "user", "")
+    target = create_memory("preference", "core", "old", 0.95, {"value": "old"}, "user", "")
+    assert source["success"] is True
+    assert target["success"] is True
+
+    created = create_edge(
+        source["data"]["memory"]["id"],
+        target["data"]["memory"]["id"],
+        "supersedes",
+        "newer version",
+    )
+
+    assert created["success"] is True
+    edge_id = created["data"]["edge"]["id"]
+    listed = list_edges(source["data"]["memory"]["id"], "outgoing", None, 10)
+    assert listed["success"] is True
+    assert [edge["id"] for edge in listed["data"]["edges"]] == [edge_id]
+    deleted = delete_edge(edge_id)
+    assert deleted["success"] is True
+    assert deleted["data"] == {"deleted": True}
+
+
+def test_memory_edge_create_invalid_predicate_returns_invalid_input(tmp_path: Path) -> None:
+    db_path = tmp_path / "edge-invalid.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    create_memory = get_tool(server, "memory_create").fn
+    create_edge = get_tool(server, "memory_edge_create").fn
+
+    source = create_memory("preference", "core", "source", 0.95, {"value": "source"}, "user", "")
+    target = create_memory("preference", "core", "target", 0.95, {"value": "target"}, "user", "")
+
+    result = create_edge(
+        source["data"]["memory"]["id"],
+        target["data"]["memory"]["id"],
+        "explains",
+        "",
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
 
 
 def test_memory_create_duplicate_live_triple_returns_conflict(tmp_path: Path) -> None:

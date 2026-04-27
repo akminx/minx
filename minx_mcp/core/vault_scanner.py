@@ -9,10 +9,10 @@ from sqlite3 import Connection
 
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.core.memory_payloads import validate_memory_payload
-from minx_mcp.core.memory_service import (
-    _raise_secret_detected,
-    _redaction_event_payload,
-    _scan_memory_input,
+from minx_mcp.core.memory_secret_scanning import (
+    raise_secret_detected,
+    redaction_event_payload,
+    scan_memory_input,
 )
 from minx_mcp.core.secret_scanner import SecretVerdictKind, scan_for_secrets
 from minx_mcp.core.vault_memory_frontmatter import (
@@ -406,7 +406,7 @@ class VaultScanner:
         try:
             identity = parse_memory_identity(doc.frontmatter)
             payload = parse_memory_payload(doc.frontmatter, allow_implicit=True)
-            raw_scan = _scan_memory_input(
+            raw_scan = scan_memory_input(
                 memory_type=identity.memory_type,
                 scope=identity.scope,
                 subject=identity.subject,
@@ -416,9 +416,9 @@ class VaultScanner:
                 scan_payload_values=False,
             )
             if raw_scan.verdict is SecretVerdictKind.BLOCK:
-                _raise_secret_detected(raw_scan)
+                raise_secret_detected(raw_scan)
             payload = validate_memory_payload(raw_scan.memory_type, raw_scan.payload)
-            validated_scan = _scan_memory_input(
+            validated_scan = scan_memory_input(
                 memory_type=raw_scan.memory_type,
                 scope=raw_scan.scope,
                 subject=raw_scan.subject,
@@ -427,10 +427,10 @@ class VaultScanner:
                 reason=raw_scan.reason,
             )
             if validated_scan.verdict is SecretVerdictKind.BLOCK:
-                _raise_secret_detected(validated_scan)
+                raise_secret_detected(validated_scan)
             payload = validated_scan.payload
             reason = validated_scan.reason
-            redaction_payload = _redaction_event_payload(raw_scan, validated_scan)
+            redaction_payload = redaction_event_payload(raw_scan, validated_scan)
         except InvalidInputError as exc:
             warnings.append(f"{doc.relative_path}: invalid minx-memory frontmatter: {exc}")
             # Current file no longer satisfies the sync contract. Do not leave

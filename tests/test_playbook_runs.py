@@ -121,6 +121,15 @@ def test_start_and_complete_playbook_run_roundtrip(tmp_path: Path) -> None:
     assert row["result_json"] == {"ok": True}
 
 
+def test_playbook_registry_includes_enrichment_sweep() -> None:
+    payload = playbook_api.playbook_registry_payload()
+    playbooks = {item["id"]: item for item in payload["playbooks"]}
+
+    assert "enrichment_sweep" in playbooks
+    assert "core.enrichment_sweep" in playbooks["enrichment_sweep"]["required_tools"]
+    assert "core.enrichment_status" in playbooks["enrichment_sweep"]["required_tools"]
+
+
 def test_complete_playbook_run_condition_miss_records_skipped_state(tmp_path: Path) -> None:
     db_path = tmp_path / "m.db"
     get_connection(db_path).close()

@@ -1,7 +1,7 @@
 # Slice 6h: Secret Scanner Primitive + Memory/Vault Write Gate
 
 **Date:** 2026-04-24
-**Status:** Draft v4 — revised after third adversarial review
+**Status:** Implemented 2026-04-27
 **Depends on:** Slice 6g shipped: shared content fingerprint primitive and memory write-path dedup
 **Related docs:**
 
@@ -9,7 +9,8 @@
 - `docs/superpowers/specs/2026-04-22-slice6g-content-fingerprint-dedup.md` — template for primitive/spec discipline
 - `minx_mcp/core/fingerprint.py` — leaf primitive precedent
 - `minx_mcp/core/memory_service.py` — memory write paths: `create_memory`, `update_payload`, `ingest_proposals`
-- `minx_mcp/vault_writer.py` — vault frontmatter write path
+- `minx_mcp/core/memory_secret_scanning.py` — public memory-policy integration helpers shared by memory service, vault scanner, and vault reconciler
+- `minx_mcp/vault_writer.py` — vault frontmatter and markdown body write paths
 
 ## 0) What Changed In v4
 
@@ -40,12 +41,12 @@ v3 fixes the remaining blockers from the second adversarial review:
 
 v2 fixed the blocking issues from the first adversarial review:
 
-- Replaces the proposed new `secret_redacted` event type with a `secret_redacted` metadata field on existing allowed event types (`created` and `payload_updated`). This avoids a migration-number conflict with Slice 9's reserved `021_investigations.sql` and respects the current `memory_events.event_type` CHECK constraint.
+- Replaces the proposed new `secret_redacted` event type with a `secret_redacted` metadata field on existing allowed event types (`created` and `payload_updated`). This avoids adding a migration for 6h and respects the current `memory_events.event_type` CHECK constraint.
 - Scans persisted identifier fields (`memory_type`, `scope`, `subject`) block-only before any proposal logging, so secret-bearing rejected/invalid proposals cannot leak through `MemoryProposalFailure` or snapshot warnings.
 - Removes secret-derived redaction fingerprints from persisted content. Redactions use `[REDACTED:<kind>]`.
 - Defines exact scanner API semantics: `scan_for_secrets` reports findings without mutation; `redact_secrets` performs redaction only when every finding is redactable.
 - Changes audit metadata to field-level locations only. Original offsets are allowed only in blocked `InvalidInputError` responses where the caller already supplied the secret-bearing text.
-- Scans vault frontmatter keys block-only and scans the exact serialized scalar text for values.
+- Scans vault frontmatter keys block-only, scans the exact serialized scalar text for values, and blocks secret-shaped markdown body writes.
 
 ### v1 archive
 
@@ -53,7 +54,7 @@ v1 defines the Slice 6h boundary before implementation:
 
 - Add a stdlib-only, leaf secret-scanner primitive at `minx_mcp/core/secret_scanner.py`.
 - Gate synchronous memory writes before content can reach the database or later enrichment surfaces.
-- Gate vault frontmatter writes, with a stricter block-only policy for user-authored vault metadata.
+- Gate vault frontmatter and markdown body writes, with a stricter block-only policy for user-authored vault content.
 - Define a typed verdict model (`clean` / `redacted` / `block`) and the `InvalidInputError.data` shape for blocked writes.
 - Add redaction audit metadata to existing memory events without storing raw secrets.
 - Add a one-shot existing-data scanner that reports already-persisted memory secrets without auto-mutating historical rows.
@@ -62,18 +63,19 @@ This spec intentionally stays design-only. No implementation code is touched unt
 
 ## 1) Goal
 
-Introduce a shared secret-scanner primitive and hook it into the current synchronous write boundaries so credentials cannot be persisted into memory payloads, memory subjects, or vault frontmatter before future enrichment queues and embeddings ship data to OpenRouter.
+Introduce a shared secret-scanner primitive and hook it into the current synchronous write boundaries so credentials cannot be persisted into memory payloads, memory subjects, vault frontmatter, or vault markdown bodies before future enrichment queues and embeddings ship data to OpenRouter.
 
 The concrete outcome for Slice 6h:
 
 - New module `minx_mcp/core/secret_scanner.py` with `scan_for_secrets(text: str) -> ScanVerdict` and `redact_secrets(text: str) -> ScanVerdict`.
 - `MemoryService.create_memory`, `MemoryService.update_payload`, and `MemoryService.ingest_proposals` scan persisted identifiers, reason/source, and payload text fields before writing.
 - `VaultWriter.replace_frontmatter` / `stage_replace_frontmatter` scan serialized frontmatter values before staging the markdown write.
+- `VaultWriter.write_markdown` and `VaultWriter.replace_section` block secret-shaped markdown body text before touching vault files.
 - Block verdicts raise `InvalidInputError` with structured data and no raw secret material.
 - Redacted memory writes are allowed, persisted with redacted values, and add `secret_redacted` metadata to the existing `created` or `payload_updated` event.
 - A one-shot `scripts/scan_memory_for_secrets.py` scans existing memory rows and exits non-zero if secrets are found.
 
-Slice 6h does not add embeddings, enrichment queue behavior, a new database table, a migration, vault body scanning, or a public MCP tool by default.
+Slice 6h does not add embeddings, enrichment queue behavior, a new database table, a migration, historical vault scanning, or a public MCP tool by default.
 
 ## 2) Boundary
 
@@ -169,15 +171,17 @@ def redact_secrets(text: str) -> ScanVerdict:
 
 The detector set is exactly the repo-wide hardcoded-credentials recognition list, implemented as anchored or bounded regexes with tests. The spec intentionally describes patterns without embedding complete credential-looking literals.
 
-| Kind | Detection rule | Default policy |
-| ---- | -------------- | -------------- |
-| `aws_access_key_id` | AWS access-key prefixes from the workspace rule followed by the expected uppercase alphanumeric body length | redacted on redactable memory fields; block on memory identity fields and vault frontmatter |
-| `stripe_key` | Stripe public/secret live/test prefixes followed by a token body | redacted on redactable memory fields; block on memory identity fields and vault frontmatter |
-| `google_api_key` | Google API key prefix followed by the documented token body length | redacted on redactable memory fields; block on memory identity fields and vault frontmatter |
-| `github_token` | GitHub token prefixes followed by a token body | redacted on redactable memory fields; block on memory identity fields and vault frontmatter |
-| `jwt` | Three base64url dot-separated sections beginning with a JWT header prefix | redacted on redactable memory fields; block on memory identity fields and vault frontmatter |
-| `private_key` | PEM private-key block from a `BEGIN PRIVATE KEY`-style marker through its matching `END PRIVATE KEY`-style marker | block everywhere |
-| `credential_url` | URL with userinfo containing both username and password before `@` | redacted on redactable memory fields; block on memory identity fields and vault frontmatter |
+
+| Kind                | Detection rule                                                                                                    | Default policy                                                                              |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `aws_access_key_id` | AWS access-key prefixes from the workspace rule followed by the expected uppercase alphanumeric body length       | redacted on redactable memory fields; block on memory identity fields and vault writes      |
+| `stripe_key`        | Stripe public/secret live/test prefixes followed by a token body                                                  | redacted on redactable memory fields; block on memory identity fields and vault writes      |
+| `google_api_key`    | Google API key prefix followed by the documented token body length                                                | redacted on redactable memory fields; block on memory identity fields and vault writes      |
+| `github_token`      | GitHub token prefixes followed by a token body                                                                    | redacted on redactable memory fields; block on memory identity fields and vault writes      |
+| `jwt`               | Three base64url dot-separated sections beginning with a JWT header prefix                                         | redacted on redactable memory fields; block on memory identity fields and vault writes      |
+| `private_key`       | PEM private-key block from a `BEGIN PRIVATE KEY`-style marker through its matching `END PRIVATE KEY`-style marker | block everywhere                                                                            |
+| `credential_url`    | URL with userinfo containing both username and password before `@`                                                | redacted on redactable memory fields; block on memory identity fields and vault writes      |
+
 
 All regexes use bounded character classes and explicit lengths where the credential family has a stable length. No detector uses nested unbounded quantifiers. The private-key detector uses non-greedy matching across newlines with an upper bound so a malformed note cannot trigger catastrophic scanning over an entire vault file.
 
@@ -228,7 +232,7 @@ class MemorySecretScanResult:
     audit_locations: Sequence[SecretAuditLocation]
 
 
-def _scan_memory_input(
+def scan_memory_input(
     *,
     memory_type: str,
     scope: str,
@@ -240,7 +244,7 @@ def _scan_memory_input(
     """Return redacted copies plus field-aware locations for memory integration."""
 ```
 
-`MemorySecretScanResult`, `SecretErrorLocation`, `SecretAuditLocation`, and `_scan_memory_input` live in `minx_mcp/core/memory_service.py` or another non-leaf memory integration module. They import the primitive from `minx_mcp.core.secret_scanner`; they are not part of the leaf `secret_scanner` export surface.
+`MemorySecretScanResult`, `SecretErrorLocation`, `SecretAuditLocation`, and `scan_memory_input` live in `minx_mcp/core/memory_secret_scanning.py`. They import the primitive from `minx_mcp.core.secret_scanner`; they are not part of the leaf `secret_scanner` export surface.
 
 Fields scanned:
 
@@ -267,8 +271,8 @@ No DB-backed string may be copied into `ConflictError.data`, `MemoryProposalFail
 
 - Not a full DLP engine.
 - Not entropy-based secret detection in v4.
-- Not vault body scanning.
-- Not scanning arbitrary files outside the configured vault/frontmatter path.
+- Not historical vault body scanning. Existing vault files are not walked for body secrets by this slice.
+- Not scanning arbitrary files outside configured vault writer paths.
 - Not a guarantee that no secret-like content can ever be stored. It is a deterministic guard for the credential families listed above.
 
 ## 5) Memory Write-Path Changes
@@ -372,9 +376,11 @@ Rules:
 - Preferred behavior for `content_fingerprint` conflicts is to omit `existing_subject` entirely and return `memory_id` only. If compatibility requires retaining the key, set it to `"[REDACTED_EXISTING_SUBJECT]"` whenever `scan_for_secrets(existing_subject)` has any finding.
 - Tests must seed a pre-6h row with a secret-shaped subject and assert a clean conflicting create/update cannot echo that subject through the MCP envelope.
 
-## 6) Vault Frontmatter Changes
+## 6) Vault Write Changes
 
-`VaultWriter.replace_frontmatter` delegates to `stage_replace_frontmatter`, which serializes frontmatter and stages a locked file write. Slice 6h scans frontmatter before staging, using the same text that serialization will write.
+`VaultWriter.replace_frontmatter` delegates to `stage_replace_frontmatter`, which serializes frontmatter and stages a locked file write. Slice 6h scans frontmatter before staging, using the same text that serialization will write, and also scans the preserved markdown body so frontmatter-only changes cannot re-stage a note that already contains secret-shaped content.
+
+`VaultWriter.replace_section` scans both the replacement body and the target heading as vault body text before constructing markdown, so secret-shaped headings cannot bypass the vault body gate.
 
 Vault policy is block-only:
 
@@ -388,6 +394,13 @@ Fields scanned:
 - every value after applying `_serialize_yaml_scalar(value)`, including dict/list JSON serialization
 
 This matches the current writer behavior: `_serialize_frontmatter` validates simple keys and writes `f"{key}: {_serialize_yaml_scalar(value)}"`. Scanning raw Python values would miss secrets that appear only after `str(value)` or JSON serialization.
+
+Markdown body policy is also block-only:
+
+- `VaultWriter.write_markdown` scans the body after frontmatter, then writes atomically only if the body is clean.
+- `VaultWriter.replace_section` scans the replacement body before reading or writing the note.
+- Blocked markdown body writes raise `InvalidInputError("Secret detected in vault body", data=secret_detected_payload)` and leave existing files unchanged. If the target file does not exist, no new file is created.
+- The body scanner only guards text being written through `VaultWriter`; it does not scan untouched sections during a section replacement and does not perform historical vault sweeps.
 
 ## 7) Error Contract
 
@@ -406,7 +419,7 @@ InvalidInputError(
 )
 ```
 
-Blocked vault frontmatter writes use `surface: "vault_frontmatter"`.
+Blocked vault frontmatter writes use `surface: "vault_frontmatter"`. Blocked vault markdown body writes use `surface: "vault_body"`.
 
 For MCP callers, `wrap_tool_call` passes this through as:
 
@@ -485,7 +498,7 @@ Historical memory rows may already have been used in event trails, content finge
 
 Add a post-upgrade note to `HANDOFF.md`:
 
-> After pulling Slice 6h, run `python scripts/scan_memory_for_secrets.py` once from the repository root. Slice 6h blocks new secret-bearing memory/vault-frontmatter writes, but historical memory rows may pre-date the scanner. The script is read-only and reports row ids, fields, and detector kinds without printing raw secrets. Exit code `2` means findings require manual review.
+> After pulling Slice 6h, run `python scripts/scan_memory_for_secrets.py` once from the repository root. Slice 6h blocks new secret-bearing memory and vault writes, but historical memory rows may pre-date the scanner. The script is read-only and reports row ids, fields, and detector kinds without printing raw secrets. Exit code `2` means findings require manual review.
 
 ## 9) Performance
 
@@ -560,6 +573,9 @@ Test fixtures must be synthetic. Do not paste real credentials, and do not commi
 - `stage_replace_frontmatter` releases the lock when scanning raises.
 - Nested frontmatter dict/list values are scanned after `_serialize_yaml_scalar` JSON serialization.
 - Block error data uses `surface: "vault_frontmatter"` and contains no raw secret.
+- `write_markdown` blocks body text containing a secret, leaves existing files unchanged, and does not create new files on block.
+- `replace_section` blocks replacement body text containing a secret and leaves the existing section unchanged.
+- Markdown-body block error data uses `surface: "vault_body"` and contains no raw secret.
 
 ### 10.5 Existing-Data Scanner Tests — `tests/test_scan_memory_for_secrets.py`
 
@@ -591,7 +607,7 @@ Slice 6h is additive and mostly code-level:
 
 1. Remove `minx_mcp/core/secret_scanner.py`.
 2. Revert memory-service scanning calls and `secret_redacted` event-payload metadata.
-3. Revert vault-frontmatter scanning calls.
+3. Revert vault frontmatter/body scanning calls.
 4. Remove `scripts/scan_memory_for_secrets.py`.
 5. Remove tests added in §10.
 6. Remove the `HANDOFF.md` post-upgrade operator step and update the implemented-slices row back to "not implemented" if this slice is backed out before shipping.
@@ -625,7 +641,7 @@ No schema rollback is required in v4 because no new migration is introduced.
 - Snapshot unexpected-exception logging does not format raw proposals, raw payloads, or unsanitized ingest reports.
 - Redacted memory writes compute `content_fingerprint` from persisted redacted content.
 - `secret_redacted` event metadata contains kinds and field names only.
-- `VaultWriter.stage_replace_frontmatter` blocks before staging writes and releases locks on scan failure.
+- `VaultWriter.stage_replace_frontmatter`, `VaultWriter.write_markdown`, and `VaultWriter.replace_section` block before staging writes and release locks on scan failure.
 - `scripts/scan_memory_for_secrets.py` is read-only, supports `python scripts/scan_memory_for_secrets.py`, and exits 2 on findings.
 - `scripts/scan_memory_for_secrets.py` scans both `memories` and `memory_events.payload_json`.
 - `HANDOFF.md` gains the Slice 6h post-upgrade operator step if the scanner script ships.
