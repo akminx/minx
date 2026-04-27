@@ -1,6 +1,6 @@
 # Project Handoff
 
-Status as of 2026-04-27: Slices 1 through 4, consolidation/code-quality hardening, Slice 6a-6f durable memory, **Slice 6g content-fingerprint dedup (migration 020, primitive `minx_mcp/core/fingerprint.py`, ingest dispatch on fingerprint match, operator backfill script)**, **Slice 6h secret-scanner write gate (`minx_mcp/core/secret_scanner.py`, memory/vault-frontmatter/body hooks, read-only historical scan script)**, **Slice 6i FTS5 memory search (`021_memory_fts5.sql`, `MemoryService.search_memories`, `memory_search`, operator FTS rebuild script)**, **Slice 6j memory graph edges (`022_memory_edges.sql`, `memory_edge_create/list/delete`)**, **Slice 6k enrichment queue (`023_enrichment_queue.sql`, `enrichment_sweep/status/retry_dead_letter`, `enrichment_sweep` playbook, stale-running job recovery)**, **Slice 6l queued memory embeddings (`024_memory_embeddings.sql`, `memory_embedding_enqueue/status`, OpenRouter-backed `memory.embedding` sweeps when configured, `memory_hybrid_search` embedding rerank with FTS fallback)**, and **Slice 8 Core-side Proactive Autonomy surfaces are implemented and validated against Hermes end-to-end**. `main` is synced with upstream quality waves (ruff expansion + strict mypy + test hardening) and includes Slice 8 playbook registry/run auditing (`playbook://registry`, `start_playbook_run`, `complete_playbook_run`, `log_playbook_run`, `playbook_history`, `playbook_reconcile_crashed`) plus migrations `019_playbook_runs.sql`, `020_memory_content_fingerprint.sql`, `021_memory_fts5.sql`, `022_memory_edges.sql`, `023_enrichment_queue.sql`, and `024_memory_embeddings.sql`. **Slice 9 (Agentic Investigations) remains designed and is now sequenced after the completed Slice 6 retrieval/enrichment foundation.**
+Status as of 2026-04-27: Slices 1 through 4, consolidation/code-quality hardening, Slice 6a-6f durable memory, **Slice 6g content-fingerprint dedup (migration 020, primitive `minx_mcp/core/fingerprint.py`, ingest dispatch on fingerprint match, operator backfill script)**, **Slice 6h secret-scanner write gate (`minx_mcp/core/secret_scanner.py`, memory/vault-frontmatter/body hooks, read-only historical scan script)**, **Slice 6i FTS5 memory search (`021_memory_fts5.sql`, `025_memory_fts_aliases.sql`, `MemoryService.search_memories`, `memory_search`, operator FTS rebuild script)**, **Slice 6j memory graph edges (`022_memory_edges.sql`, `memory_edge_create/list/delete`)**, **Slice 6k enrichment queue (`023_enrichment_queue.sql`, `enrichment_sweep/status/retry_dead_letter`, `enrichment_sweep` playbook, stale-running job recovery and retry backoff)**, **Slice 6l queued memory embeddings (`024_memory_embeddings.sql`, `memory_embedding_enqueue/status`, OpenRouter-backed `memory.embedding` sweeps when configured, `memory_hybrid_search` embedding rerank with FTS fallback)**, and **Slice 8 Core-side Proactive Autonomy surfaces are implemented and validated against Hermes end-to-end**. `main` is synced with upstream quality waves (ruff expansion + strict mypy + test hardening) and includes Slice 8 playbook registry/run auditing (`playbook://registry`, `start_playbook_run`, `complete_playbook_run`, `log_playbook_run`, `playbook_history`, `playbook_reconcile_crashed`) plus migrations `019_playbook_runs.sql`, `020_memory_content_fingerprint.sql`, `021_memory_fts5.sql`, `022_memory_edges.sql`, `023_enrichment_queue.sql`, `024_memory_embeddings.sql`, and `025_memory_fts_aliases.sql`. **Slice 9 (Agentic Investigations) remains designed and is now sequenced after the completed Slice 6 retrieval/enrichment foundation.**
 
 ### 2026-04-27 Slice 6h Handoff Update
 
@@ -47,11 +47,11 @@ Status as of 2026-04-27: Slices 1 through 4, consolidation/code-quality hardenin
   - `tests/test_core_mcp_stdio.py`
   - `tests/test_vault_reconciler.py`
 - New modular tool registration file added: `minx_mcp/core/tools/playbooks.py` and wired into `core/server.py`.
-- Current local (not yet pushed) follow-up: Ruff remediation in `minx_mcp/core/playbooks.py` is complete and validated; commit/push is still pending.
+- The follow-up Ruff remediation in `minx_mcp/core/playbooks.py` was completed, validated, and superseded by later Slice 6/8 commits.
 
 ### 2026-04-22 Operational Validation Update
 
-- `main` is currently at `bab7c92` (`fix(playbooks): accept dict for result_json / payload_json in playbook tools`), which fixed the Hermes-triggered dict-payload validation failure uncovered by the first Slice 8 smoke.
+- The `bab7c92` playbook JSON fix resolved the Hermes-triggered dict-payload validation failure uncovered by the first Slice 8 smoke; `main` has since advanced through Slice 6 completion.
 - Hermes-side Slice 8 is now operationally validated:
   - all 5 playbooks (`daily_review`, `wiki_update`, `memory_review`, `goal_nudge`, `weekly_report`) have terminal audit rows in `playbook_runs`
   - no `playbook_runs` rows remain stuck in `status='running'`
@@ -81,10 +81,7 @@ Hermes cutover snapshot (2026-04-14):
 - Remote: `github.com/akminx/minx`
 - Branch: `main`
 - Stack: Python 3.12, FastMCP, SQLite, Pydantic, pytest, mypy
-- Current health (2026-04-22):
-  - `uv run ruff check minx_mcp tests` passes
-  - `uv run mypy minx_mcp` passes
-  - `uv run --with hypothesis pytest tests/ -x -q` passes (`1014 passed` as of Slice 6g landing; exact count is in the CI run)
+- Current health is tracked by the latest handoff status and CI. The 2026-04-22 validation snapshot was `uv run ruff check minx_mcp tests`, `uv run mypy minx_mcp`, and `uv run --with hypothesis pytest tests/ -x -q` passing at that point in the branch history.
 
 ## Immediate Next Steps (2026-04-27)
 
@@ -322,7 +319,7 @@ python -m scripts.backfill_memory_fingerprints              # default DB path
 # or: python -m scripts.backfill_memory_fingerprints --force  # overwrite stale stored fingerprints
 ```
 
-After pulling Slice 6i into an existing database, run `python -m scripts.rebuild_memory_fts` once. Migration `021_memory_fts5.sql` creates the FTS5 table and triggers for future writes, but existing memory rows need a one-shot rebuild before `memory_search` can find historical rows. The rebuild is idempotent.
+After pulling Slice 6i into an existing database, run `python -m scripts.rebuild_memory_fts` once. Migration `021_memory_fts5.sql` creates the FTS5 table, and migration `025_memory_fts_aliases.sql` refreshes the triggers so future writes include `entity_fact.aliases`. Existing memory rows still need a one-shot rebuild before `memory_search` can find historical rows or aliases. The rebuild is idempotent.
 
 ```bash
 python -m scripts.rebuild_memory_fts              # default DB path

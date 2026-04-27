@@ -600,7 +600,8 @@ def test_migration_set_includes_015_memories_unique_live() -> None:
     assert "022_memory_edges.sql" in names
     assert "023_enrichment_queue.sql" in names
     assert "024_memory_embeddings.sql" in names
-    assert names[-1] == "024_memory_embeddings.sql"
+    assert "025_memory_fts_aliases.sql" in names
+    assert names[-1] == "025_memory_fts_aliases.sql"
 
 
 def test_unique_index_rejects_duplicate_live_triple(tmp_path) -> None:
@@ -1826,6 +1827,23 @@ def test_search_memories_finds_active_memory_by_payload_value(tmp_path) -> None:
     assert "espresso" in results[0].snippet.lower()
 
 
+def test_search_memories_finds_entity_fact_by_alias(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    record = svc.create_memory(
+        memory_type="entity_fact",
+        scope="finance",
+        subject="market",
+        confidence=0.95,
+        payload={"category": "grocery", "aliases": ["Neighborhood Market", "Corner Shop"]},
+        source="user",
+        reason="manual",
+    )
+
+    results = svc.search_memories(query="corner", memory_type="entity_fact", limit=10)
+
+    assert [result.memory.id for result in results] == [record.id]
+
+
 def test_search_memories_updates_index_when_payload_changes(tmp_path) -> None:
     svc = _fresh_memory_service(tmp_path)
     record = svc.create_memory(
@@ -1906,6 +1924,15 @@ def test_search_memories_rejects_invalid_query_and_limit(tmp_path) -> None:
         svc.search_memories(query='"unterminated')
     with pytest.raises(InvalidInputError):
         svc.search_memories(query="coffee", limit=0)
+
+
+def test_search_memories_only_maps_fts_syntax_errors_to_invalid_input(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    svc.conn.execute("DROP TABLE memory_fts")
+    svc.conn.commit()
+
+    with pytest.raises(sqlite3.OperationalError, match="memory_fts"):
+        svc.search_memories(query="coffee")
 
 
 def test_search_memories_excludes_expired_active_rows(tmp_path) -> None:

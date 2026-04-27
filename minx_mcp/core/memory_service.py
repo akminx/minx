@@ -356,7 +356,9 @@ class MemoryService(BaseService):
         try:
             rows = self.conn.execute(sql, params).fetchall()
         except sqlite3.OperationalError as exc:
-            raise InvalidInputError("query is not valid FTS5 syntax") from exc
+            if _is_fts_query_syntax_error(exc):
+                raise InvalidInputError("query is not valid FTS5 syntax") from exc
+            raise
         results: list[MemorySearchResult] = []
         for row in rows:
             try:
@@ -1485,6 +1487,15 @@ def _parse_payload_json(raw: str) -> dict[str, object]:
 def _is_secret_detected_error(exc: InvalidInputError) -> bool:
     data = exc.data
     return isinstance(data, dict) and data.get("kind") == "secret_detected"
+
+
+def _is_fts_query_syntax_error(exc: sqlite3.OperationalError) -> bool:
+    message = str(exc).lower()
+    return (
+        "fts5: syntax error" in message
+        or "unterminated string" in message
+        or "malformed match expression" in message
+    )
 
 
 def _row_to_record(row: Any) -> MemoryRecord:

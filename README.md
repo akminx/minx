@@ -94,7 +94,7 @@ To intentionally write seed data directly into the provided DB:
 
 - Database: `~/.minx/data/minx.db`
 - Vault root: `~/Documents/minx-vault`
-- Import staging root: `~/.minx/data/imports`
+- Import staging root: `~/.minx/staging`
 
 You can override these with:
 

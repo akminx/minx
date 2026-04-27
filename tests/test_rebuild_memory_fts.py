@@ -41,6 +41,26 @@ def test_rebuild_memory_fts_restores_missing_rows(tmp_path) -> None:
     assert [result.memory.id for result in svc.search_memories(query="espresso")] == [record.id]
 
 
+def test_rebuild_memory_fts_indexes_entity_fact_aliases(tmp_path) -> None:
+    db_path = tmp_path / "m.db"
+    svc = _service_for(db_path)
+    record = svc.create_memory(
+        memory_type="entity_fact",
+        scope="finance",
+        subject="market",
+        confidence=0.95,
+        payload={"category": "grocery", "aliases": ["Neighborhood Market", "Corner Shop"]},
+        source="user",
+        reason="manual",
+    )
+    svc.conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (record.id,))
+    svc.conn.commit()
+
+    assert main([str(db_path)]) == 0
+
+    assert [result.memory.id for result in svc.search_memories(query="corner")] == [record.id]
+
+
 def test_rebuild_memory_fts_replaces_stale_rows(tmp_path) -> None:
     db_path = tmp_path / "m.db"
     svc = _service_for(db_path)

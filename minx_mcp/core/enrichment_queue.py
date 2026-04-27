@@ -14,6 +14,7 @@ from minx_mcp.validation import require_non_empty
 
 _STATUSES = ("queued", "running", "succeeded", "failed", "dead_letter")
 _RUNNING_LEASE_TIMEOUT_MINUTES = 30
+_FAILED_RETRY_DELAY_SECONDS = 60
 EnrichmentHandler = Callable[["EnrichmentJob"], dict[str, object] | None]
 
 
@@ -227,10 +228,14 @@ def _fail_job(conn: Connection, job: EnrichmentJob, error: str) -> bool:
         SET status = ?,
             locked_at = NULL,
             last_error = ?,
+            available_at = CASE
+                WHEN ? = 'dead_letter' THEN available_at
+                ELSE datetime('now', ?)
+            END,
             updated_at = datetime('now')
         WHERE id = ?
         """,
-        (status, error, job.id),
+        (status, error, status, f"+{_FAILED_RETRY_DELAY_SECONDS} seconds", job.id),
     )
     conn.commit()
     return status == "dead_letter"
