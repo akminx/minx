@@ -16,6 +16,16 @@ Status as of 2026-04-28: Slices 1 through 4, consolidation/code-quality hardenin
 - Memory payload/source/reason values are redacted when safe; memory identity fields, payload keys, private-key blocks, and vault frontmatter secrets block with `InvalidInputError(data.kind == "secret_detected")`.
 - After pulling Slice 6h, run `python scripts/scan_memory_for_secrets.py` once from the repository root. Slice 6h blocks new secret-bearing memory/vault-frontmatter writes, but historical memory rows may pre-date the scanner. The script is read-only and reports row ids, fields, and detector kinds without printing raw secrets. Exit code `2` means findings require manual review.
 
+### 2026-04-28 Slice 6 Post-6h Completion Summary
+
+Everything after Slice 6h is implemented and on `main`; these pieces are the retrieval/context foundation that Slice 9 builds on:
+
+- **Slice 6i FTS5 search:** `021_memory_fts5.sql` and `025_memory_fts_aliases.sql` add deterministic keyword search over memories. Core exposes `memory_search`, and existing databases should run `python -m scripts.rebuild_memory_fts` after upgrade.
+- **Slice 6j memory graph:** `022_memory_edges.sql` adds `supersedes`, `contradicts`, and `cites` relationships. Core exposes `memory_edge_create`, `memory_edge_list`, and `memory_edge_delete` so Hermes can explain why a memory is current, contradicted, or cited.
+- **Slice 6k enrichment queue:** `023_enrichment_queue.sql` adds durable enrichment jobs with status, retry, dead-letter, stale-running recovery, and an `enrichment_sweep` playbook cadence. Core exposes `enrichment_sweep`, `enrichment_status`, and `enrichment_retry_dead_letter`.
+- **Slice 6l memory embeddings / hybrid search:** `024_memory_embeddings.sql` adds queued embeddings and optional OpenRouter-backed reranking. Core exposes `memory_embedding_enqueue`, `memory_embedding_status`, and `memory_hybrid_search`; when embeddings are unavailable it falls back to FTS5.
+- **Post-6l capture/search extension:** `026_memory_capture_fts.sql` extends FTS indexing for `captured_thought` payload text and `capture_type`, supporting the new `memory_capture` tool's review-first candidate memories.
+
 ### 2026-04-27 Slice 6i Handoff Update
 
 - Slice 6i adds deterministic SQLite FTS5 search over `memories` via migration `021_memory_fts5.sql`.
@@ -94,6 +104,7 @@ Hermes cutover snapshot (2026-04-14):
 ## Immediate Next Steps (2026-04-28)
 
 1. Pick up **Slice 9d: real Hermes `minx_investigate` loop** in `minx-hermes`:
+  - follow the working plan in `docs/superpowers/plans/2026-04-28-hermes-investigation-loop.md`
   - build or document a concrete safe domain-tool catalog for Finance, Meals, Training, Core memory, goals, and insights
   - tighten `skills/minx/investigate/SKILL.md` around current real tool names, not placeholder names like `meals_list`
   - implement the bounded loop discipline: `start_investigation` -> domain tool calls -> digest-only `append_investigation_step` -> terminal `complete_investigation`
@@ -290,6 +301,7 @@ Hermes-side work remaining lives primarily in `minx-hermes`: operational `minx_i
 - Slice 8 spec: [docs/superpowers/specs/2026-04-15-slice8-proactive-autonomy.md](docs/superpowers/specs/2026-04-15-slice8-proactive-autonomy.md)
 - Render contracts: [docs/superpowers/specs/2026-04-28-mcp-render-contract.md](docs/superpowers/specs/2026-04-28-mcp-render-contract.md), [docs/superpowers/specs/2026-04-28-goal-parse-render-contract.md](docs/superpowers/specs/2026-04-28-goal-parse-render-contract.md)
 - Slice 9 specs: [docs/superpowers/specs/2026-04-19-slice9-agentic-investigations.md](docs/superpowers/specs/2026-04-19-slice9-agentic-investigations.md), [docs/superpowers/specs/2026-04-28-slice9-investigation-render-contract.md](docs/superpowers/specs/2026-04-28-slice9-investigation-render-contract.md)
+- Slice 9d Hermes loop plan: [docs/superpowers/plans/2026-04-28-hermes-investigation-loop.md](docs/superpowers/plans/2026-04-28-hermes-investigation-loop.md)
 - Code quality plan: [docs/superpowers/plans/2026-04-15-code-quality-cleanup.md](docs/superpowers/plans/2026-04-15-code-quality-cleanup.md)
 - Consolidation plan: [docs/superpowers/plans/2026-04-15-consolidation-and-refactor.md](docs/superpowers/plans/2026-04-15-consolidation-and-refactor.md)
 
