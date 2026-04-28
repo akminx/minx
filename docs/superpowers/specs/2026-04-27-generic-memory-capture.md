@@ -117,6 +117,8 @@ COALESCE(json_extract(payload_json, '$.capture_type'), '')
 
 Do not blindly flatten arbitrary `metadata` into FTS. Searches over metadata can wait for a dedicated design.
 
+Adding `$.text` and `$.capture_type` to the generic memory FTS extraction means any future memory type that uses those canonical payload keys will also be indexed. That is intentional; the extraction is key-based, not limited to `captured_thought`.
+
 Existing databases: operators run `python -m scripts.rebuild_memory_fts` after migration so historical `captured_thought` rows, if any exist, pick up the new extraction.
 
 ## Vault / Obsidian

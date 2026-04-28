@@ -208,9 +208,10 @@ Each PR ships independently green (`ruff` + `mypy minx_mcp` + `pytest`), with mi
 
 - One spec doc under `docs/superpowers/specs/YYYY-MM-DD-slice6X-*.md` (adversarially reviewed before implementation).
 - One plan doc under `docs/superpowers/plans/YYYY-MM-DD-slice6X-*.md` (step-by-step execution checklist).
-- Sequentially numbered migration (next filename: `025_*.sql`). Slice 9 investigations should claim the next available migration.
+- Sequentially numbered migration (next filename: `027_*.sql` after `026_memory_capture_fts.sql`). Slice 9 investigations should claim the next available migration.
 - Implemented-slices row appended to the table above, with LOC / date / verification block.
 - Operator post-upgrade step added under "Post-Upgrade Operator Steps" if the migration is not fully reversible from application-level data (6g needed a backfill; 6i will need a one-shot FTS5 rebuild; 6l will need a one-shot embedding backfill and a cost-ceiling env var).
+- After deploying `026_memory_capture_fts.sql`, run `python -m scripts.rebuild_memory_fts /path/to/minx.db` so any pre-existing `captured_thought` rows are indexed by `payload.text` and `payload.capture_type`.
 
 ### Open questions (to resolve in each slice's spec pass)
 

@@ -26,7 +26,9 @@ def rebuild_memory_fts(db_path: Path) -> int:
                         COALESCE(json_extract(payload_json, '$.note'), '') || ' ' ||
                         COALESCE(json_extract(payload_json, '$.signal'), '') || ' ' ||
                         COALESCE(json_extract(payload_json, '$.limit_value'), '') || ' ' ||
-                        COALESCE(json_extract(payload_json, '$.aliases'), '')
+                        COALESCE(json_extract(payload_json, '$.aliases'), '') || ' ' ||
+                        COALESCE(json_extract(payload_json, '$.text'), '') || ' ' ||
+                        COALESCE(json_extract(payload_json, '$.capture_type'), '')
                     ELSE ''
                 END,
                 source,

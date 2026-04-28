@@ -159,6 +159,10 @@ class GoalCaptureResult:
     question: str | None = None
     options: list[GoalCaptureOption] | None = None
     resume_payload: dict[str, object] | None = None
+    response_template: str | None = None
+    response_slots: dict[str, object] | None = None
+    clarification_template: str | None = None
+    clarification_slots: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.result_type == "create":
@@ -174,7 +178,10 @@ class GoalCaptureResult:
                 "question",
                 "options",
                 "resume_payload",
+                "clarification_template",
+                "clarification_slots",
             )
+            self._populate_response_render_fields()
         elif self.result_type == "update":
             if self.action != "goal_update":
                 raise ValueError("action must be goal_update for update results")
@@ -189,7 +196,10 @@ class GoalCaptureResult:
                 "question",
                 "options",
                 "resume_payload",
+                "clarification_template",
+                "clarification_slots",
             )
+            self._populate_response_render_fields()
         elif self.result_type == "clarify":
             if self.clarification_type is None:
                 raise ValueError("clarification_type is required for clarify results")
@@ -224,6 +234,8 @@ class GoalCaptureResult:
             if self.clarification_type == "missing_goal" and self.options is not None:
                 raise ValueError("options must be omitted for missing_goal clarify results")
             self._require_absent("payload", "goal_id", "assistant_message")
+            self._require_absent("response_template", "response_slots")
+            self._populate_clarification_render_fields()
         elif self.result_type == "no_match":
             if self.assistant_message is None:
                 raise ValueError("assistant_message is required for no_match results")
@@ -235,7 +247,10 @@ class GoalCaptureResult:
                 "question",
                 "options",
                 "resume_payload",
+                "clarification_template",
+                "clarification_slots",
             )
+            self._populate_response_render_fields()
         else:
             raise ValueError("result_type is invalid")
 
@@ -243,6 +258,108 @@ class GoalCaptureResult:
         for field_name in field_names:
             if getattr(self, field_name) is not None:
                 raise ValueError(f"{field_name} must be omitted for {self.result_type} results")
+
+    def _populate_response_render_fields(self) -> None:
+        if self.response_template is None:
+            object.__setattr__(self, "response_template", _response_template_for(self))
+        if self.response_slots is None:
+            object.__setattr__(self, "response_slots", _response_slots_for(self))
+
+    def _populate_clarification_render_fields(self) -> None:
+        if self.clarification_template is None:
+            object.__setattr__(
+                self,
+                "clarification_template",
+                f"goal_parse.clarify.{self.clarification_type}",
+            )
+        if self.clarification_slots is None:
+            object.__setattr__(self, "clarification_slots", _clarification_slots_for(self))
+
+
+def _response_template_for(result: GoalCaptureResult) -> str:
+    if result.result_type == "create":
+        return "goal_parse.create.ready"
+    if result.result_type == "update":
+        return "goal_parse.update.ready"
+    if result.result_type == "no_match":
+        return "goal_parse.no_match.unsupported"
+    raise ValueError("response_template is invalid for clarify results")
+
+
+def _response_slots_for(result: GoalCaptureResult) -> dict[str, object]:
+    if result.result_type == "create":
+        payload = result.payload or {}
+        slots: dict[str, object] = {"action": "goal_create"}
+        _copy_slot(payload, slots, "goal_type")
+        subject = _subject_from_payload(payload)
+        if subject is not None:
+            slots["subject"] = subject
+        subject_kind = _subject_kind_from_payload(payload)
+        if subject_kind is not None:
+            slots["subject_kind"] = subject_kind
+        _copy_slot(payload, slots, "period")
+        _copy_slot(payload, slots, "target_value")
+        return slots
+    if result.result_type == "update":
+        slots = {"action": "goal_update", "goal_id": result.goal_id}
+        for key in ("status", "target_value", "title"):
+            _copy_slot(result.payload or {}, slots, key)
+        return slots
+    if result.result_type == "no_match":
+        return {"status": "unsupported"}
+    raise ValueError("response_slots are invalid for clarify results")
+
+
+def _clarification_slots_for(result: GoalCaptureResult) -> dict[str, object]:
+    slots: dict[str, object] = {}
+    if result.action is not None:
+        slots["action"] = result.action
+    slots["field"] = _clarification_field(result.clarification_type)
+    if result.options:
+        slots["candidate_count"] = len(result.options)
+    return slots
+
+
+def _clarification_field(clarification_type: GoalCaptureClarificationType | None) -> str:
+    if clarification_type == "ambiguous_goal":
+        return "goal_id"
+    if clarification_type == "ambiguous_subject":
+        return "subject"
+    if clarification_type == "missing_goal":
+        return "goal_id"
+    if clarification_type == "missing_target":
+        return "target_value"
+    if clarification_type == "vague_intent":
+        return "subject"
+    raise ValueError("clarification_type is required for clarify results")
+
+
+def _copy_slot(source: dict[str, object], target: dict[str, object], key: str) -> None:
+    value = source.get(key)
+    if value is not None:
+        target[key] = value
+
+
+def _subject_from_payload(payload: dict[str, object]) -> str | None:
+    for key in ("category_names", "merchant_names", "account_names"):
+        values = payload.get(key)
+        if isinstance(values, list) and values:
+            first = values[0]
+            return first if isinstance(first, str) else None
+    title = payload.get("title")
+    return title if isinstance(title, str) else None
+
+
+def _subject_kind_from_payload(payload: dict[str, object]) -> str | None:
+    for key, kind in (
+        ("category_names", "category"),
+        ("merchant_names", "merchant"),
+        ("account_names", "account"),
+    ):
+        values = payload.get(key)
+        if isinstance(values, list) and values:
+            return kind
+    return None
 
 
 @dataclass(frozen=True)

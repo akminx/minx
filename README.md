@@ -148,6 +148,12 @@ Set the `core/llm_config` preference to a payload like:
 
 Memory embeddings are offline-safe by default. `memory_hybrid_search` always works through SQLite FTS5; it reranks FTS candidates with stored embeddings only when OpenRouter is configured and compatible candidate embeddings exist.
 
+## Quick Capture Vs Structured Create
+
+Use `memory_capture` for fast, review-first notes. It stores `captured_thought` memories with default `confidence=0.5`, so rows are candidates until `memory_confirm` promotes them. Use `memory_create` when the caller already has a structured memory payload and intentionally wants the normal confidence/status behavior, including active rows at high confidence.
+
+`memory_search` defaults to `status="active"`, so reviewers looking for captures should pass `status="candidate"` or `status=null`. Capture acknowledgements expose `response_template` / `response_slots`; Hermes or another harness owns the final user-facing wording.
+
 Set `MINX_OPENROUTER_API_KEY` to enable `memory_embedding_enqueue` and `enrichment_sweep` processing for `memory.embedding` jobs. Optional knobs are `MINX_EMBEDDING_MODEL` (default `openai/text-embedding-3-small`), `MINX_EMBEDDING_DIMENSIONS`, `MINX_EMBEDDING_REQUEST_TIMEOUT_S`, and `MINX_EMBEDDING_MAX_COST_MICROUSD`. API keys are read from the environment only and are not returned in MCP responses.
 
 For existing databases, run `python -m scripts.rebuild_memory_fts` after pulling Slice 6i and `python -m scripts.backfill_memory_fingerprints` for rows that pre-date Slice 6g fingerprints.

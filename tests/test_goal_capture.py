@@ -119,6 +119,15 @@ def test_capture_goal_message_create_with_known_category(tmp_path):
 
     assert result.result_type == "create"
     assert result.action == "goal_create"
+    assert result.response_template == "goal_parse.create.ready"
+    assert result.response_slots == {
+        "action": "goal_create",
+        "goal_type": "spending_cap",
+        "subject": "Dining Out",
+        "subject_kind": "category",
+        "period": "monthly",
+        "target_value": 20000,
+    }
     assert result.payload is not None
     assert result.payload["category_names"] == ["Dining Out"]
     assert result.payload["target_value"] == 20000
@@ -163,6 +172,12 @@ def test_capture_goal_message_create_ambiguous_subject(tmp_path):
 
     assert result.result_type == "clarify"
     assert result.clarification_type == "ambiguous_subject"
+    assert result.clarification_template == "goal_parse.clarify.ambiguous_subject"
+    assert result.clarification_slots == {
+        "action": "goal_create",
+        "field": "subject",
+        "candidate_count": 2,
+    }
     assert result.options is not None
     assert len(result.options) == 2
 
@@ -198,6 +213,8 @@ def test_capture_goal_message_create_no_dollar_amount(tmp_path):
     )
 
     assert result.result_type == "no_match"
+    assert result.response_template == "goal_parse.no_match.unsupported"
+    assert result.response_slots == {"status": "unsupported"}
 
 
 def test_capture_goal_message_no_goal_intent(tmp_path):

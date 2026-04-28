@@ -63,6 +63,9 @@ For clarification outcomes:
   "options": [
     { "kind": "goal", "goal_id": 1, "label": "Dining Out under $250" }
   ],
+  "resume_payload": {
+    "target_value": 25000
+  },
   "question": "Which goal do you mean?"
 }
 ```
@@ -98,9 +101,10 @@ Slots should include only structured data:
 - `status`
 - `field`
 - `candidate_count`
-- `payload`
 
 Do not place complete user-facing sentences in slots.
+
+Do not duplicate the full top-level `payload` in `response_slots` by default. The top-level `payload` remains the authoritative machine proposal; slots should be a small projection of the normalized values Hermes needs to choose a template rendering, not a second copy of the proposal. If a future template truly needs a preview of a larger proposal, add an explicit small field such as `payload_summary` instead of copying the full payload object.
 
 ## Implementation Shape
 
@@ -123,9 +127,35 @@ Recommended model changes:
 
 Validation:
 
-- `create`, `update`, and `no_match` require `response_template` and `response_slots`.
-- `clarify` requires `clarification_template` and `clarification_slots`.
-- Existing `assistant_message`, `question`, and `options` validation remains for compatibility unless a later breaking cleanup removes them.
+- This migration is additive. Existing compatibility fields remain required where current validation requires them: `assistant_message` for `create`, `update`, and `no_match`; `question` for `clarify`.
+- `create`, `update`, and `no_match` require `response_template` and `response_slots`, and must omit `clarification_template` and `clarification_slots`.
+- `clarify` requires `clarification_template` and `clarification_slots`, and must omit `response_template` and `response_slots`.
+- Existing `options` and `resume_payload` validation remains unchanged: `ambiguous_goal` and `ambiguous_subject` require both non-empty `options` and `resume_payload`; `missing_goal` omits `options`.
+
+Allowed render fields by result type:
+
+| `result_type` | Required render fields | Must omit | Compatibility fields |
+|---|---|---|---|
+| `create` | `response_template`, `response_slots` | `clarification_template`, `clarification_slots` | `assistant_message` |
+| `update` | `response_template`, `response_slots` | `clarification_template`, `clarification_slots` | `assistant_message` |
+| `no_match` | `response_template`, `response_slots` | `clarification_template`, `clarification_slots` | `assistant_message` |
+| `clarify` | `clarification_template`, `clarification_slots` | `response_template`, `response_slots` | `question`, subtype-specific `options` / `resume_payload` |
+
+Clarification subtype compatibility rules:
+
+| `clarification_type` | `options` | `resume_payload` |
+|---|---|---|
+| `ambiguous_goal` | required, non-empty | required |
+| `ambiguous_subject` | required, non-empty | required |
+| `missing_goal` | omitted | optional continuation context |
+| `missing_target` | omitted | optional continuation context |
+| `vague_intent` | omitted | optional, usually omitted |
+
+Serialization:
+
+- Extend `minx_mcp/core/tools/goals.py::_goal_parse_result_to_dict` to include the new template and slot fields.
+- Keep existing serialized fields (`assistant_message`, `question`, `options`, `resume_payload`) while old clients migrate.
+- Ensure preferred render fields are emitted for every result, even when the compatibility field has the same semantic outcome.
 
 ## LLM Boundary
 
@@ -141,6 +171,7 @@ Add or update tests to cover:
 - update result includes `response_template == "goal_parse.update.ready"`
 - no-match result includes `response_template == "goal_parse.no_match.unsupported"`
 - clarify result includes `clarification_template` based on `clarification_type`
+- ambiguous goal/subject clarify results preserve `resume_payload` and options
 - slots contain structured payload values needed by Hermes
 - compatibility fields still exist and are deterministic
 - model-authored prose from an LLM stub is not exposed as preferred render data

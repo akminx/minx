@@ -34,6 +34,7 @@ def test_memory_tools_round_trip(tmp_path: Path) -> None:
         "memory_list",
         "memory_get",
         "memory_create",
+        "memory_capture",
         "memory_confirm",
         "memory_reject",
         "memory_expire",
@@ -115,6 +116,121 @@ def test_memory_create_secret_block_surfaces_invalid_input_without_secret(tmp_pa
     assert blocked["data"]["kind"] == "secret_detected"
     assert blocked["data"]["surface"] == "memory"
     assert secret not in str(blocked)
+
+
+def test_memory_capture_happy_path_candidate(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    capture_fn = get_tool(server, "memory_capture").fn
+
+    out = capture_fn(
+        text="Pick up laundry after 5pm",
+        capture_type="observation",
+        scope="core",
+        subject=None,
+        source="user:capture",
+        confidence=0.5,
+        metadata=None,
+    )
+
+    assert out["success"] is True
+    memory = out["data"]["memory"]
+    assert memory["memory_type"] == "captured_thought"
+    assert memory["status"] == "candidate"
+    assert memory["confidence"] == 0.5
+    assert out["data"]["response_template"] == "memory_capture.created_candidate"
+    assert out["data"]["response_slots"] == {
+        "memory_id": memory["id"],
+        "status": "candidate",
+        "memory_type": "captured_thought",
+        "scope": "core",
+        "subject": memory["subject"],
+        "capture_type": "observation",
+    }
+    assert memory["payload"] == {
+        "text": "Pick up laundry after 5pm",
+        "capture_type": "observation",
+    }
+
+
+def test_memory_capture_with_metadata_and_explicit_subject(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    capture_fn = get_tool(server, "memory_capture").fn
+
+    out = capture_fn(
+        text="body text",
+        capture_type="todo",
+        scope="core",
+        subject="my_subject",
+        source="user:capture",
+        confidence=0.4,
+        metadata={"src": "chat"},
+    )
+
+    assert out["success"] is True
+    memory = out["data"]["memory"]
+    assert memory["subject"] == "my_subject"
+    assert memory["payload"] == {
+        "text": "body text",
+        "capture_type": "todo",
+        "metadata": {"src": "chat"},
+    }
+
+
+def test_memory_capture_rejects_high_confidence(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    capture_fn = get_tool(server, "memory_capture").fn
+
+    out = capture_fn("x", "observation", "core", None, "user:capture", 0.8, None)
+
+    assert out["success"] is False
+    assert out["error_code"] == "INVALID_INPUT"
+
+
+def test_memory_capture_rejects_invalid_metadata(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    capture_fn = get_tool(server, "memory_capture").fn
+
+    out = capture_fn("x", "observation", "core", None, "user:capture", 0.5, {"bad": {1, 2}})
+
+    assert out["success"] is False
+    assert out["error_code"] == "INVALID_INPUT"
+
+
+def test_memory_capture_secret_blocked_like_create(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    capture_fn = get_tool(server, "memory_capture").fn
+    secret = _fake_private_key_block()
+
+    out = capture_fn(secret, "observation", "core", None, "user:capture", 0.5, None)
+
+    assert out["success"] is False
+    assert out["error_code"] == "INVALID_INPUT"
+    assert secret not in str(out)
+
+
+def test_memory_capture_derived_subject_stable(tmp_path: Path) -> None:
+    db_path = tmp_path / "m.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    capture_fn = get_tool(server, "memory_capture").fn
+
+    first = capture_fn("  hello  \nworld", "Note", "core", None, "user:capture", 0.5, None)
+    second = capture_fn("  hello  \nworld", "Note", "core", None, "user:capture", 0.5, None)
+
+    assert first["success"] is True
+    assert second["success"] is False
+    assert second["error_code"] == "CONFLICT"
+    assert first["data"]["memory"]["subject"] == "note:hello"
 
 
 def test_memory_create_redacted_payload_returns_redacted_memory(tmp_path: Path) -> None:

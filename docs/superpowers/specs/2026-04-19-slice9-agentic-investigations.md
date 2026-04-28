@@ -10,14 +10,16 @@ Give Minx the ability to answer **open-ended questions with unknown tool sequenc
 
 ## 2) Scope Boundary — Why This Is Not Slice 8
 
-| Property | Slice 8 Playbooks | Slice 9 Investigations |
-|---|---|---|
-| Trigger | Cron / event | User-initiated (one-off) |
-| Tool sequence | Pre-scripted | Chosen by LLM at each step |
-| Cost profile | Bounded, predictable (N calls) | Variable, needs per-run budget |
-| Audit shape | `playbook_runs` row | `investigations` row with trajectory |
-| Failure mode | Crash mid-script | Agent loops / goes off-rails |
-| Output | Side effects (vault writes, logs) | An answer (optionally persisted) |
+
+| Property      | Slice 8 Playbooks                 | Slice 9 Investigations               |
+| ------------- | --------------------------------- | ------------------------------------ |
+| Trigger       | Cron / event                      | User-initiated (one-off)             |
+| Tool sequence | Pre-scripted                      | Chosen by LLM at each step           |
+| Cost profile  | Bounded, predictable (N calls)    | Variable, needs per-run budget       |
+| Audit shape   | `playbook_runs` row               | `investigations` row with trajectory |
+| Failure mode  | Crash mid-script                  | Agent loops / goes off-rails         |
+| Output        | Side effects (vault writes, logs) | An answer (optionally persisted)     |
+
 
 **Rule of thumb:** recurring + predictable → playbook. One-shot + unpredictable → investigation. Recurring + unpredictable is a design smell; split it into a scheduled trigger that fires an investigation.
 
@@ -26,6 +28,7 @@ Give Minx the ability to answer **open-ended questions with unknown tool sequenc
 **Harness-side.** Core stays a toolbox.
 
 Reasons:
+
 1. **LLM binding is already harness-side** — Core exposes data and templates; agent loops are just more LLM calls, chosen by the LLM.
 2. **Cost/killability is a harness concern** — Hermes sets per-invocation budgets (`max_tool_calls`, `max_tokens`, wall-clock timeout). Core shouldn't know about that.
 3. **Trace viewing belongs next to the UI** — users asking "why did Minx do that?" want to scrub a trajectory; that's Hermes' job.
@@ -33,19 +36,21 @@ Reasons:
 
 ### What Core contributes
 
-- **Durable storage** for investigation records (question + answer + trajectory + cost).
-- **One log tool** (`log_investigation`) so the harness can persist a run.
+- **Durable storage** for investigation records (question + harness-authored answer + trajectory + cost + latest render event).
+- **Lifecycle logging tools** (`start_investigation`, `append_investigation_step`, `complete_investigation`) plus a convenience wrapper (`log_investigation`) so the harness can persist a run.
 - **Retrieval** (`investigation_history`, `investigation_get`) so users and the LLM can reference past investigations.
-- **Nothing new for the tool surface** — every `finance_*`, `memory_*`, `goal_*`, `get_insight_history`, `meals_*`, `training_*` tool already in place is exactly what the agent loop picks from.
+- **No new domain tools for the agent loop** — every `finance_`*, `memory_*`, `goal_*`, `get_insight_history`, `meals_*`, `training_*` tool already in place is exactly what the agent loop picks from. Slice 9 only adds investigation lifecycle/history tools for audit and retrieval.
 
 ## 4) Example Surfaces (Harness-side)
 
-| Surface | Why agentic | Indicative trajectory |
-|---|---|---|
-| `minx_investigate(question)` | Causal/exploratory questions. LLM decides whether to drill into merchants, categories, meals, goals. | `finance_categories` → `finance_transactions(...)` → maybe `meals_list` → maybe `get_insight_history` → compose |
-| `minx_plan(objective)` | Scheduling/planning across domains. Depends on what it finds. | `goal_list` → `get_goal_trajectory` → `training_list` → `meals_list` → draft → revise |
-| `minx_retro(period, subject)` | Causal analysis across months. LLM picks which detectors to replay, which transactions to sample. | `get_insight_history` → `goal_trajectory` → sampling tools → synthesize |
-| `minx_onboard_entity(kind, name)` | Hydrates an entity/pattern page from scratch. Branches on what it finds. | `finance_transactions(merchant=...)` → `memory_list(subject=...)` → maybe `persist_note` |
+
+| Surface                           | Why agentic                                                                                          | Indicative trajectory                                                                                           |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `minx_investigate(question)`      | Causal/exploratory questions. LLM decides whether to drill into merchants, categories, meals, goals. | `finance_categories` → `finance_transactions(...)` → maybe `meals_list` → maybe `get_insight_history` → compose |
+| `minx_plan(objective)`            | Scheduling/planning across domains. Depends on what it finds.                                        | `goal_list` → `get_goal_trajectory` → `training_list` → `meals_list` → draft → revise                           |
+| `minx_retro(period, subject)`     | Causal analysis across months. LLM picks which detectors to replay, which transactions to sample.    | `get_insight_history` → `goal_trajectory` → sampling tools → synthesize                                         |
+| `minx_onboard_entity(kind, name)` | Hydrates an entity/pattern page from scratch. Branches on what it finds.                             | `finance_transactions(merchant=...)` → `memory_list(subject=...)` → maybe `persist_note`                        |
+
 
 Common shape: **one question in, one report out, unpredictable middle.**
 
@@ -63,8 +68,11 @@ CREATE TABLE investigations (
     context_json TEXT,              -- structured inputs (date range, subject, etc.)
     status TEXT NOT NULL            -- 'running' | 'succeeded' | 'failed' | 'cancelled' | 'budget_exhausted'
         CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled', 'budget_exhausted')),
-    answer_md TEXT,                 -- final rendered answer (markdown)
-    trajectory_json TEXT,           -- [{step, tool, args, result_digest, latency_ms}, ...]
+    answer_md TEXT,                 -- optional harness-authored rendered answer (markdown)
+    trajectory_json TEXT,           -- [{step, event_template, event_slots, tool, args_digest, result_digest, latency_ms}, ...]
+    response_template TEXT,         -- latest lifecycle render event, e.g. investigation.completed
+    response_slots_json TEXT,       -- JSON slots for latest lifecycle render event
+    citation_refs_json TEXT,        -- references used by the harness answer
     tool_call_count INTEGER,
     token_input INTEGER,
     token_output INTEGER,
@@ -80,11 +88,17 @@ CREATE INDEX idx_investigations_running ON investigations(status) WHERE status =
 
 **Trajectory storage policy:** `trajectory_json` stores a **digest** per step (tool name, arg hash, result row count / bytes, latency). It does NOT store full tool outputs — those can be large and contain PII. Full outputs are reconstructable by replaying the tools against the DB at investigation time.
 
+**Render storage policy:** `response_template` and `response_slots_json` store the latest lifecycle event so read APIs can expose a stable render surface without parsing trajectory text. Step-level render events are stored inside `trajectory_json` step entries.
+
 ## 6) Core MCP Tools
 
+Lifecycle responses follow the render-contract amendment in `2026-04-28-slice9-investigation-render-contract.md`: tools return the ids below plus `response_template` / `response_slots` for lifecycle transitions. The minimal shapes shown here are the base data fields, not the complete MCP response contract.
+
 ```
-start_investigation(kind, question, context_json, harness) -> {"investigation_id": int}
-append_investigation_step(investigation_id, step_json) -> {"ok": true}
+start_investigation(kind, question, context_json, harness)
+    -> {"investigation_id": int, "response_template": "investigation.started", "response_slots": {...}}
+append_investigation_step(investigation_id, step_json)
+    -> {"ok": true, "response_template": "investigation.step_logged|investigation.needs_confirmation", "response_slots": {...}}
 complete_investigation(
     investigation_id,
     status,              # 'succeeded' | 'failed' | 'cancelled' | 'budget_exhausted'
@@ -94,11 +108,12 @@ complete_investigation(
     token_output,
     cost_usd,
     error_message,
-) -> {"investigation_id": int}
-log_investigation(...)  # convenience wrapper, same shape as log_playbook_run
+) -> {"investigation_id": int, "response_template": "investigation.completed|investigation.failed|investigation.cancelled|investigation.budget_exhausted", "response_slots": {...}}
+log_investigation(...)  # convenience wrapper with the same logging role as log_playbook_run;
+                        # MCP return shape follows the render-contract amendment
 
 investigation_history(kind=None, since=None, days=30, limit=100) -> {"runs": [...], "truncated": bool}
-investigation_get(investigation_id) -> {"run": {...}}  # includes trajectory
+investigation_get(investigation_id) -> {"run": {...}}  # includes trajectory and latest response_template/response_slots
 ```
 
 Mirrors the two-phase + convenience pattern from Slice 8 so the audit story is consistent.
@@ -140,15 +155,17 @@ except Exception as exc:
 
 Split so Core can ship independently and the harness can build against a stable surface.
 
-| Phase | What | Where | Effort | Dependencies |
-|---|---|---|---|---|
-| 9a | `investigations` table (next available migration) + `start_/append_/complete_/log_investigation` + `investigation_history` + `investigation_get` + tests | Core | 1.5 days | Slice 6i-6l + Slice 8a merged |
-| 9b | Trajectory-digest helpers (tool name + arg hash + result digest) + PII-redaction pass for `context_json`/`answer_md` + operator runbook | Core | 1 day | 9a |
-| 9c | Investigation MCP resource surface: `investigation://recent`, `investigation://{id}` (read-only) for harness UIs that want to render history without hitting the tool API | Core | 0.5 day | 9a |
-| 9d | Reference harness loop (Hermes) for `minx_investigate` — budget wrapper, LLM tool-picker, digest-and-log loop | Hermes | 3-4 days | 9a, 9b |
-| 9e | `minx_plan` surface (second agentic entry point reusing 9d infra) | Hermes | 2 days | 9d |
-| 9f | `minx_retro` + `minx_onboard_entity` surfaces | Hermes | 2-3 days | 9d |
-| 9g | Investigation re-query: `memory_list` gains an optional `include_cited_investigations` flag so answers can reference prior investigations | Core | 1 day | 9a, Slice 6 |
+
+| Phase | What                                                                                                                                                                      | Where  | Effort   | Dependencies                  |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------- | ----------------------------- |
+| 9a    | `investigations` table (next available migration) + `start_/append_/complete_/log_investigation` + `investigation_history` + `investigation_get` + tests                  | Core   | 1.5 days | Slice 6i-6l + Slice 8a merged |
+| 9b    | Trajectory-digest helpers (tool name + arg hash + result digest) + PII-redaction pass for `context_json`/`answer_md` + operator runbook                                   | Core   | 1 day    | 9a                            |
+| 9c    | Investigation MCP resource surface: `investigation://recent`, `investigation://{id}` (read-only) for harness UIs that want to render history without hitting the tool API | Core   | 0.5 day  | 9a                            |
+| 9d    | Reference harness loop (Hermes) for `minx_investigate` — budget wrapper, LLM tool-picker, digest-and-log loop                                                             | Hermes | 3-4 days | 9a, 9b                        |
+| 9e    | `minx_plan` surface (second agentic entry point reusing 9d infra)                                                                                                         | Hermes | 2 days   | 9d                            |
+| 9f    | `minx_retro` + `minx_onboard_entity` surfaces                                                                                                                             | Hermes | 2-3 days | 9d                            |
+| 9g    | Investigation re-query: `memory_list` gains an optional `include_cited_investigations` flag so answers can reference prior investigations                                 | Core   | 1 day    | 9a, Slice 6                   |
+
 
 **Core effort: ~4 days (9a + 9b + 9c + 9g).**
 **Hermes effort: ~7-9 days (9d + 9e + 9f).**
@@ -158,6 +175,7 @@ Ship order: 9a → 9b → 9d (first usable surface) → 9c + 9e + 9f + 9g in any
 ## 10) Testing Strategy
 
 ### Core tests (9a–9c)
+
 - Two-phase lifecycle (`start` → `append` × N → `complete`) covering succeeded / failed / cancelled / budget_exhausted.
 - Concurrent starts with different kinds don't collide; same-kind concurrent is allowed (investigations are user-initiated, no cron contention).
 - `append_investigation_step` rejects steps after terminal status.
@@ -165,6 +183,7 @@ Ship order: 9a → 9b → 9d (first usable surface) → 9c + 9e + 9f + 9g in any
 - `investigation_history` pagination/filter matches `playbook_history` semantics.
 
 ### Harness tests (9d–9f, outside this repo)
+
 - Budget caps respected (max_tool_calls, max_tokens, wall_clock).
 - Answer is always produced for `budget_exhausted` (partial answer, never a hard crash).
 - LLM tool-picker respects an allowlist (can't invoke destructive tools like `memory_reject` without explicit surface-level opt-in).
@@ -172,5 +191,5 @@ Ship order: 9a → 9b → 9d (first usable surface) → 9c + 9e + 9f + 9g in any
 ## 11) Relationship to Other Slices
 
 - **Slice 6 (Memory):** investigations can cite memories by id in `answer_md`; `memory_get`, `memory_list`, FTS5 search, memory graph edges, and embeddings/hybrid retrieval are primary inputs.
-- **Slice 8 (Playbooks):** audit pattern (two-phase + convenience wrapper + reconcile-crashed) is lifted directly. `playbook_reconcile_crashed` gets a sibling `investigation_reconcile_crashed`.
+- **Slice 8 (Playbooks):** audit pattern (two-phase + convenience wrapper) is lifted directly. A sibling to `playbook_reconcile_crashed` can be added later if crashed-running investigations need automated reconciliation; specify that tool explicitly before shipping it.
 - **Slice 5 (Harness Adaptation):** a second harness would reimplement the loop against the same Core API. The agent-loop pattern is harness-specific; the tool surface is portable.

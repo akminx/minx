@@ -61,6 +61,29 @@ def test_rebuild_memory_fts_indexes_entity_fact_aliases(tmp_path) -> None:
     assert [result.memory.id for result in svc.search_memories(query="corner")] == [record.id]
 
 
+def test_rebuild_memory_fts_indexes_captured_thought_text(tmp_path) -> None:
+    db_path = tmp_path / "m.db"
+    svc = _service_for(db_path)
+    unique = "xenonbravo_capture_token_91357"
+    record = svc.create_memory(
+        memory_type="captured_thought",
+        scope="core",
+        subject="note:hello",
+        confidence=0.5,
+        payload={"text": f"Remember to find {unique} in FTS.", "capture_type": "observation"},
+        source="user:test",
+        reason="",
+    )
+    svc.conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (record.id,))
+    svc.conn.commit()
+    assert svc.search_memories(query=unique, status="candidate") == []
+
+    assert main([str(db_path)]) == 0
+
+    hits = svc.search_memories(query=unique, status="candidate")
+    assert [result.memory.id for result in hits] == [record.id]
+
+
 def test_rebuild_memory_fts_replaces_stale_rows(tmp_path) -> None:
     db_path = tmp_path / "m.db"
     svc = _service_for(db_path)

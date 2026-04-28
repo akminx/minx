@@ -85,10 +85,11 @@ Hermes may render those as "Investigation complete" or a richer explanation, but
 The existing Slice 9 spec stores `answer_md`. Under this update:
 
 - `answer_md` is optional harness-authored output, not Core-authored prose.
+- Core may store `answer_md` when Hermes passes it to `complete_investigation`, but Core must not generate or rewrite that final explanation.
 - Add or reserve `answer_template` and `answer_slots_json` only if Core needs to store a structured final render hint.
 - Prefer storing citations and structured answer metadata separately from final text when possible.
 
-Recommended additions:
+Default implementation additions:
 
 ```sql
 response_template TEXT,
@@ -102,11 +103,11 @@ Where:
 - `response_slots_json` stores JSON slots for that latest event.
 - `citation_refs_json` stores references such as memory ids, investigation ids, tool result digests, or vault paths used by the harness answer.
 
-If this feels redundant with trajectory storage during implementation, keep event templates in `trajectory_json` step entries instead of adding columns. The key invariant is that template keys/slots must be available to the harness without parsing prose.
+Use these columns for the initial Core implementation so `investigation_history` and `investigation_get` have a stable latest-event surface. Step-level events still live in `trajectory_json` entries. A trajectory-only storage approach should be a deliberate later simplification, and only if history/get tools continue exposing `response_template`, `response_slots`, and step event fields without parsing prose.
 
 ## Trajectory Step Shape
 
-Each appended step should include structured event data:
+`append_investigation_step` accepts a single `step_json` object with this shape. Core should validate the required fields and reject raw tool output. Optional extra scalar metadata is acceptable only when JSON-safe and non-sensitive.
 
 ```json
 {
@@ -125,7 +126,9 @@ Each appended step should include structured event data:
 }
 ```
 
-No raw tool output should be stored in `event_slots`.
+Required fields: `step`, `event_template`, `event_slots`, `tool`, `args_digest`, `result_digest`, and `latency_ms`.
+
+Allowed `event_slots` values are structured digests, counts, enum-like labels, ids, booleans, numbers, and short normalized strings. No raw tool output should be stored in `event_slots`; use `result_digest`, `row_count`, `byte_count`, or citation ids instead.
 
 ## Confirmations
 
@@ -143,7 +146,7 @@ If an investigation needs user confirmation before a risky step, Core should sto
 }
 ```
 
-Hermes renders the prompt and records the user's decision by calling the appropriate Core/domain tool. Core should not invent the confirmation wording.
+`append_investigation_step` may return `response_template == "investigation.needs_confirmation"` instead of `investigation.step_logged` when the appended step records a proposed risky action that is waiting on the user. Hermes renders the prompt and records the user's decision by calling the appropriate Core/domain tool. Core should not invent the confirmation wording.
 
 ## Testing
 
@@ -162,9 +165,34 @@ Hermes tests, outside this repo, should cover:
 - Hermes composes final explanation prose.
 - Hermes enforces budgets and records terminal status in Core.
 
+## Read Surfaces
+
+`investigation_history` should expose the latest lifecycle render event for each run:
+
+```json
+{
+  "runs": [
+    {
+      "investigation_id": 42,
+      "kind": "investigate",
+      "status": "succeeded",
+      "response_template": "investigation.completed",
+      "response_slots": {
+        "investigation_id": 42,
+        "kind": "investigate",
+        "status": "succeeded"
+      }
+    }
+  ],
+  "truncated": false
+}
+```
+
+`investigation_get` should include the same latest `response_template` / `response_slots` plus the trajectory entries with each step's `event_template` / `event_slots`. `log_investigation` is a convenience wrapper over the same lifecycle storage rules; it should return the terminal lifecycle render hint that matches the logged status.
+
 ## Relationship To The Existing Slice 9 Spec
 
-This spec amends, rather than replaces, `2026-04-19-slice9-agentic-investigations.md`.
+This spec amends, rather than replaces, `2026-04-19-slice9-agentic-investigations.md`. It supersedes that spec's minimal lifecycle response examples for `start_investigation`, `append_investigation_step`, `complete_investigation`, and `log_investigation`: those tools should return the relevant ids plus `response_template` / `response_slots` when they create or transition lifecycle state.
 
 When implementing Slice 9:
 
