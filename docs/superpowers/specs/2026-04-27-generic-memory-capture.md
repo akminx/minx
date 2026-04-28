@@ -32,9 +32,52 @@ Conceptual parameters:
 - `confidence: float = 0.5`: must satisfy `0.0 <= confidence < 0.8`; captures are always reviewable candidates.
 - `metadata: object | None = None`: optional JSON object stored under `payload.metadata` after validation.
 
-Successful calls use the standard tool response envelope. The inner `data` payload matches `memory_create`: `{ "memory": <MemoryRecord dict> }`.
+Successful calls use the standard tool response envelope. The inner `data` payload contains:
+
+```json
+{
+  "memory": "<MemoryRecord dict>",
+  "response_template": "memory_capture.created_candidate",
+  "response_slots": {
+    "memory_id": 123,
+    "status": "candidate",
+    "memory_type": "captured_thought",
+    "scope": "core",
+    "subject": "observation:Buy milk tomorrow",
+    "capture_type": "observation"
+  }
+}
+```
+
+`response_template` and `response_slots` are render hints for Hermes or another harness. Core must not return model-authored conversational copy for capture success. The template key lets Hermes decide whether to say "I saved that for review," "I added it to memory candidates," or any other user-facing phrasing in the active harness voice.
 
 Implementation home: `minx_mcp/core/tools/memory.py`, delegating to `MemoryService.create_memory` in `minx_mcp/core/memory_service.py`.
+
+## Core / Hermes Render Contract
+
+This feature follows the project-wide boundary for conversational MCP responses:
+
+- Core may use deterministic logic and, in other tools, LLMs for structured interpretation: intents, proposals, plans, classifications, template keys, and slots.
+- Core must not rely on model-authored final user-facing prose.
+- Core stores durable facts, memory rows, lifecycle events, audit records, and search indexes.
+- Hermes owns final wording, personality, channel-specific UX, timing, confirmations, and follow-up conversation.
+- Conversational MCP responses should prefer stable template keys and structured slots over prose. Legacy prose-like fields such as `question` or `assistant_message` may exist elsewhere as compatibility fallbacks, but new capture behavior should expose render hints directly.
+
+For `memory_capture`, that means Core returns `response_template` and `response_slots`. Hermes can render those however it wants:
+
+```json
+{
+  "response_template": "memory_capture.created_candidate",
+  "response_slots": {
+    "memory_id": 123,
+    "status": "candidate",
+    "subject": "observation:Buy milk tomorrow",
+    "capture_type": "observation"
+  }
+}
+```
+
+Hermes might turn that into "Saved for memory review," "I added that as a candidate memory," or another phrase. That phrasing is intentionally outside Core.
 
 ## Data Model
 
@@ -87,6 +130,7 @@ If vault projection uses type-specific templates, `captured_thought` should rend
 - Default `confidence=0.5` yields `candidate`.
 - `memory_confirm`, `memory_reject`, `memory_expire`, and `get_pending_memory_candidates` apply unchanged.
 - `memory_search` and `memory_hybrid_search` default to `status="active"`, so reviewers must pass `status="candidate"` or `status=None` to surface captures before confirmation.
+- Hermes should render any capture acknowledgement from `response_template` and `response_slots`, not from Core prose.
 
 ## Security
 
@@ -130,7 +174,7 @@ No partial writes: transaction behavior matches `create_memory`.
 
 ## Tests
 
-- `tests/test_core_memory_tools.py`: `memory_capture` happy path, default candidate status, optional subject, low confidence, metadata, high-confidence rejection, secret blocking, invalid metadata, and derived subject stability.
+- `tests/test_core_memory_tools.py`: `memory_capture` happy path, default candidate status, `response_template` / `response_slots`, optional subject, low confidence, metadata, high-confidence rejection, secret blocking, invalid metadata, and derived subject stability.
 - `tests/test_memory_service.py`: pure helper tests if helpers live outside the MCP tool module; service round-trip for a `captured_thought` row through `list_memories` and `search_memories(status="candidate")`.
 - `tests/test_rebuild_memory_fts.py`: captured thought text is searchable after rebuild.
 - Tests must be offline, with no API keys or embedding calls.
@@ -139,7 +183,7 @@ No partial writes: transaction behavior matches `create_memory`.
 
 - `README.md`: add a short "Quick capture vs structured create" note explaining `memory_capture`, `memory_create`, candidate review, and `memory_confirm`.
 - `HANDOFF.md`: note the new FTS migration and rebuild step.
-- MCP tool docstring: state defaults, review workflow, and that search defaults to active memories.
+- MCP tool docstring: state defaults, review workflow, render-template contract, and that search defaults to active memories.
 
 ## Implementation Steps
 
@@ -156,5 +200,6 @@ No partial writes: transaction behavior matches `create_memory`.
 - Single tool only; `memory_create` remains the structured/active path.
 - Capture is constrained to candidate confidence.
 - No LLM, no auto-embedding, no metadata in FTS.
+- Core returns render hints; Hermes owns final capture acknowledgement prose.
 - Data shape, lifecycle, FTS, security, errors, tests, docs, and rollout steps are specified without reserved placeholders.
 

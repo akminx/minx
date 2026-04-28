@@ -504,6 +504,37 @@ def test_finance_query_rejects_injected_non_json_capable_llm(tmp_path):
     assert result["error_code"] == "INVALID_INPUT"
 
 
+def test_finance_query_does_not_surface_llm_authored_clarification_copy(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(
+        service,
+        llm=_StubFinanceQueryLLM(
+            '{"intent":"list_transactions","filters":{},'
+            '"confidence":0.9,"needs_clarification":true,'
+            '"clarification_type":"missing_date_range",'
+            '"question":"Hey bestie, when should I snoop through your money?",'
+            '"options":["vibes only"]}'
+        ),
+    )
+    finance_query = get_tool(server, "finance_query").fn
+
+    result = _call_tool_sync(finance_query, "show me Whole Foods transactions", "2026-03-31")
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "clarify"
+    assert result["data"]["clarification_type"] == "missing_date_range"
+    assert result["data"]["clarification_template"] == "finance_query.clarify.missing_date_range"
+    assert result["data"]["clarification_slots"] == {
+        "intent": "list_transactions",
+        "filters": {},
+        "field": "date_range",
+    }
+    assert result["data"]["question"] == "Which date range should I use?"
+    assert result["data"]["options"] is None
+    assert "bestie" not in str(result)
+    assert "vibes" not in str(result)
+
+
 def test_finance_query_legacy_blank_message_reports_message_field_name(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service, llm=object())
@@ -609,6 +640,12 @@ def test_finance_query_uses_service_db_path_for_default_llm_resolution(tmp_path,
             "filters": {},
             "confidence": 0.9,
             "clarification_type": "missing_date_range",
+            "clarification_template": "finance_query.clarify.missing_date_range",
+            "clarification_slots": {
+                "intent": "list_transactions",
+                "filters": {},
+                "field": "date_range",
+            },
             "question": "Which date range should I use?",
             "options": None,
         },

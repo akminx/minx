@@ -141,7 +141,13 @@ def test_finance_query_interpretation_returns_clarify_plan_for_ambiguous_merchan
     assert plan.intent == "list_transactions"
     assert plan.needs_clarification is True
     assert plan.clarification_type == "ambiguous_merchant"
-    assert plan.options == ["Target", "Target Optical"]
+    assert plan.clarification_template == "finance_query.clarify.ambiguous_merchant"
+    assert plan.clarification_slots == {
+        "intent": "list_transactions",
+        "filters": {"start_date": "2026-02-01", "end_date": "2026-02-28"},
+        "field": "merchant",
+    }
+    assert plan.options == ["Target"]
 
 
 def test_finance_query_interpretation_model_rejects_clarify_without_type() -> None:

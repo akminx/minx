@@ -50,14 +50,13 @@ async def interpret_finance_query(
     )
 
     if raw.needs_clarification:
-        return FinanceQueryPlan(
+        return _llm_requested_clarification_plan(
             intent=raw.intent,
             filters=filters,
             confidence=raw.confidence,
-            needs_clarification=True,
             clarification_type=raw.clarification_type,
-            question=raw.question,
-            options=raw.options,
+            llm_options=raw.options,
+            finance_api=finance_api,
         )
 
     for field_name in ("start_date", "end_date"):
@@ -235,6 +234,120 @@ def _to_filters(raw: FinanceQueryInterpretation) -> FinanceQueryFilters:
     )
 
 
+def _llm_requested_clarification_plan(
+    *,
+    intent: FinanceQueryIntent,
+    filters: FinanceQueryFilters,
+    confidence: float,
+    clarification_type: FinanceQueryClarificationType | None,
+    llm_options: list[str] | None,
+    finance_api: FinanceQueryReadProtocol,
+) -> FinanceQueryPlan:
+    if clarification_type is None:
+        raise InvalidInputError("finance_query clarification_type is required")
+
+    return _clarify(
+        intent=intent,
+        filters=filters,
+        confidence=confidence,
+        clarification_type=clarification_type,
+        clarification_template=f"finance_query.clarify.{clarification_type}",
+        clarification_slots=_clarification_slots(intent, filters, clarification_type),
+        question=_deterministic_clarification_question(clarification_type),
+        options=_deterministic_clarification_options(
+            clarification_type, filters, finance_api, llm_options
+        ),
+    )
+
+
+def _deterministic_clarification_question(
+    clarification_type: FinanceQueryClarificationType,
+) -> str:
+    if clarification_type == "unknown_category":
+        return "Which category did you mean?"
+    if clarification_type in {"ambiguous_merchant", "unknown_merchant"}:
+        return "Which merchant did you mean?"
+    if clarification_type == "unknown_account":
+        return "Which account did you mean?"
+    if clarification_type == "missing_date_range":
+        return "Which date range should I use?"
+    raise InvalidInputError(f"Unsupported finance_query clarification_type: {clarification_type}")
+
+
+def _deterministic_clarification_options(
+    clarification_type: FinanceQueryClarificationType,
+    filters: FinanceQueryFilters,
+    finance_api: FinanceQueryReadProtocol,
+    llm_options: list[str] | None = None,
+) -> list[str] | None:
+    if clarification_type == "unknown_category" and filters.category_name is not None:
+        return _suggest_options(filters.category_name, finance_api.list_transaction_category_names())
+    if clarification_type in {"ambiguous_merchant", "unknown_merchant"} and filters.merchant is not None:
+        return _suggest_options(filters.merchant, finance_api.list_spending_merchant_names())
+    if clarification_type == "unknown_account" and filters.account_name is not None:
+        return _suggest_options(filters.account_name, finance_api.list_account_names())
+    if clarification_type in {"ambiguous_merchant", "unknown_merchant"}:
+        return _known_llm_options(llm_options, finance_api.list_spending_merchant_names())
+    if clarification_type == "unknown_category":
+        return _known_llm_options(llm_options, finance_api.list_transaction_category_names())
+    if clarification_type == "unknown_account":
+        return _known_llm_options(llm_options, finance_api.list_account_names())
+    return None
+
+
+def _clarification_slots(
+    intent: FinanceQueryIntent,
+    filters: FinanceQueryFilters,
+    clarification_type: FinanceQueryClarificationType,
+) -> dict[str, object]:
+    slots: dict[str, object] = {
+        "intent": intent,
+        "filters": filters.to_public_dict(),
+        "field": _clarification_field(clarification_type),
+    }
+    value = _clarification_field_value(filters, clarification_type)
+    if value is not None:
+        slots["value"] = value
+    return slots
+
+
+def _clarification_field(clarification_type: FinanceQueryClarificationType) -> str:
+    if clarification_type in {"ambiguous_merchant", "unknown_merchant"}:
+        return "merchant"
+    if clarification_type == "unknown_category":
+        return "category_name"
+    if clarification_type == "unknown_account":
+        return "account_name"
+    if clarification_type == "missing_date_range":
+        return "date_range"
+    raise InvalidInputError(f"Unsupported finance_query clarification_type: {clarification_type}")
+
+
+def _clarification_field_value(
+    filters: FinanceQueryFilters,
+    clarification_type: FinanceQueryClarificationType,
+) -> str | None:
+    if clarification_type in {"ambiguous_merchant", "unknown_merchant"}:
+        return filters.merchant
+    if clarification_type == "unknown_category":
+        return filters.category_name
+    if clarification_type == "unknown_account":
+        return filters.account_name
+    return None
+
+
+def _known_llm_options(llm_options: list[str] | None, candidates: list[str]) -> list[str] | None:
+    if not llm_options:
+        return None
+    candidate_by_key = {_normalize_lookup_value(candidate): candidate for candidate in candidates}
+    grounded: list[str] = []
+    for option in llm_options:
+        known = candidate_by_key.get(_normalize_lookup_value(option))
+        if known is not None and known not in grounded:
+            grounded.append(known)
+    return grounded or None
+
+
 def _canonicalize_value(value: str | None, candidates: list[str]) -> str | None:
     if value is None:
         return None
@@ -284,6 +397,8 @@ def _clarify(
     confidence: float,
     clarification_type: FinanceQueryClarificationType,
     question: str,
+    clarification_template: str | None = None,
+    clarification_slots: dict[str, object] | None = None,
     options: list[str] | None = None,
 ) -> FinanceQueryPlan:
     return FinanceQueryPlan(
@@ -292,6 +407,10 @@ def _clarify(
         confidence=confidence,
         needs_clarification=True,
         clarification_type=clarification_type,
+        clarification_template=clarification_template
+        or f"finance_query.clarify.{clarification_type}",
+        clarification_slots=clarification_slots
+        or _clarification_slots(intent, filters, clarification_type),
         question=question,
         options=options,
     )

@@ -41,6 +41,8 @@ class FinanceQueryPlan:
     confidence: float
     needs_clarification: bool = False
     clarification_type: FinanceQueryClarificationType | None = None
+    clarification_template: str | None = None
+    clarification_slots: dict[str, object] | None = None
     question: str | None = None
     options: list[str] | None = None
 
@@ -48,10 +50,21 @@ class FinanceQueryPlan:
         if self.needs_clarification:
             if self.clarification_type is None:
                 raise ValueError("clarification_type is required when clarification is needed")
+            if self.clarification_template is None:
+                raise ValueError("clarification_template is required when clarification is needed")
+            if self.clarification_slots is None:
+                raise ValueError("clarification_slots is required when clarification is needed")
             if self.question is None:
                 raise ValueError("question is required when clarification is needed")
         elif any(
-            value is not None for value in (self.clarification_type, self.question, self.options)
+            value is not None
+            for value in (
+                self.clarification_type,
+                self.clarification_template,
+                self.clarification_slots,
+                self.question,
+                self.options,
+            )
         ):
             raise ValueError(
                 "clarification fields must be omitted when clarification is not needed"

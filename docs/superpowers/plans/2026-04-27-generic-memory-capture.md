@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add Core MCP tool `memory_capture` that stores quick, review-first captures as `captured_thought` memories via `MemoryService.create_memory`, extends FTS5 to index `payload_json.text` and `capture_type`, and documents operator workflow (candidate status, search filters, rebuild script).
+**Goal:** Add Core MCP tool `memory_capture` that stores quick, review-first captures as `captured_thought` memories via `MemoryService.create_memory`, returns structured render hints for Hermes, extends FTS5 to index `payload_json.text` and `capture_type`, and documents operator workflow (candidate status, search filters, rebuild script).
 
-**Architecture:** MCP tool code in `minx_mcp/core/tools/memory.py` validates inputs, builds a permissive payload (`text`, `capture_type`, optional `metadata`), derives or normalizes `subject`, rejects `confidence >= 0.8`, then calls `create_memory` with `memory_type="captured_thought"` and `actor="user"`. Deterministic normalization and metadata shape/size checks live in a small pure module `minx_mcp/core/memory_capture.py` so tests can import them without spinning up FastMCP. FTS behavior is updated by migration `026_memory_capture_fts.sql` (same trigger pattern as `025_memory_fts_aliases.sql`) plus matching `scripts/rebuild_memory_fts.py` SQL. `captured_thought` is intentionally omitted from `PAYLOAD_MODELS` so `validate_memory_payload` passes the dict through unchanged.
+**Architecture:** MCP tool code in `minx_mcp/core/tools/memory.py` validates inputs, builds a permissive payload (`text`, `capture_type`, optional `metadata`), derives or normalizes `subject`, rejects `confidence >= 0.8`, then calls `create_memory` with `memory_type="captured_thought"` and `actor="user"`. The tool returns the stored memory plus `response_template` / `response_slots` so Hermes owns final conversational wording. Deterministic normalization and metadata shape/size checks live in a small pure module `minx_mcp/core/memory_capture.py` so tests can import them without spinning up FastMCP. FTS behavior is updated by migration `026_memory_capture_fts.sql` (same trigger pattern as `025_memory_fts_aliases.sql`) plus matching `scripts/rebuild_memory_fts.py` SQL. `captured_thought` is intentionally omitted from `PAYLOAD_MODELS` so `validate_memory_payload` passes the dict through unchanged.
 
 **Tech Stack:** Python 3.12, SQLite + FTS5, `mcp` / FastMCP tools, existing `MemoryService`, `scan_memory_input` / `validate_memory_payload`, pytest, ruff, mypy.
 
@@ -14,7 +14,7 @@
 
 | File | Role |
 |------|------|
-| `minx_mcp/core/memory_capture.py` | **Create:** pure functions: `normalize_capture_type`, `validate_capture_metadata`, `derive_capture_subject`, `build_captured_thought_payload`, `normalize_capture_text_for_body`. |
+| `minx_mcp/core/memory_capture.py` | **Create:** pure functions: `normalize_capture_type`, `validate_capture_metadata`, `derive_capture_subject`, `build_captured_thought_payload`, `build_capture_response_slots`, `normalize_capture_text_for_body`. |
 | `minx_mcp/core/tools/memory.py` | **Modify:** register `@mcp.tool(name="memory_capture")`, implement `_memory_capture` calling helpers + `MemoryService.create_memory` with `reason=""`. |
 | `minx_mcp/core/memory_payloads.py` | **Modify:** add a short comment that `captured_thought` is intentionally omitted from `PAYLOAD_MODELS`. |
 | `minx_mcp/schema/migrations/026_memory_capture_fts.sql` | **Create:** drop/recreate `memories_ai_fts`, `memories_au_fts`, `memories_ad_fts` with extended `payload_text` CASE. |
@@ -185,12 +185,30 @@ Behavior (lock to spec):
 
    - Return `{"text": text, "capture_type": capture_type}` and if `metadata` is not `None`, add `"metadata": metadata`.
 
+6. **`build_capture_response_slots(*, record: MemoryRecord, capture_type: str) -> dict[str, object]`**
+
+   - Return only structured data Hermes can render:
+
+```python
+{
+    "memory_id": record.id,
+    "status": record.status,
+    "memory_type": record.memory_type,
+    "scope": record.scope,
+    "subject": record.subject,
+    "capture_type": capture_type,
+}
+```
+
+   - Do not include prose like `"I saved that"`; Hermes owns final wording.
+
 - [ ] **Step 1: Write failing tests**
 
 Add to `tests/test_memory_service.py`:
 
 ```python
 from minx_mcp.core.memory_capture import (
+    build_capture_response_slots,
     derive_capture_subject,
     normalize_capture_type,
     validate_capture_metadata,
@@ -233,6 +251,34 @@ def test_validate_capture_metadata_rejects_long_string_leaf() -> None:
     bad = {"k": "x" * 5000}
     with pytest.raises(InvalidInputError):
         validate_capture_metadata(bad)
+
+
+def test_build_capture_response_slots_returns_render_data_only() -> None:
+    from minx_mcp.core.memory_models import MemoryRecord
+
+    record = MemoryRecord(
+        id=7,
+        memory_type="captured_thought",
+        scope="core",
+        subject="observation:Buy milk",
+        confidence=0.5,
+        status="candidate",
+        payload={"text": "Buy milk", "capture_type": "observation"},
+        source="user:capture",
+        reason="",
+        created_at="2026-04-28T00:00:00Z",
+        updated_at="2026-04-28T00:00:00Z",
+        last_confirmed_at=None,
+        expires_at=None,
+    )
+    assert build_capture_response_slots(record=record, capture_type="observation") == {
+        "memory_id": 7,
+        "status": "candidate",
+        "memory_type": "captured_thought",
+        "scope": "core",
+        "subject": "observation:Buy milk",
+        "capture_type": "observation",
+    }
 ```
 
 Use these exact helper names from `minx_mcp/core/memory_capture.py`.
@@ -287,6 +333,15 @@ def test_memory_capture_happy_path_candidate(tmp_path: Path) -> None:
     assert mem["memory_type"] == "captured_thought"
     assert mem["status"] == "candidate"
     assert mem["confidence"] == 0.5
+    assert out["data"]["response_template"] == "memory_capture.created_candidate"
+    assert out["data"]["response_slots"] == {
+        "memory_id": mem["id"],
+        "status": "candidate",
+        "memory_type": "captured_thought",
+        "scope": "core",
+        "subject": mem["subject"],
+        "capture_type": "observation",
+    }
     payload = mem["payload_json"]
     if isinstance(payload, str):
         import json
@@ -403,10 +458,11 @@ Implement `_memory_capture`:
 5. `sj = derive_capture_subject(capture_type_normalized=ct, raw_text=text, explicit_subject=subject)`.
 6. `payload = build_captured_thought_payload(text=normalized_text, capture_type=ct, metadata=meta)`.
 7. `require_non_empty("scope", scope)`, `require_non_empty("source", source)`.
-8. `MemoryService.create_memory(memory_type="captured_thought", scope=scope, subject=sj, confidence=conf, payload=payload, source=source, reason="", actor="user")`.
-9. Return `{"memory": memory_record_as_dict(record)}`.
+8. `record = MemoryService.create_memory(memory_type="captured_thought", scope=scope, subject=sj, confidence=conf, payload=payload, source=source, reason="", actor="user")`.
+9. `slots = build_capture_response_slots(record=record, capture_type=ct)`.
+10. Return `{"memory": memory_record_as_dict(record), "response_template": "memory_capture.created_candidate", "response_slots": slots}`.
 
-Tool **description** docstring (first line + body MCP uses): state defaults (`observation`, `core`, `user:capture`, `confidence=0.5`), that rows are **candidate** until `memory_confirm`, that `memory_search` defaults to `status="active"` so reviewers must pass `status="candidate"` (or `null` for both) to find captures, and that `confidence` must stay below `0.8`.
+Tool **description** docstring (first line + body MCP uses): state defaults (`observation`, `core`, `user:capture`, `confidence=0.5`), that rows are **candidate** until `memory_confirm`, that `memory_search` defaults to `status="active"` so reviewers must pass `status="candidate"` (or `null` for both) to find captures, that `confidence` must stay below `0.8`, and that harnesses should render acknowledgement copy from `response_template` / `response_slots`.
 
 Update module docstring at top of `memory.py` to mention `memory_capture`.
 
@@ -499,6 +555,7 @@ Add **"Quick capture vs structured create"** under the README memory section nea
 - `memory_capture`: fast, default **candidate**, `captured_thought` type; confirm with `memory_confirm`.
 - `memory_create`: structured types, can set **active** at high confidence.
 - Mention `memory_search` default `status="active"` - use `status="candidate"` for captures.
+- Mention `response_template` / `response_slots` as the preferred Hermes rendering contract; Core stores and returns render data, Hermes owns final acknowledgement wording.
 
 - [ ] **Step 2: HANDOFF rollout note**
 
@@ -575,6 +632,7 @@ Expected: **no** trailing whitespace or conflict markers on staged/unstaged diff
 | Spec section | Task(s) |
 |--------------|---------|
 | Tool `memory_capture` + parameters | Task 4 |
+| Render hints for Hermes (`response_template`, `response_slots`) | Tasks 3-4, 7 |
 | `captured_thought`, not in `PAYLOAD_MODELS` | Tasks 4-5 |
 | Payload shape `text`, `capture_type`, optional `metadata` | Tasks 3-4 |
 | Reject `confidence >= 0.8` | Task 4 |

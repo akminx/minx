@@ -518,6 +518,8 @@ async def _finance_query(
             "filters": plan.filters.to_public_dict(),
             "confidence": plan.confidence,
             "clarification_type": plan.clarification_type,
+            "clarification_template": plan.clarification_template,
+            "clarification_slots": plan.clarification_slots,
             "question": plan.question,
             "options": plan.options,
         }
