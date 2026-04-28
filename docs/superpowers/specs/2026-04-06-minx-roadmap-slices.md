@@ -17,10 +17,11 @@ The roadmap now follows four arcs:
 
 From the current repo baseline, the next recommended execution order is:
 
-1. Run CI parity and slow MCP smoke checks for completed Slice 6
-2. Slice 9: Agentic Investigations, built on the completed memory retrieval foundation
-3. Slice 7: Ideas/Journal MCP, when the journal domain becomes the next product priority
-4. Dashboard + Richer Surfaces, as a separate presentation layer
+1. Slice 9d: the real Hermes `minx_investigate` loop, built on the merged Core investigation APIs
+2. Slice 9e-9g: planning/retro/onboarding investigation surfaces and prior-investigation retrieval
+3. Observability/evals: traces or structured run logs, repeatable investigation/playbook smoke scenarios, and health summaries
+4. Dashboard + Richer Surfaces, as a separate presentation layer for inspecting state and audit trails
+5. Slice 7: Ideas/Journal MCP, when the journal domain becomes the next product priority
 
 Slice 5 (Harness Adaptation) has been removed. The MCP protocol itself provides portability. Harness-specific behavior lives in the harness (e.g. Hermes skill files), not in Core. See the MCP / Harness Responsibility Split section in the architecture design.
 
@@ -287,13 +288,14 @@ Ambient input ingestion (vault polling, journal scanning) remains harness-level 
 
 ## Slice 9: Agentic Investigations
 
-**Status:** Designed, deferred until Slice 6i-6l are complete
+**Status:** Core storage/read APIs implemented; Hermes runtime loop pending
 
 **Scope:**
 - Core investigation storage and history APIs for user-initiated, one-off agentic investigations
 - trajectory digests that store tool names, argument/result digests, latency, and cost without raw tool outputs
 - redaction policy for context, answers, error messages, and stored trajectory metadata
-- later Hermes `minx_investigate` loop with explicit tool-call, token, and wall-clock budgets
+- Hermes `minx_investigate` loop with explicit tool-call, token, and wall-clock budgets
+- follow-on Hermes surfaces: `minx_plan`, `minx_retro`, and `minx_onboard_entity`
 
 **Delivers:** Minx can answer open-ended questions with unknown tool sequences while Core keeps the durable audit/history layer and the harness owns the LLM loop.
 

@@ -1,6 +1,14 @@
 # Project Handoff
 
-Status as of 2026-04-27: Slices 1 through 4, consolidation/code-quality hardening, Slice 6a-6f durable memory, **Slice 6g content-fingerprint dedup (migration 020, primitive `minx_mcp/core/fingerprint.py`, ingest dispatch on fingerprint match, operator backfill script)**, **Slice 6h secret-scanner write gate (`minx_mcp/core/secret_scanner.py`, memory/vault-frontmatter/body hooks, read-only historical scan script)**, **Slice 6i FTS5 memory search (`021_memory_fts5.sql`, `025_memory_fts_aliases.sql`, `MemoryService.search_memories`, `memory_search`, operator FTS rebuild script)**, **Slice 6j memory graph edges (`022_memory_edges.sql`, `memory_edge_create/list/delete`)**, **Slice 6k enrichment queue (`023_enrichment_queue.sql`, `enrichment_sweep/status/retry_dead_letter`, `enrichment_sweep` playbook, stale-running job recovery and retry backoff)**, **Slice 6l queued memory embeddings (`024_memory_embeddings.sql`, `memory_embedding_enqueue/status`, OpenRouter-backed `memory.embedding` sweeps when configured, `memory_hybrid_search` embedding rerank with FTS fallback)**, and **Slice 8 Core-side Proactive Autonomy surfaces are implemented and validated against Hermes end-to-end**. `main` is synced with upstream quality waves (ruff expansion + strict mypy + test hardening) and includes Slice 8 playbook registry/run auditing (`playbook://registry`, `start_playbook_run`, `complete_playbook_run`, `log_playbook_run`, `playbook_history`, `playbook_reconcile_crashed`) plus migrations `019_playbook_runs.sql`, `020_memory_content_fingerprint.sql`, `021_memory_fts5.sql`, `022_memory_edges.sql`, `023_enrichment_queue.sql`, `024_memory_embeddings.sql`, and `025_memory_fts_aliases.sql`. **Slice 9 (Agentic Investigations) remains designed and is now sequenced after the completed Slice 6 retrieval/enrichment foundation.**
+Status as of 2026-04-28: Slices 1 through 4, consolidation/code-quality hardening, Slice 6a-6l durable memory/retrieval/enrichment, Slice 8 Core-side proactive autonomy, generic `memory_capture`, goal/render contract updates, and Slice 9 Core investigation storage/read APIs are implemented. `main` includes migrations through `027_investigations.sql`: playbook audit (`019`), memory fingerprint/FTS/graph/enrichment/embeddings (`020`-`026`), and investigations (`027`). Core now exposes investigation lifecycle/history tools and resources, while Hermes owns the actual agent loop. The `minx-hermes` overlay has the first `investigate` skill and investigation smoke helper, but **the real runtime `minx_investigate` loop remains the next implementation target**.
+
+### 2026-04-28 Slice 9 / Render / Capture Handoff Update
+
+- Generic memory capture is implemented: `memory_capture` creates review-first `captured_thought` candidate memories, returns `memory_capture.created_candidate` render hints, and migration `026_memory_capture_fts.sql` indexes `payload.text` / `capture_type`.
+- Goal parsing render hints are implemented: `goal_parse` returns `response_template` / `response_slots` for actionable results and `clarification_template` / `clarification_slots` for clarification outcomes while retaining compatibility fields.
+- Slice 9 Core APIs are implemented: migration `027_investigations.sql`, `minx_mcp/core/investigations.py`, `minx_mcp/core/tools/investigations.py`, tools `start_investigation`, `append_investigation_step`, `complete_investigation`, `log_investigation`, `investigation_history`, `investigation_get`, and resources `investigation://recent` / `investigation://{id}`.
+- Investigation storage is digest-only for steps: Core stores tool names, argument/result SHA-256 digests, counts/labels, citations, lifecycle render slots, and terminal status; it does not store raw tool output.
+- `minx-hermes` commit `1abd205` adds `skills/minx/investigate/SKILL.md` and `scripts/smoke-investigations.sh`. Use that repo for Hermes-side loop work; keep Core business logic in MCP.
 
 ### 2026-04-27 Slice 6h Handoff Update
 
@@ -83,24 +91,30 @@ Hermes cutover snapshot (2026-04-14):
 - Stack: Python 3.12, FastMCP, SQLite, Pydantic, pytest, mypy
 - Current health is tracked by the latest handoff status and CI. The 2026-04-22 validation snapshot was `uv run ruff check minx_mcp tests`, `uv run mypy minx_mcp`, and `uv run --with hypothesis pytest tests/ -x -q` passing at that point in the branch history.
 
-## Immediate Next Steps (2026-04-27)
+## Immediate Next Steps (2026-04-28)
 
-1. Slice 6h follow-ups are now closed for the next memory surface:
-  - vault markdown body writes (`write_markdown`, `replace_section`) block secret-shaped content with `surface="vault_body"` and leave files unchanged
-  - public memory secret-scan integration helpers live in `minx_mcp/core/memory_secret_scanning.py`; vault scanner/reconciler no longer import private `MemoryService` helpers
-  - `scripts/` is included in the CI Ruff gate because `scripts/scan_memory_for_secrets.py` is operational code
-2. Slice 6 retrieval/enrichment foundation is now in place through 6l.
-3. Defer **Slice 9a/9b** until after CI parity and slow MCP smoke checks:
-  - investigation storage should use the post-6l migration number, not pre-claim `021`
-  - investigation redaction/citation behavior should build on the finished memory search, graph, queue, and embedding primitives
-4. Keep Hermes operational hardening moving in parallel because it directly de-risks Slice 9d:
-  - add a `sync-hermes-overlay.sh`-style workflow so `~/Documents/minx-hermes` can deterministically refresh `~/.hermes/`
-  - add cron-config validation that fails if any Minx job is missing `model`, `provider`, or `next_run_at`
-  - normalize `trigger_ref` naming across playbooks for cleaner audit/history analysis
-  - add a lightweight “playbook health” report that summarizes recent failures / long skip streaks from `playbook_history`
-5. After Core Slice 9a/9b, implement **Slice 9d** in Hermes:
-  - a budgeted `minx_investigate` loop that logs investigation steps into Core
-  - re-use the Slice 8 audit discipline: explicit start, append per step, explicit terminal completion
+1. Pick up **Slice 9d: real Hermes `minx_investigate` loop** in `minx-hermes`:
+  - build or document a concrete safe domain-tool catalog for Finance, Meals, Training, Core memory, goals, and insights
+  - tighten `skills/minx/investigate/SKILL.md` around current real tool names, not placeholder names like `meals_list`
+  - implement the bounded loop discipline: `start_investigation` -> domain tool calls -> digest-only `append_investigation_step` -> terminal `complete_investigation`
+  - enforce budgets for tool calls, wall clock, and large outputs; budget exhaustion must produce a partial answer and `status='budget_exhausted'`
+  - default to read-only tools; risky mutations require `investigation.needs_confirmation` and explicit user confirmation
+2. Operationally validate Slice 9d:
+  - start the Minx stack with `scripts/start_hermes_stack.sh`
+  - run one simple real investigation through Hermes
+  - use `minx-hermes/scripts/smoke-investigations.sh --check-schema` and `--history`
+  - verify every started investigation reaches a terminal status and `trajectory_json` contains no raw tool output
+3. Continue Slice 9 after the first investigation loop works:
+  - **9e**: `minx_plan`
+  - **9f**: `minx_retro` and `minx_onboard_entity`
+  - **9g**: prior-investigation retrieval/citation support from Core memory/search surfaces
+4. Bring observability/evaluation forward before adding the Journal domain:
+  - MCP call traces or structured run logs for playbooks/investigations
+  - repeatable smoke/eval scenarios for dining-spend, goal-drift, memory-context, and budget-exhaustion investigations
+  - lightweight health reports for stuck/failed playbooks and investigations
+5. Then build richer surfaces and later Slice 7:
+  - Dashboard/richer surfaces should come before Ideas/Journal so state, audit rows, memories, and investigations are inspectable
+  - Slice 7 Ideas/Journal MCP follows after the investigation/eval/dashboard loop is understandable
 6. Keep the normal CI parity checks as the merge gate for any Core-side work:
   - `uv sync --all-extras`
   - `uv run ruff check minx_mcp tests scripts`
@@ -225,11 +239,12 @@ Each PR ships independently green (`ruff` + `mypy minx_mcp` + `pytest`), with mi
 
 - Core tools: `get_daily_snapshot`, `get_insight_history`, `get_goal_trajectory`, `persist_note`, `vault_replace_section`, `vault_replace_frontmatter`, `vault_scan`, `vault_reconcile_memories`, `memory_search`, `memory_hybrid_search`, `memory_embedding_enqueue`, `memory_embedding_status`, `memory_edge_create`, `memory_edge_list`, `memory_edge_delete`, `enrichment_sweep`, `enrichment_status`, `enrichment_retry_dead_letter`
 - Core playbook tools/resources (Slice 8): `start_playbook_run`, `complete_playbook_run`, `log_playbook_run`, `playbook_history`, `playbook_reconcile_crashed`, resource `playbook://registry`
+- Core investigation tools/resources (Slice 9): `start_investigation`, `append_investigation_step`, `complete_investigation`, `log_investigation`, `investigation_history`, `investigation_get`, resources `investigation://recent` and `investigation://{id}`
 - Goal tools: `goal_parse`, `goal_create`, `goal_list`, `goal_get`, `goal_update`, `goal_archive`
 - Finance tools: `finance_query` (+ existing finance domain operations)
 - Meals domain: meal logging/planning + nutrition summary flows + `recipe_template` (returns the packaged `recipe-starter.md` scaffold for users/harness to author indexer-compatible recipe notes)
 - Training domain: exercise/program/session/progress flows
-- **Memory tools (Slice 6)**: `memory_list(status?, memory_type?, scope?, limit?)`, `memory_get`, `memory_search(query, scope?, memory_type?, status?, limit?)`, `memory_hybrid_search(query, scope?, memory_type?, status?, limit?)`, `memory_embedding_enqueue`, `memory_embedding_status`, `memory_edge_create`, `memory_edge_list`, `memory_edge_delete`, `memory_create(memory_type, scope, subject, confidence, payload, source, reason?)`, `memory_confirm`, `memory_reject` (candidate-only), `memory_expire` (active-only), `get_pending_memory_candidates(scope?, limit?)`, `list_snapshot_archives`, `get_snapshot_archive`, `vault_scan(dry_run?)`, `vault_reconcile_memories(dry_run?)`
+- **Memory tools (Slice 6)**: `memory_list(status?, memory_type?, scope?, limit?)`, `memory_get`, `memory_search(query, scope?, memory_type?, status?, limit?)`, `memory_hybrid_search(query, scope?, memory_type?, status?, limit?)`, `memory_capture(text, scope, source, capture_type?, subject?, confidence?, metadata?)`, `memory_embedding_enqueue`, `memory_embedding_status`, `memory_edge_create`, `memory_edge_list`, `memory_edge_delete`, `memory_create(memory_type, scope, subject, confidence, payload, source, reason?)`, `memory_confirm`, `memory_reject` (candidate-only), `memory_expire` (active-only), `get_pending_memory_candidates(scope?, limit?)`, `list_snapshot_archives`, `get_snapshot_archive`, `vault_scan(dry_run?)`, `vault_reconcile_memories(dry_run?)`
 - **Core wiki resources**: `wiki-templates://list`, `wiki-templates://{name}` for `entity`, `pattern`, `review`, `goal`, and `memory`
 
 ## MCP Tool Naming Convention
@@ -238,24 +253,27 @@ Tool names are not uniform across domains today: Meals exposes short, unprefixed
 
 ### Planned MCP Surface Additions
 
-Slice 6d-6l and Slice 8 Core-side surfaces are now implemented. Remaining planned additions are:
+Slice 6d-6l, Slice 8 Core-side surfaces, memory capture, goal render hints, and Slice 9 Core investigation APIs are now implemented. Remaining planned additions are:
 
-- **Slice 9 (Agentic Investigations)**: investigation storage, redaction gates, trajectory persistence, and harness loop integration after verification.
+- **Slice 9d (Hermes investigations)**: real `minx_investigate` loop, safe tool catalog, digest generation, budget enforcement, and operational smoke validation.
+- **Slice 9e-9g**: `minx_plan`, `minx_retro`, `minx_onboard_entity`, and prior-investigation retrieval/citation support.
+- **Observability/evals before Journal**: traces or structured run logs, repeatable investigation/playbook eval scenarios, and health summaries for stuck/failed autonomous work.
+- **Dashboard/richer surfaces**: visual inspection of goals, memories, investigations, playbooks, and domain summaries.
+- **Slice 7 (Ideas/Journal MCP)**: deferred until after investigations and richer inspection/eval surfaces are understandable.
 
 Meals Phase 3 (deferred) will add:
 
 - A `minx_mcp/meals/templates/shopping-list.md` `string.Template` scaffold (same packaging pattern as the finance templates and the Phase 6e wiki scaffolds) for deterministic SQL-backed shopping-list renders — see Slice 3 spec §"Phase 3: Shopping List Generation"
 
-Slice 8 harness-side work remaining:
-
-- Hermes playbook runner scripts and cron wiring for autonomous execution/confirmation loops
+Hermes-side work remaining lives primarily in `minx-hermes`: operational `minx_investigate`, then `minx_plan` / `minx_retro` / `minx_onboard_entity`.
 
 ## Hermes Harness Readiness
 
 - Startup helper is available at `scripts/start_hermes_stack.sh` for bringing up Finance/Core/Meals/Training MCP services.
 - Slice 4 smoke script exists at `scripts/hermes_slice4_smoke.py` for harness-facing integration checks.
 - A real Hermes-style streamable HTTP MCP smoke test exists at `tests/test_hermes_http_smoke.py`; it starts all four servers on temporary ports and verifies cross-domain tool calls over `/mcp`. As of 2026-04-17 the smoke also drives the full Slice 6a durable-memory lifecycle end-to-end over HTTP (candidate creation at confidence 0.5, high-confidence auto-promote at 0.9, `get_pending_memory_candidates` with scope filter, `memory_confirm`, `memory_expire`, plus a duplicate-live-triple `CONFLICT` structured error envelope) and calls `recipe_template` on minx-meals to prove the packaged recipe scaffold renders verbatim through a real streamable HTTP transport.
-- Slice 8 Core tools are shipped; Hermes-side playbook runner and cron automation wiring are still pending.
+- Slice 8 Core tools and Hermes playbook overlay are shipped; keep using `minx-hermes/scripts/smoke-playbooks.sh` for operational checks.
+- Slice 9 Core tools are shipped; `minx-hermes` has `skills/minx/investigate/SKILL.md` and `scripts/smoke-investigations.sh`, but the actual budgeted Hermes investigation loop is still pending.
 
 ## Canonical Specs And Inputs
 
@@ -268,7 +286,10 @@ Slice 8 harness-side work remaining:
 - Slice 6c plan: [docs/superpowers/plans/2026-04-17-slice6c-vault-scanner.md](docs/superpowers/plans/2026-04-17-slice6c-vault-scanner.md)
 - Revised Slice 6c-6f spec: [docs/superpowers/specs/2026-04-18-slice6cdef-vault-scanner-memory-context-wiki-sync.md](docs/superpowers/specs/2026-04-18-slice6cdef-vault-scanner-memory-context-wiki-sync.md)
 - Slice 6i spec/plan: [docs/superpowers/specs/2026-04-27-slice6i-memory-fts5.md](docs/superpowers/specs/2026-04-27-slice6i-memory-fts5.md), [docs/superpowers/plans/2026-04-27-slice6i-memory-fts5.md](docs/superpowers/plans/2026-04-27-slice6i-memory-fts5.md)
+- Generic memory capture spec/plan: [docs/superpowers/specs/2026-04-27-generic-memory-capture.md](docs/superpowers/specs/2026-04-27-generic-memory-capture.md), [docs/superpowers/plans/2026-04-27-generic-memory-capture.md](docs/superpowers/plans/2026-04-27-generic-memory-capture.md)
 - Slice 8 spec: [docs/superpowers/specs/2026-04-15-slice8-proactive-autonomy.md](docs/superpowers/specs/2026-04-15-slice8-proactive-autonomy.md)
+- Render contracts: [docs/superpowers/specs/2026-04-28-mcp-render-contract.md](docs/superpowers/specs/2026-04-28-mcp-render-contract.md), [docs/superpowers/specs/2026-04-28-goal-parse-render-contract.md](docs/superpowers/specs/2026-04-28-goal-parse-render-contract.md)
+- Slice 9 specs: [docs/superpowers/specs/2026-04-19-slice9-agentic-investigations.md](docs/superpowers/specs/2026-04-19-slice9-agentic-investigations.md), [docs/superpowers/specs/2026-04-28-slice9-investigation-render-contract.md](docs/superpowers/specs/2026-04-28-slice9-investigation-render-contract.md)
 - Code quality plan: [docs/superpowers/plans/2026-04-15-code-quality-cleanup.md](docs/superpowers/plans/2026-04-15-code-quality-cleanup.md)
 - Consolidation plan: [docs/superpowers/plans/2026-04-15-consolidation-and-refactor.md](docs/superpowers/plans/2026-04-15-consolidation-and-refactor.md)
 
