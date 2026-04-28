@@ -51,6 +51,8 @@ COALESCE(json_extract(new.payload_json, '$.text'), '') || ' ' ||
 COALESCE(json_extract(new.payload_json, '$.capture_type'), '')
 ```
 
+This key-based extraction intentionally applies to any future memory type that stores canonical `payload.text` or `payload.capture_type`, not only `captured_thought`.
+
 Use `new.payload_json` in `INSERT` trigger and `new.payload_json` in `UPDATE` trigger (mirror `025` exactly). Header comment should mention capture FTS and that existing DBs should run `python -m scripts.rebuild_memory_fts <db>` after upgrade.
 
 - [ ] **Step 2: Sanity check migration is picked up**
@@ -65,12 +67,9 @@ Run: `python -c "from pathlib import Path; import tempfile; from minx_mcp.db imp
 
 Expected: no exception (all migrations including `026` apply).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Review checkpoint**
 
-```bash
-git add minx_mcp/schema/migrations/026_memory_capture_fts.sql
-git commit -m "feat(memory): migration 026 extends FTS payload_text for capture fields"
-```
+Pause for review. Do not commit unless the user explicitly asks for a commit in the current session.
 
 ---
 
@@ -123,12 +122,9 @@ Run: `pytest tests/test_rebuild_memory_fts.py::test_rebuild_memory_fts_indexes_c
 
 Expected: **PASS**
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Review checkpoint**
 
-```bash
-git add scripts/rebuild_memory_fts.py tests/test_rebuild_memory_fts.py
-git commit -m "feat(memory): rebuild FTS includes captured_thought text and capture_type"
-```
+Pause for review. Do not commit unless the user explicitly asks for a commit in the current session.
 
 ---
 
@@ -299,12 +295,9 @@ Run: `pytest tests/test_memory_service.py -k "normalize_capture_type or derive_c
 
 Expected: **PASS**
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Review checkpoint**
 
-```bash
-git add minx_mcp/core/memory_capture.py tests/test_memory_service.py
-git commit -m "feat(memory): deterministic capture normalization and metadata validation"
-```
+Pause for review. Do not commit unless the user explicitly asks for a commit in the current session.
 
 ---
 
@@ -472,12 +465,9 @@ Run: `pytest tests/test_core_memory_tools.py -k "memory_capture" -v`
 
 Expected: **PASS**
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Review checkpoint**
 
-```bash
-git add minx_mcp/core/tools/memory.py tests/test_core_memory_tools.py
-git commit -m "feat(mcp): add memory_capture tool for captured_thought"
-```
+Pause for review. Do not commit unless the user explicitly asks for a commit in the current session.
 
 ---
 
@@ -518,12 +508,9 @@ Run: `pytest tests/test_memory_service.py::test_captured_thought_round_trip_list
 
 Expected: **PASS** (FTS may already index via triggers once migration exists).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Review checkpoint**
 
-```bash
-git add minx_mcp/core/memory_payloads.py tests/test_memory_service.py
-git commit -m "docs(memory): note captured_thought uses permissive payload validation"
-```
+Pause for review. Do not commit unless the user explicitly asks for a commit in the current session.
 
 ---
 
@@ -562,12 +549,9 @@ Add **"Quick capture vs structured create"** under the README memory section nea
 - After deploy, run migrations (automatic on `get_connection` fresh apply; existing servers need app restart / migrate path per your ops).
 - Run `python -m scripts.rebuild_memory_fts /path/to/minx.db` so pre-existing `captured_thought` rows pick up new FTS columns.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Review checkpoint**
 
-```bash
-git add README.md HANDOFF.md
-git commit -m "docs: document memory_capture and FTS rebuild for rollout"
-```
+Pause for review. Do not commit unless the user explicitly asks for a commit in the current session.
 
 ---
 

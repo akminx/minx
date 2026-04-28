@@ -79,9 +79,12 @@ Template keys should be stable, namespaced, and event-like:
 - `goal_parse.clarify.ambiguous_goal`
 - `memory_capture.created_candidate`
 - `investigation.started`
+- `investigation.step_logged`
 - `investigation.needs_confirmation`
 - `investigation.completed`
 - `investigation.failed`
+- `investigation.cancelled`
+- `investigation.budget_exhausted`
 
 Template keys are contracts. Avoid changing them casually; add new keys when behavior meaningfully changes.
 
@@ -106,6 +109,8 @@ class RenderHint:
             f"{prefix}_slots": self.slots,
         }
 ```
+
+Clarification responses should call this helper with `prefix="clarification"` or construct the `clarification_template` / `clarification_slots` fields directly. Do not emit `response_template` for clarification-only outcomes.
 
 Expected homes, in order of preference:
 
@@ -144,8 +149,8 @@ For every conversational MCP response:
 
 - Assert template fields exist.
 - Assert slots contain the expected structured values.
-- Assert model-authored wording from test LLM payloads is not surfaced in template fields, slots, or fallback strings.
-- Assert old compatibility fields remain deterministic when kept.
+- Assert model-authored wording from test LLM payloads is not surfaced in template fields or slots.
+- Assert old compatibility fields remain deterministic when kept; if fallback strings remain, they may contain deterministic Core wording but must not pass through model-authored prose.
 
 For pure data tools:
 
