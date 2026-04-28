@@ -49,6 +49,15 @@ def test_goal_parse_tool_supports_structured_create_input(tmp_path) -> None:
 
     assert result["success"] is True
     assert result["data"]["result_type"] == "create"
+    assert result["data"]["response_template"] == "goal_parse.create.ready"
+    assert result["data"]["response_slots"] == {
+        "action": "goal_create",
+        "goal_type": "spending_cap",
+        "subject": "Dining Out",
+        "subject_kind": "category",
+        "period": "monthly",
+        "target_value": 25000,
+    }
     assert result["data"]["payload"]["category_names"] == ["Dining Out"]
 
 
@@ -117,6 +126,12 @@ def test_goal_parse_tool_supports_structured_update_input(tmp_path) -> None:
     assert result["success"] is True
     assert result["data"]["result_type"] == "update"
     assert result["data"]["goal_id"] == 1
+    assert result["data"]["response_template"] == "goal_parse.update.ready"
+    assert result["data"]["response_slots"] == {
+        "action": "goal_update",
+        "goal_id": 1,
+        "status": "paused",
+    }
 
 
 def test_goal_parse_tool_rejects_non_object_structured_input(tmp_path) -> None:
@@ -233,6 +248,8 @@ def test_goal_parse_tool_returns_no_match_for_unsupported_structured_create_fami
 
     assert result["success"] is True
     assert result["data"]["result_type"] == "no_match"
+    assert result["data"]["response_template"] == "goal_parse.no_match.unsupported"
+    assert result["data"]["response_slots"] == {"status": "unsupported"}
 
 
 def test_goal_parse_tool_accepts_merchant_alias_that_normalizes_to_canonical(tmp_path) -> None:

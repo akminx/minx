@@ -10,7 +10,14 @@ from typing import Any
 import pytest
 
 from minx_mcp.contracts import ConflictError, InvalidInputError, NotFoundError
-from minx_mcp.core.memory_models import MemoryProposal
+from minx_mcp.core.memory_capture import (
+    build_capture_response_slots,
+    derive_capture_subject,
+    normalize_capture_text_for_body,
+    normalize_capture_type,
+    validate_capture_metadata,
+)
+from minx_mcp.core.memory_models import MemoryProposal, MemoryRecord
 from minx_mcp.core.memory_service import MemoryService
 from minx_mcp.db import get_connection, migration_dir
 
@@ -33,6 +40,99 @@ def _fake_private_key_block() -> str:
             "-----" + "END PRIVATE KEY" + "-----",
         )
     )
+
+
+def test_normalize_capture_text_for_body_collapses_whitespace() -> None:
+    assert normalize_capture_text_for_body("  Buy   milk\n tomorrow  ") == "Buy milk tomorrow"
+
+
+def test_normalize_capture_type_empty_becomes_observation() -> None:
+    assert normalize_capture_type("") == "observation"
+    assert normalize_capture_type("   ") == "observation"
+
+
+def test_normalize_capture_type_sanitizes_and_lowercases() -> None:
+    assert normalize_capture_type("  Foo Bar  ") == "foo_bar"
+    assert normalize_capture_type("Type-A/B") == "type-a_b"
+
+
+def test_derive_capture_subject_stable_prefix_and_truncation() -> None:
+    capture_type = normalize_capture_type("observation")
+    raw_text = "  Buy milk tomorrow  \nsecond line ignored  "
+    subject = derive_capture_subject(
+        capture_type_normalized=capture_type,
+        raw_text=raw_text,
+        explicit_subject=None,
+    )
+    assert subject == "observation:Buy milk tomorrow"
+
+
+def test_validate_capture_metadata_rejects_deep_nesting() -> None:
+    bad = {"a": {"b": {"c": {"d": {"e": "too deep"}}}}}
+
+    with pytest.raises(InvalidInputError):
+        validate_capture_metadata(bad)
+
+
+def test_validate_capture_metadata_rejects_long_string_leaf() -> None:
+    bad = {"k": "x" * 5000}
+
+    with pytest.raises(InvalidInputError):
+        validate_capture_metadata(bad)
+
+
+def test_validate_capture_metadata_rejects_non_json_leaf() -> None:
+    with pytest.raises(InvalidInputError):
+        validate_capture_metadata({"bad": object()})
+
+
+def test_build_capture_response_slots_returns_render_data_only() -> None:
+    record = MemoryRecord(
+        id=7,
+        memory_type="captured_thought",
+        scope="core",
+        subject="observation:Buy milk",
+        confidence=0.5,
+        status="candidate",
+        payload={"text": "Buy milk", "capture_type": "observation"},
+        source="user:capture",
+        reason="",
+        created_at="2026-04-28T00:00:00Z",
+        updated_at="2026-04-28T00:00:00Z",
+        last_confirmed_at=None,
+        expires_at=None,
+    )
+    assert build_capture_response_slots(record=record, capture_type="observation") == {
+        "memory_id": 7,
+        "status": "candidate",
+        "memory_type": "captured_thought",
+        "scope": "core",
+        "subject": "observation:Buy milk",
+        "capture_type": "observation",
+    }
+
+
+def test_captured_thought_round_trip_list_and_search_candidate(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    marker = "uniquewxyzzy913"
+    record = svc.create_memory(
+        memory_type="captured_thought",
+        scope="core",
+        subject="observation:test",
+        confidence=0.5,
+        payload={"text": f"note about {marker}", "capture_type": "observation"},
+        source="user",
+        reason="",
+    )
+
+    listed = svc.list_memories(status="candidate", memory_type="captured_thought")
+    assert any(row.id == record.id for row in listed)
+    hits = svc.search_memories(
+        query=marker,
+        status="candidate",
+        memory_type="captured_thought",
+    )
+    assert [result.memory.id for result in hits] == [record.id]
 
 
 def _proxy_conn_first_memory_id_select(
@@ -601,7 +701,8 @@ def test_migration_set_includes_015_memories_unique_live() -> None:
     assert "023_enrichment_queue.sql" in names
     assert "024_memory_embeddings.sql" in names
     assert "025_memory_fts_aliases.sql" in names
-    assert names[-1] == "025_memory_fts_aliases.sql"
+    assert "026_memory_capture_fts.sql" in names
+    assert names[-1] == "026_memory_capture_fts.sql"
 
 
 def test_unique_index_rejects_duplicate_live_triple(tmp_path) -> None:

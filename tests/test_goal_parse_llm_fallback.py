@@ -24,6 +24,23 @@ class _ContractFailingLLM:
         raise LLMError("Interpretation schema validation failed")
 
 
+class _CreateLLM:
+    async def run_structured_prompt(self, prompt, result_model):
+        return {
+            "intent": "create",
+            "confidence": 0.9,
+            "subject_kind": "category",
+            "subject": "Dining Out",
+            "period": "monthly",
+            "target_value": 10000,
+            "update_kind": None,
+            "goal_id": None,
+        }
+
+    async def run_json_prompt(self, prompt):
+        raise AssertionError("structured prompt should be used")
+
+
 class _StubFinanceRead:
     def get_spending_summary(self, start_date: str, end_date: str):
         return {}
@@ -112,3 +129,25 @@ async def test_llm_none_falls_back_to_deterministic_regex() -> None:
     )
 
     assert result.result_type == "create"
+
+
+@pytest.mark.asyncio
+async def test_render_fields_do_not_reuse_assistant_message_from_llm_path(monkeypatch) -> None:
+    chatty = "Woohoo, I made you a shiny goal!"
+    monkeypatch.setattr(
+        "minx_mcp.core.goal_capture_llm._build_create_assistant_message",
+        lambda subject: chatty,
+    )
+
+    result = await capture_goal_message(
+        message="spend less than $100 on Dining Out monthly",
+        review_date="2026-04-12",
+        finance_api=_StubFinanceRead(),
+        goals=[],
+        llm=_CreateLLM(),
+    )
+
+    assert result.assistant_message == chatty
+    assert result.response_template == "goal_parse.create.ready"
+    assert chatty not in str(result.response_template)
+    assert chatty not in str(result.response_slots)

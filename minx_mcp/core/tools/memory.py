@@ -1,4 +1,4 @@
-"""Memory MCP tools: list / get / create / confirm / reject / expire / candidates."""
+"""Memory MCP tools: list / get / create / capture / confirm / reject / expire / candidates."""
 
 from __future__ import annotations
 
@@ -9,6 +9,14 @@ from mcp.server.fastmcp import FastMCP
 from minx_mcp.contracts import InvalidInputError, ToolResponse, wrap_tool_call
 from minx_mcp.core import memory_embeddings
 from minx_mcp.core.enrichment_queue import EnrichmentJob
+from minx_mcp.core.memory_capture import (
+    build_capture_response_slots,
+    build_captured_thought_payload,
+    derive_capture_subject,
+    normalize_capture_text_for_body,
+    normalize_capture_type,
+    validate_capture_metadata,
+)
 from minx_mcp.core.memory_embeddings import (
     enqueue_memory_embedding,
     hybrid_memory_search,
@@ -64,6 +72,39 @@ def register_memory_tools(mcp: FastMCP, config: CoreServiceConfig) -> None:
                 reason,
             ),
             tool_name="memory_create",
+        )
+
+    @mcp.tool(name="memory_capture")
+    def memory_capture_tool(
+        text: str,
+        capture_type: str = "observation",
+        scope: str = "core",
+        subject: str | None = None,
+        source: str = "user:capture",
+        confidence: float | int = 0.5,
+        metadata: object | None = None,
+    ) -> ToolResponse:
+        """Quick-capture text as a candidate memory for later review.
+
+        Defaults to capture_type="observation", scope="core", source="user:capture",
+        and confidence=0.5. Captures must stay below confidence 0.8 and remain
+        candidate rows until memory_confirm. memory_search defaults to active rows,
+        so reviewers should pass status="candidate" or status=None to find captures.
+        Duplicate live captures can return CONFLICT through normal memory dedupe rules.
+        Harnesses should render acknowledgement copy from response_template/slots.
+        """
+        return wrap_tool_call(
+            lambda: _memory_capture(
+                config,
+                text,
+                capture_type,
+                scope,
+                subject,
+                source,
+                confidence,
+                metadata,
+            ),
+            tool_name="memory_capture",
         )
 
     @mcp.tool(name="memory_confirm")
@@ -252,6 +293,60 @@ def _memory_create(
             actor="user",
         )
         return {"memory": memory_record_as_dict(record)}
+
+
+def _memory_capture(
+    config: CoreServiceConfig,
+    text: str,
+    capture_type: str,
+    scope: str,
+    subject: str | None,
+    source: str,
+    confidence: float | int,
+    metadata: object | None,
+) -> dict[str, object]:
+    normalized_text = normalize_capture_text_for_body(text)
+    if not normalized_text:
+        raise InvalidInputError("text must be non-empty")
+    capture_type_normalized = normalize_capture_type(capture_type)
+    metadata_payload = validate_capture_metadata(metadata)
+    conf = _coerce_confidence(confidence)
+    if conf >= 0.8:
+        raise InvalidInputError(
+            "confidence must be below 0.8 for memory_capture; use memory_create for active memories"
+        )
+    sc = require_non_empty("scope", scope)
+    src = require_non_empty("source", source)
+    sj = derive_capture_subject(
+        capture_type_normalized=capture_type_normalized,
+        raw_text=text,
+        explicit_subject=subject,
+    )
+    payload = build_captured_thought_payload(
+        text=normalized_text,
+        capture_type=capture_type_normalized,
+        metadata=metadata_payload,
+    )
+    with scoped_connection(Path(config.db_path)) as conn:
+        service = MemoryService(Path(config.db_path), conn=conn)
+        record = service.create_memory(
+            memory_type="captured_thought",
+            scope=sc,
+            subject=sj,
+            confidence=conf,
+            payload=payload,
+            source=src,
+            reason="",
+            actor="user",
+        )
+        return {
+            "memory": memory_record_as_dict(record),
+            "response_template": "memory_capture.created_candidate",
+            "response_slots": build_capture_response_slots(
+                record=record,
+                capture_type=capture_type_normalized,
+            ),
+        }
 
 
 def _memory_confirm(config: CoreServiceConfig, memory_id: int) -> dict[str, object]:

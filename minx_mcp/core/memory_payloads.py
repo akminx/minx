@@ -45,6 +45,8 @@ class ConstraintPayload(_ExtraForbidModel):
     unit: str | None = None  # e.g. "USD/week", "grams/day"
 
 
+# captured_thought is intentionally omitted so quick captures use permissive
+# unknown-type validation until they graduate to a stricter schema.
 PAYLOAD_MODELS: dict[str, type[_ExtraForbidModel]] = {
     "preference": PreferencePayload,
     "pattern": PatternPayload,

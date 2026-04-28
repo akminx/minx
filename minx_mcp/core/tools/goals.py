@@ -390,10 +390,18 @@ def _goal_parse_result_to_dict(result: GoalCaptureResult) -> dict[str, object]:
         data["action"] = result.action
     if result.payload is not None:
         data["payload"] = result.payload
+    if result.response_template is not None:
+        data["response_template"] = result.response_template
+    if result.response_slots is not None:
+        data["response_slots"] = result.response_slots
     if result.goal_id is not None:
         data["goal_id"] = result.goal_id
     if result.clarification_type is not None:
         data["clarification_type"] = result.clarification_type
+    if result.clarification_template is not None:
+        data["clarification_template"] = result.clarification_template
+    if result.clarification_slots is not None:
+        data["clarification_slots"] = result.clarification_slots
     if result.question is not None:
         data["question"] = result.question
     if result.options is not None:
@@ -411,8 +419,10 @@ def _goal_capture_option_to_dict(option: GoalCaptureOption) -> dict[str, object]
             "payload_fragment": option.payload_fragment,
         }
     return {
+        "kind": option.kind,
         "goal_id": option.goal_id,
         "title": option.title,
+        "label": option.label,
         "period": option.period,
         "target_value": option.target_value,
         "status": option.status,
