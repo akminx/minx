@@ -28,6 +28,12 @@ def test_core_server_registers_slice25_tool_names(tmp_path: Path) -> None:
         "memory_reject",
         "memory_expire",
         "get_pending_memory_candidates",
+        "start_investigation",
+        "append_investigation_step",
+        "complete_investigation",
+        "log_investigation",
+        "investigation_history",
+        "investigation_get",
         "list_snapshot_archives",
         "get_snapshot_archive",
     }
