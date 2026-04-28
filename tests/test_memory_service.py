@@ -702,7 +702,8 @@ def test_migration_set_includes_015_memories_unique_live() -> None:
     assert "024_memory_embeddings.sql" in names
     assert "025_memory_fts_aliases.sql" in names
     assert "026_memory_capture_fts.sql" in names
-    assert names[-1] == "026_memory_capture_fts.sql"
+    assert "027_investigations.sql" in names
+    assert names[-1] == "027_investigations.sql"
 
 
 def test_unique_index_rejects_duplicate_live_triple(tmp_path) -> None:

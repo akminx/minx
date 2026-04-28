@@ -46,9 +46,9 @@ Reasons:
 
 | Surface                           | Why agentic                                                                                          | Indicative trajectory                                                                                           |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `minx_investigate(question)`      | Causal/exploratory questions. LLM decides whether to drill into merchants, categories, meals, goals. | `finance_categories` → `finance_transactions(...)` → maybe `meals_list` → maybe `get_insight_history` → compose |
+| `minx_investigate(question)`      | Causal/exploratory questions. LLM decides whether to drill into merchants, categories, meals, goals. | `finance_query` → maybe `meals_list` → maybe `get_insight_history` → compose |
 | `minx_plan(objective)`            | Scheduling/planning across domains. Depends on what it finds.                                        | `goal_list` → `get_goal_trajectory` → `training_list` → `meals_list` → draft → revise                           |
-| `minx_retro(period, subject)`     | Causal analysis across months. LLM picks which detectors to replay, which transactions to sample.    | `get_insight_history` → `goal_trajectory` → sampling tools → synthesize                                         |
+| `minx_retro(period, subject)`     | Causal analysis across months. LLM picks which detectors to replay, which transactions to sample.    | `get_insight_history` → `get_goal_trajectory` → sampling tools → synthesize                                      |
 | `minx_onboard_entity(kind, name)` | Hydrates an entity/pattern page from scratch. Branches on what it finds.                             | `finance_transactions(merchant=...)` → `memory_list(subject=...)` → maybe `persist_note`                        |
 
 
@@ -56,7 +56,7 @@ Common shape: **one question in, one report out, unpredictable middle.**
 
 ## 5) Schema (Core)
 
-Migration filename: use the next available sequential migration when this slice lands. As of 2026-04-27, Slice 6i-6l are expected to ship before investigations, so this spec no longer pre-claims `021_investigations.sql`.
+Migration filename: use the next available sequential migration when this slice lands. After `026_memory_capture_fts.sql`, this should be `027_investigations.sql` unless another migration lands first.
 
 ```sql
 CREATE TABLE investigations (
@@ -86,7 +86,7 @@ CREATE INDEX idx_investigations_kind_started ON investigations(kind, started_at 
 CREATE INDEX idx_investigations_running ON investigations(status) WHERE status = 'running';
 ```
 
-**Trajectory storage policy:** `trajectory_json` stores a **digest** per step (tool name, arg hash, result row count / bytes, latency). It does NOT store full tool outputs — those can be large and contain PII. Full outputs are reconstructable by replaying the tools against the DB at investigation time.
+**Trajectory storage policy:** `trajectory_json` stores a **digest** per step (tool name, arg hash, result row count / bytes, latency). It does NOT store full tool outputs — those can be large and contain PII. Some outputs may be approximately reproducible by re-querying domain tools, but replay is not a durable audit guarantee because data, code, and time-dependent results can change.
 
 **Render storage policy:** `response_template` and `response_slots_json` store the latest lifecycle event so read APIs can expose a stable render surface without parsing trajectory text. Step-level render events are stored inside `trajectory_json` step entries.
 
@@ -103,16 +103,18 @@ complete_investigation(
     investigation_id,
     status,              # 'succeeded' | 'failed' | 'cancelled' | 'budget_exhausted'
     answer_md,
+    citation_refs,       # optional list of typed references used by the harness answer
     tool_call_count,
     token_input,
     token_output,
     cost_usd,
     error_message,
 ) -> {"investigation_id": int, "response_template": "investigation.completed|investigation.failed|investigation.cancelled|investigation.budget_exhausted", "response_slots": {...}}
-log_investigation(...)  # convenience wrapper with the same logging role as log_playbook_run;
-                        # MCP return shape follows the render-contract amendment
+log_investigation(kind, question, context_json, harness, trajectory_json, status, answer_md, citation_refs, ...)
+    # convenience wrapper with the same logging role as log_playbook_run;
+    # MCP return shape follows the render-contract amendment
 
-investigation_history(kind=None, since=None, days=30, limit=100) -> {"runs": [...], "truncated": bool}
+investigation_history(kind=None, harness=None, status=None, since=None, days=30, limit=100) -> {"runs": [...], "truncated": bool}
 investigation_get(investigation_id) -> {"run": {...}}  # includes trajectory and latest response_template/response_slots
 ```
 
@@ -180,7 +182,8 @@ Ship order: 9a → 9b → 9d (first usable surface) → 9c + 9e + 9f + 9g in any
 - Concurrent starts with different kinds don't collide; same-kind concurrent is allowed (investigations are user-initiated, no cron contention).
 - `append_investigation_step` rejects steps after terminal status.
 - Trajectory digest: `result_digest` never contains raw tool output bytes; `context_json` goes through a redaction pass for known PII fields (email, phone, account numbers).
-- `investigation_history` pagination/filter matches `playbook_history` semantics.
+- `investigation_history` pagination/filter matches `playbook_history` semantics for `kind`, `harness`, `status`, `since`, `days`, and `limit`.
+- `complete_investigation` and `log_investigation` persist typed `citation_refs` separately from `answer_md`.
 
 ### Harness tests (9d–9f, outside this repo)
 
@@ -190,6 +193,6 @@ Ship order: 9a → 9b → 9d (first usable surface) → 9c + 9e + 9f + 9g in any
 
 ## 11) Relationship to Other Slices
 
-- **Slice 6 (Memory):** investigations can cite memories by id in `answer_md`; `memory_get`, `memory_list`, FTS5 search, memory graph edges, and embeddings/hybrid retrieval are primary inputs.
+- **Slice 6 (Memory):** investigations can cite memories by id in structured `citation_refs`; `memory_get`, `memory_list`, FTS5 search, memory graph edges, and embeddings/hybrid retrieval are primary inputs.
 - **Slice 8 (Playbooks):** audit pattern (two-phase + convenience wrapper) is lifted directly. A sibling to `playbook_reconcile_crashed` can be added later if crashed-running investigations need automated reconciliation; specify that tool explicitly before shipping it.
 - **Slice 5 (Harness Adaptation):** a second harness would reimplement the loop against the same Core API. The agent-loop pattern is harness-specific; the tool surface is portable.
