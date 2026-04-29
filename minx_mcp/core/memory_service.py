@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from sqlite3 import Connection
-from typing import Any, cast
+from typing import Any
 
 from minx_mcp.base_service import BaseService
 from minx_mcp.contracts import ConflictError, InvalidInputError, NotFoundError
@@ -32,7 +32,11 @@ from minx_mcp.core.memory_secret_scanning import (
     scan_payload_only,
 )
 from minx_mcp.core.secret_scanner import SecretVerdictKind, redact_secrets
-from minx_mcp.validation import require_non_empty
+from minx_mcp.validation import (
+    InvalidPayloadJSONError,
+    parse_payload_json,
+    require_non_empty,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -363,9 +367,11 @@ class MemoryService(BaseService):
         for row in rows:
             try:
                 memory = _row_to_record(row)
-            except InvalidInputError as exc:
-                if "stored payload_json" not in str(exc):
-                    raise
+            except InvalidPayloadJSONError as exc:
+                logger.warning(
+                    "skipping memory FTS hit with corrupt payload_json",
+                    extra={"memory_id": exc.source_id, "label": exc.label},
+                )
                 continue
             results.append(
                 MemorySearchResult(
@@ -1474,14 +1480,8 @@ def _insert_event(
     )
 
 
-def _parse_payload_json(raw: str) -> dict[str, object]:
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise InvalidInputError("stored payload_json is not valid JSON") from exc
-    if not isinstance(data, dict):
-        raise InvalidInputError("stored payload_json must be a JSON object")
-    return cast(dict[str, object], data)
+def _parse_payload_json(raw: str, *, source_id: int | None = None) -> dict[str, object]:
+    return parse_payload_json(raw, label="memory", source_id=source_id)
 
 
 def _is_secret_detected_error(exc: InvalidInputError) -> bool:
@@ -1506,7 +1506,7 @@ def _row_to_record(row: Any) -> MemoryRecord:
         subject=str(row["subject"]),
         confidence=float(row["confidence"]),
         status=str(row["status"]),
-        payload=_parse_payload_json(str(row["payload_json"])),
+        payload=_parse_payload_json(str(row["payload_json"]), source_id=int(row["id"])),
         source=str(row["source"]),
         reason=str(row["reason"]),
         created_at=str(row["created_at"]),

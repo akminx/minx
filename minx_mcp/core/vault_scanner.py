@@ -24,7 +24,7 @@ from minx_mcp.core.vault_memory_frontmatter import (
 )
 from minx_mcp.time_utils import utc_now_isoformat
 from minx_mcp.vault_reader import VaultDocument, VaultReader
-from minx_mcp.vault_writer import _scan_frontmatter_for_secrets
+from minx_mcp.vault_writer import scan_frontmatter_for_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +234,7 @@ class VaultScanner:
         for doc in documents:
             counts.scanned += 1
             try:
-                _scan_frontmatter_for_secrets(doc.frontmatter)
+                scan_frontmatter_for_secrets(doc.frontmatter)
             except InvalidInputError:
                 warnings.append(f"{doc.relative_path}: secret detected in vault frontmatter; skipped")
                 continue

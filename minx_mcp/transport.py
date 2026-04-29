@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Literal, Protocol, TypedDict
+
+
+def health_payload(server: str) -> str:
+    """Render the canonical ``health://status`` resource body."""
+    return json.dumps({"status": "ok", "server": server})
 
 TransportName = Literal["stdio", "http"]
 RunTransport = Literal["stdio", "streamable-http"]

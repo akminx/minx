@@ -18,6 +18,7 @@ from minx_mcp.core.models import JSONLLMInterface
 from minx_mcp.db import scoped_connection
 from minx_mcp.finance.importers import SUPPORTED_SOURCE_KINDS
 from minx_mcp.money import cents_to_display_dollars
+from minx_mcp.transport import health_payload
 from minx_mcp.validation import (
     require_non_empty as _require_non_empty,
 )
@@ -278,9 +279,7 @@ def create_finance_server(
 
     @mcp.resource("health://status")
     def health_status() -> str:
-        import json
-
-        return json.dumps({"status": "ok", "server": "minx-finance"})
+        return health_payload("minx-finance")
 
     @mcp.tool(name="finance_query")
     async def finance_query(

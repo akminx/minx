@@ -6,6 +6,7 @@ from mcp.server.fastmcp import FastMCP
 
 from minx_mcp.contracts import ToolResponse, wrap_tool_call
 from minx_mcp.training.service import TrainingService
+from minx_mcp.transport import health_payload
 
 
 def create_training_server(service: TrainingService) -> FastMCP:
@@ -132,8 +133,6 @@ def create_training_server(service: TrainingService) -> FastMCP:
 
     @mcp.resource("health://status")
     def health_status() -> str:
-        import json
-
-        return json.dumps({"status": "ok", "server": "minx-training"})
+        return health_payload("minx-training")
 
     return mcp

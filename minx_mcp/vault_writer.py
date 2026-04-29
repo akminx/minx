@@ -185,7 +185,7 @@ class VaultWriter:
         exactly once (via commit or abort, ideally through ``with``).
         """
         path = self._resolve(relative_path)
-        _scan_frontmatter_for_secrets(frontmatter)
+        scan_frontmatter_for_secrets(frontmatter)
         lock_handle, lock_path = self._acquire_lock(path)
         try:
             if path.exists():
@@ -346,7 +346,7 @@ def _serialize_frontmatter(frontmatter: dict[str, object], *, newline: str = "\n
     return newline.join(lines) + newline
 
 
-def _scan_frontmatter_for_secrets(frontmatter: dict[str, object]) -> None:
+def scan_frontmatter_for_secrets(frontmatter: dict[str, object]) -> None:
     detected: set[str] = set()
     locations: list[dict[str, object]] = []
     for key, value in frontmatter.items():

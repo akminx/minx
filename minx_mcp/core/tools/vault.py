@@ -23,6 +23,7 @@ from minx_mcp.core.tools._shared import CoreServiceConfig
 from minx_mcp.core.vault_reconciler import VaultReconciler
 from minx_mcp.core.vault_scanner import VaultScanner
 from minx_mcp.db import scoped_connection
+from minx_mcp.transport import health_payload
 from minx_mcp.vault_reader import VaultReader
 from minx_mcp.vault_writer import VaultWriter
 
@@ -36,7 +37,7 @@ _WIKI_TEMPLATE_NAMES = ["entity", "pattern", "review", "goal", "memory"]
 def register_vault_tools(mcp: FastMCP, config: CoreServiceConfig) -> None:
     @mcp.resource("health://status")
     def health_status() -> str:
-        return json.dumps({"status": "ok", "server": "minx-core"})
+        return health_payload("minx-core")
 
     @mcp.tool(name="persist_note")
     def persist_note(

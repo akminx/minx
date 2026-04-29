@@ -28,7 +28,7 @@ from minx_mcp.core.memory_service import (
     memory_record_as_dict,
 )
 from minx_mcp.core.secret_scanner import scan_for_secrets
-from minx_mcp.validation import require_non_empty
+from minx_mcp.validation import parse_payload_json, require_non_empty
 
 EmbedFn = Callable[[str], tuple[list[float], int]]
 
@@ -456,13 +456,7 @@ def _memory_content_fingerprint(conn: Connection, memory_id: int) -> str:
 
 
 def _parse_payload(raw: str) -> dict[str, object]:
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise InvalidInputError("embedding job payload_json is not valid JSON") from exc
-    if not isinstance(payload, dict):
-        raise InvalidInputError("embedding job payload_json must be an object")
-    return payload
+    return parse_payload_json(raw, label="embedding job")
 
 
 def _block_if_secret_text(text: str) -> None:

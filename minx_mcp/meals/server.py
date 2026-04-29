@@ -8,6 +8,7 @@ from minx_mcp.contracts import ToolResponse, wrap_tool_call
 from minx_mcp.meals.recommendations import recommend_recipes as recommend
 from minx_mcp.meals.service import MealsService
 from minx_mcp.meals.templates import read_recipe_starter_template, recipe_starter_template_path
+from minx_mcp.transport import health_payload
 
 
 def create_meals_server(service: MealsService) -> FastMCP:
@@ -196,9 +197,7 @@ def create_meals_server(service: MealsService) -> FastMCP:
 
     @mcp.resource("health://status")
     def health_status() -> str:
-        import json
-
-        return json.dumps({"status": "ok", "server": "minx-meals"})
+        return health_payload("minx-meals")
 
     return mcp
 

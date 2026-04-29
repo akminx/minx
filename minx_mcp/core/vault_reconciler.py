@@ -41,8 +41,9 @@ from minx_mcp.core.vault_memory_frontmatter import (
     parse_memory_payload,
     parse_optional_int,
 )
+from minx_mcp.validation import parse_payload_json
 from minx_mcp.vault_reader import VaultDocument, VaultReader
-from minx_mcp.vault_writer import StagedVaultWrite, VaultWriter, _scan_frontmatter_for_secrets
+from minx_mcp.vault_writer import StagedVaultWrite, VaultWriter, scan_frontmatter_for_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +193,7 @@ class VaultReconciler:
         dry_run: bool,
     ) -> None:
         try:
-            _scan_frontmatter_for_secrets(doc.frontmatter)
+            scan_frontmatter_for_secrets(doc.frontmatter)
             identity = parse_memory_identity(doc.frontmatter)
             payload = parse_memory_payload(
                 doc.frontmatter,
@@ -846,14 +847,8 @@ def _conflict_warning(row: Row, identity: MemoryIdentity, vault_path: str) -> Va
     )
 
 
-def _parse_payload_json(raw: str) -> dict[str, object]:
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise InvalidInputError("stored payload_json is not valid JSON") from exc
-    if not isinstance(parsed, dict):
-        raise InvalidInputError("stored payload_json must be a JSON object")
-    return parsed
+def _parse_payload_json(raw: str, *, source_id: int | None = None) -> dict[str, object]:
+    return parse_payload_json(raw, label="memory", source_id=source_id)
 
 
 def _canonical_payload_json(payload: dict[str, object]) -> str:

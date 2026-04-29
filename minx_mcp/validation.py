@@ -1,9 +1,47 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from datetime import date
 
 from minx_mcp.contracts import InvalidInputError
+
+
+class InvalidPayloadJSONError(InvalidInputError):
+    """Raised when a stored ``payload_json`` blob is missing/corrupt.
+
+    Carries structured context (``label``, ``source_id``) so callers can
+    skip-and-log specific rows without substring-matching the message.
+    """
+
+    def __init__(self, message: str, *, label: str, source_id: int | None = None) -> None:
+        super().__init__(
+            message,
+            data={"kind": "invalid_payload_json", "label": label, "source_id": source_id},
+        )
+        self.label = label
+        self.source_id = source_id
+
+
+def parse_payload_json(
+    raw: str, *, label: str, source_id: int | None = None
+) -> dict[str, object]:
+    """Parse a stored JSON object payload, raising ``InvalidPayloadJSONError`` on failure."""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise InvalidPayloadJSONError(
+            f"stored {label} payload_json is not valid JSON",
+            label=label,
+            source_id=source_id,
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise InvalidPayloadJSONError(
+            f"stored {label} payload_json must be a JSON object",
+            label=label,
+            source_id=source_id,
+        )
+    return parsed
 
 
 def validate_iso_date(value: str, *, field_name: str) -> date:
