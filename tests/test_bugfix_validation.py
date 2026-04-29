@@ -7,13 +7,16 @@
 
 from __future__ import annotations
 
-import inspect
+import asyncio
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from minx_mcp.core.models import GoalCaptureOption
+from minx_mcp.core.query_models import FinanceQueryFilters, FinanceQueryPlan
+from minx_mcp.finance import server as finance_server
 from minx_mcp.finance.server import _finance_query
 from minx_mcp.finance.service import FinanceService
 
@@ -134,85 +137,180 @@ def test_concurrent_uncategorized_id_no_race(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_finance_query_nl_path_calls_llm_outside_connection_context():
-    """Structural test: verify the NL path in _finance_query awaits interpret_finance_query
-    before opening the 'with service:' connection context for query execution.
+class _RecordingFinanceService:
+    """Minimal FinanceServiceLike that records context-manager entries/exits.
 
-    The fix ensures the LLM call is NOT wrapped in 'with service:', so we inspect
-    the source to verify the expected ordering of statements.
+    Only the surfaces _finance_query touches in the NL/structured paths are
+    implemented; everything else raises so a regression that takes a different
+    branch fails loudly.
     """
-    source = inspect.getsource(_finance_query)
 
-    # The LLM call — interpret_finance_query — must appear in the source.
-    assert "interpret_finance_query" in source, "_finance_query must call interpret_finance_query"
+    def __init__(self, db_path: Path, *, events: list[str]) -> None:
+        self._db_path = db_path
+        self._events = events
+        self._entered = False
 
-    # The NL result check (needs_clarification) must appear before the final 'with service:'
-    assert "needs_clarification" in source, "_finance_query must check needs_clarification"
+    @property
+    def db_path(self) -> Path:
+        return self._db_path
 
-    # Find line positions to verify ordering: LLM call precedes 'with service:' for NL path.
-    lines = source.splitlines()
+    def __enter__(self) -> _RecordingFinanceService:
+        self._events.append("service.enter")
+        self._entered = True
+        return self
 
-    llm_call_line = next(
-        (i for i, ln in enumerate(lines) if "interpret_finance_query" in ln),
-        None,
+    def __exit__(self, *exc: object) -> None:
+        self._events.append("service.exit")
+        self._entered = False
+
+    def list_account_names(self) -> list[str]:
+        return []
+
+    def list_transaction_category_names(self) -> list[str]:
+        return []
+
+    def list_spending_merchant_names(self) -> list[str]:
+        return []
+
+    def __getattr__(self, name: str) -> Any:
+        raise AssertionError(f"unexpected FinanceService access: {name}")
+
+
+class _StubJSONLLM:
+    async def run_json_prompt(self, prompt: str) -> str:
+        return "{}"
+
+
+def _stub_finance_query_plan(needs_clarification: bool = True) -> FinanceQueryPlan:
+    if needs_clarification:
+        return FinanceQueryPlan(
+            intent="spending_total",
+            filters=FinanceQueryFilters(),
+            confidence=0.5,
+            needs_clarification=True,
+            clarification_type="missing_filter",
+            clarification_template="finance_query.clarify.missing_filter",
+            clarification_slots={"reason": "test"},
+            question="which window?",
+        )
+    return FinanceQueryPlan(
+        intent="spending_total",
+        filters=FinanceQueryFilters(start_date="2026-01-01", end_date="2026-01-07"),
+        confidence=0.9,
     )
-    # The final 'with service:' that opens the connection for query execution
-    with_service_lines = [i for i, ln in enumerate(lines) if "with service:" in ln]
-
-    assert llm_call_line is not None, "interpret_finance_query call not found in source"
-    assert with_service_lines, "'with service:' block not found in _finance_query source"
-
-    # The last 'with service:' block (used for NL query execution) must come AFTER the LLM call
-    last_with_service = max(with_service_lines)
-    assert llm_call_line < last_with_service, (
-        "LLM call (interpret_finance_query) must appear before the final 'with service:' block. "
-        f"LLM call at line {llm_call_line}, last 'with service:' at line {last_with_service}"
-    )
 
 
-def test_finance_query_structured_path_uses_with_service():
-    """The structured (intent != None) path still uses 'with service:' as expected."""
-    source = inspect.getsource(_finance_query)
+def test_finance_query_nl_path_calls_llm_before_entering_service(tmp_path, monkeypatch):
+    """The LLM call (interpret_finance_query) must complete before the service
+    context manager is entered for query execution.
 
-    # intent is not None branch — must still have a with service: block
-    assert "if intent is not None:" in source
-    assert "with service:" in source
-
-
-def test_finance_query_nl_path_validates_before_connection():
-    """Validation calls (_validate_date_range, _validate_optional_text_filters)
-    happen after the LLM call but before 'with service:', keeping the connection
-    scope tight around only the final DB query.
+    Recorded via a spy on interpret_finance_query and a recording service
+    __enter__/__exit__ — no source-text inspection.
     """
-    source = inspect.getsource(_finance_query)
-    lines = source.splitlines()
+    events: list[str] = []
+    service = _RecordingFinanceService(tmp_path / "minx.db", events=events)
 
-    llm_call_line = next(
-        (i for i, ln in enumerate(lines) if "interpret_finance_query" in ln),
-        None,
-    )
-    validate_date_line = next(
-        (
-            i
-            for i, ln in enumerate(lines)
-            if "_validate_date_range" in ln and i > (llm_call_line or 0)
-        ),
-        None,
-    )
-    # The last 'with service:' is the NL query execution block
-    with_service_lines = [i for i, ln in enumerate(lines) if "with service:" in ln]
-    last_with_service = max(with_service_lines) if with_service_lines else None
+    async def recording_interpret(**_kwargs: object) -> FinanceQueryPlan:
+        events.append("llm.call")
+        return _stub_finance_query_plan(needs_clarification=True)
 
-    assert llm_call_line is not None
-    assert validate_date_line is not None, (
-        "_validate_date_range must be called after LLM in NL path"
-    )
-    assert last_with_service is not None
+    monkeypatch.setattr(finance_server, "interpret_finance_query", recording_interpret)
 
-    assert llm_call_line < validate_date_line < last_with_service, (
-        "Expected: LLM call → validation → 'with service:', but ordering was wrong. "
-        f"LLM={llm_call_line}, validate={validate_date_line}, with service={last_with_service}"
+    result = asyncio.run(
+        _finance_query(
+            service,
+            intent=None,
+            filters=None,
+            natural_query=None,
+            message="how much did I spend?",
+            review_date="2026-01-08",
+            session_ref=None,
+            limit=10,
+            llm=_StubJSONLLM(),
+        )
     )
+
+    assert result["result_type"] == "clarify"
+    # Clarification path: LLM is called and the service is never entered.
+    assert events == ["llm.call"], events
+
+
+def test_finance_query_nl_path_enters_service_only_after_llm(tmp_path, monkeypatch):
+    """When the LLM resolves to a fully-specified plan, the service is entered
+    *after* the LLM returns — the LLM await must not happen inside `with service:`.
+    """
+    events: list[str] = []
+    service = _RecordingFinanceService(tmp_path / "minx.db", events=events)
+
+    async def recording_interpret(**_kwargs: object) -> FinanceQueryPlan:
+        assert not service._entered, "LLM was awaited while service context was open"
+        events.append("llm.call")
+        return _stub_finance_query_plan(needs_clarification=False)
+
+    monkeypatch.setattr(finance_server, "interpret_finance_query", recording_interpret)
+
+    def stub_execute(*_args: object, **_kwargs: object) -> dict[str, object]:
+        events.append("execute")
+        return {"result_type": "summary"}
+
+    monkeypatch.setattr(finance_server, "_execute_finance_query_plan", stub_execute)
+
+    result = asyncio.run(
+        _finance_query(
+            service,
+            intent=None,
+            filters=None,
+            natural_query=None,
+            message="spending in Q1",
+            review_date="2026-01-08",
+            session_ref=None,
+            limit=10,
+            llm=_StubJSONLLM(),
+        )
+    )
+
+    assert result == {"result_type": "summary"}
+    assert events == ["llm.call", "service.enter", "execute", "service.exit"], events
+
+
+def test_finance_query_structured_path_enters_service_without_llm(tmp_path, monkeypatch):
+    """The structured (intent != None) path enters the service immediately and
+    never invokes the LLM."""
+    events: list[str] = []
+    service = _RecordingFinanceService(tmp_path / "minx.db", events=events)
+
+    async def fail_interpret(**_kwargs: object) -> FinanceQueryPlan:
+        raise AssertionError("structured path must not invoke the LLM")
+
+    monkeypatch.setattr(finance_server, "interpret_finance_query", fail_interpret)
+    monkeypatch.setattr(
+        finance_server,
+        "_validate_structured_finance_filters",
+        lambda _service, _filters: {},
+    )
+
+    def stub_execute(*_args: object, **_kwargs: object) -> dict[str, object]:
+        events.append("execute")
+        return {"result_type": "summary"}
+
+    monkeypatch.setattr(finance_server, "_execute_finance_query_plan", stub_execute)
+
+    result = asyncio.run(
+        _finance_query(
+            service,
+            intent="spending_total",
+            filters={"start_date": "2026-01-01", "end_date": "2026-01-07"},
+            natural_query=None,
+            message=None,
+            review_date=None,
+            session_ref=None,
+            limit=10,
+            llm=_StubJSONLLM(),
+        )
+    )
+
+    assert result == {"result_type": "summary"}
+    assert events == ["service.enter", "execute", "service.exit"], events
 
 
 # ---------------------------------------------------------------------------

@@ -22,7 +22,12 @@ from minx_mcp.core.memory_embeddings import (
     hybrid_memory_search,
     memory_embedding_status,
 )
-from minx_mcp.core.memory_service import MemoryService, memory_edge_as_dict, memory_record_as_dict
+from minx_mcp.core.memory_service import (
+    ACTIVE_CONFIDENCE_THRESHOLD,
+    MemoryService,
+    memory_edge_as_dict,
+    memory_record_as_dict,
+)
 from minx_mcp.core.tools._shared import CoreServiceConfig, coerce_limit
 from minx_mcp.db import scoped_connection
 from minx_mcp.validation import require_non_empty, require_payload_object
@@ -311,9 +316,10 @@ def _memory_capture(
     capture_type_normalized = normalize_capture_type(capture_type)
     metadata_payload = validate_capture_metadata(metadata)
     conf = _coerce_confidence(confidence)
-    if conf >= 0.8:
+    if conf >= ACTIVE_CONFIDENCE_THRESHOLD:
         raise InvalidInputError(
-            "confidence must be below 0.8 for memory_capture; use memory_create for active memories"
+            f"confidence must be below {ACTIVE_CONFIDENCE_THRESHOLD} for memory_capture; "
+            "use memory_create for active memories"
         )
     sc = require_non_empty("scope", scope)
     src = require_non_empty("source", source)

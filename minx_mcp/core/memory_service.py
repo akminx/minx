@@ -45,6 +45,10 @@ _ALLOWED_STATUS = frozenset({"candidate", "active", "rejected", "expired"})
 _ALLOWED_EDGE_PREDICATES = frozenset({"supersedes", "contradicts", "cites"})
 _ALLOWED_EDGE_DIRECTIONS = frozenset({"incoming", "outgoing", "both"})
 
+# Confidence at or above this threshold promotes a memory from candidate -> active.
+# memory_capture must stay strictly below this floor; memory_create may exceed it.
+ACTIVE_CONFIDENCE_THRESHOLD = 0.8
+
 REJECTED_MEMORY_TTL_DAYS = 30
 
 
@@ -262,7 +266,7 @@ class MemoryService(BaseService):
         )
         if validated_scan.verdict is SecretVerdictKind.BLOCK:
             raise_secret_detected(validated_scan)
-        status: str = "active" if confidence >= 0.8 else "candidate"
+        status: str = "active" if confidence >= ACTIVE_CONFIDENCE_THRESHOLD else "candidate"
         fp = content_fingerprint(
             *_memory_fingerprint_input(
                 validated_scan.memory_type,
@@ -329,6 +333,7 @@ class MemoryService(BaseService):
     ) -> list[MemorySearchResult]:
         cleaned_query = require_non_empty("query", query)
         _validate_search_limit(limit)
+        _validate_fts_query_syntax(self.conn, cleaned_query)
         clauses = ["memory_fts MATCH ?"]
         params: list[object] = [cleaned_query]
         if status is not None:
@@ -1076,7 +1081,11 @@ class MemoryService(BaseService):
 
             # Insert/merge fork.
             if row is None or prior_status == "expired":
-                status: str = "active" if proposal.confidence >= 0.8 else "candidate"
+                status: str = (
+                    "active"
+                    if proposal.confidence >= ACTIVE_CONFIDENCE_THRESHOLD
+                    else "candidate"
+                )
                 rec = self._insert_memory_and_events(
                     memory_type=require_non_empty("memory_type", safe_proposal.memory_type),
                     scope=require_non_empty("scope", safe_proposal.scope),
@@ -1129,7 +1138,10 @@ class MemoryService(BaseService):
                 new_confidence = max(float(row["confidence"]), float(proposal.confidence))
                 new_status = prior_status
                 promoted = False
-                if new_confidence >= 0.8 and prior_status == "candidate":
+                if (
+                    new_confidence >= ACTIVE_CONFIDENCE_THRESHOLD
+                    and prior_status == "candidate"
+                ):
                     new_status = "active"
                     promoted = True
                 payload_json = json.dumps(merged, sort_keys=True)
@@ -1496,6 +1508,18 @@ def _is_fts_query_syntax_error(exc: sqlite3.OperationalError) -> bool:
         or "unterminated string" in message
         or "malformed match expression" in message
     )
+
+
+def _validate_fts_query_syntax(conn: Connection, query: str) -> None:
+    try:
+        conn.execute(
+            "SELECT rowid FROM memory_fts WHERE memory_fts MATCH ? LIMIT 1",
+            (query,),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if _is_fts_query_syntax_error(exc):
+            raise InvalidInputError("query is not valid FTS5 syntax") from exc
+        raise
 
 
 def _row_to_record(row: Any) -> MemoryRecord:

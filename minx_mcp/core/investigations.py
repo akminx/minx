@@ -440,7 +440,11 @@ def investigation_resource_payload(conn: Connection, *, investigation_id: int) -
 def normalize_step_json(step_json: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(step_json, dict):
         raise InvalidInputError("step_json must be a JSON object")
-    _reject_raw_output_keys(step_json, "step_json")
+    for key in step_json:
+        if key in _RAW_OUTPUT_KEYS:
+            raise InvalidInputError(
+                f"step_json must not include raw output key {key!r}"
+            )
     serialized_step = json.dumps(
         step_json,
         sort_keys=True,
@@ -644,17 +648,6 @@ def _normalize_json_value(value: Any, *, field_name: str, redact: bool, depth: i
             )
         return normalized
     raise InvalidInputError(f"{field_name} must contain only JSON-compatible values")
-
-
-def _reject_raw_output_keys(value: Any, field_name: str) -> None:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if key in _RAW_OUTPUT_KEYS:
-                raise InvalidInputError(f"{field_name} must not include raw output key {key!r}")
-            _reject_raw_output_keys(item, f"{field_name}.{key}")
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            _reject_raw_output_keys(item, f"{field_name}[{index}]")
 
 
 def _normalize_digest(value: Any, field_name: str) -> str:

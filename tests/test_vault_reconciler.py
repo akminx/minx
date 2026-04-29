@@ -15,7 +15,7 @@ from minx_mcp.core.vault_reconciler import (
 )
 from minx_mcp.db import get_connection
 from minx_mcp.vault_reader import VaultDocument
-from minx_mcp.vault_writer import VaultWriter
+from minx_mcp.vault_writer import StagedVaultWrite, VaultWriter
 from tests.helpers import MinxTestConfig, get_tool
 
 
@@ -431,6 +431,59 @@ def test_vault_reconcile_write_failure_rolls_back_memory_create(
     assert report["warnings"][0]["kind"] == "write_failed"
     assert _count_rows(db_path, "memories") == 0
     assert _count_rows(db_path, "memory_events") == 0
+
+
+def test_vault_reconcile_publish_failure_keeps_db_commit_and_retries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path, vault, server = _server(tmp_path)
+    note = vault / "Minx" / "Memory" / "timezone.md"
+    original_body = (
+        "---\n"
+        "type: minx-memory\n"
+        "scope: core\n"
+        "memory_key: core.preference.timezone\n"
+        "memory_type: preference\n"
+        "subject: timezone\n"
+        'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'\n'
+        "---\n"
+        "# Timezone\n"
+    )
+    _write(note, original_body)
+
+    original_commit = StagedVaultWrite.commit
+    calls = 0
+
+    def fail_first_publish(self: StagedVaultWrite) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            self.abort()
+            raise OSError("simulated rename failure")
+        original_commit(self)
+
+    monkeypatch.setattr(StagedVaultWrite, "commit", fail_first_publish)
+
+    result = get_tool(server, "vault_reconcile_memories").fn(False)
+
+    assert result["success"] is True
+    report = result["data"]["report"]
+    assert report["created"] == 1
+    assert report["warnings"][0]["kind"] == "write_failed"
+    assert "next reconcile will retry" in report["warnings"][0]["message"]
+    row = _memory_row(db_path, "timezone")
+    assert row["status"] == "active"
+    assert _event_types(db_path, int(row["id"])) == ["created", "promoted", "vault_synced"]
+    assert note.read_text(encoding="utf-8") == original_body
+
+    retry = get_tool(server, "vault_reconcile_memories").fn(False)
+
+    assert retry["success"] is True
+    assert retry["data"]["report"]["warnings"] == []
+    text = note.read_text(encoding="utf-8")
+    assert f"memory_id: {row['id']}" in text
+    assert f'sync_base_updated_at: "{row["updated_at"]}"' in text
 
 
 def test_vault_reconcile_accepts_legacy_value_json_and_refreshes_payload_json(
