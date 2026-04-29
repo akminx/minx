@@ -15,7 +15,6 @@ from minx_mcp.core.goal_models import (
 from minx_mcp.core.protocols import (
     FinanceReadInterface,
     JSONLLMInterface,
-    LLMInterface,
     MealsReadInterface,
     TrainingReadInterface,
 )
@@ -30,7 +29,6 @@ from minx_mcp.core.snapshot_models import (
     DailyTimeline,
     DurabilitySinkFailure,
     InsightCandidate,
-    LLMReviewResult,
     MemoryContext,
     MemoryContextItem,
     MemoryEventItem,
@@ -66,8 +64,6 @@ __all__ = [
     "GoalUpdateInput",
     "InsightCandidate",
     "JSONLLMInterface",
-    "LLMInterface",
-    "LLMReviewResult",
     "MealsReadInterface",
     "MemoryContext",
     "MemoryContextItem",

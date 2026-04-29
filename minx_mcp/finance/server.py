@@ -655,7 +655,7 @@ def _resolve_finance_query_llm(
         return llm
 
     configured = create_llm(db_path=service.db_path)
-    if not isinstance(configured, JSONLLMInterface):
+    if configured is None:
         raise InvalidInputError("finance_query requires a configured JSON-capable LLM")
     return configured
 

@@ -1,13 +1,9 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from minx_mcp.core.models import (
-    DailyTimeline,
-    OpenLoopsSnapshot,
-    SpendingSnapshot,
-    TimelineEntry,
-)
 from minx_mcp.db import get_connection
 from minx_mcp.preferences import set_preference
 
@@ -75,45 +71,8 @@ def test_create_llm_returns_none_for_unknown_provider(caplog):
     assert "Unknown LLM provider" in caplog.text
 
 
-def test_normalize_review_result_parses_valid_json_output():
-    from minx_mcp.core.llm import normalize_review_result
-
-    result = normalize_review_result(
-        """
-        {
-          "additional_insights": [
-            {
-              "insight_type": "finance.open_loop",
-              "dedupe_key": "2026-03-15:open_loop:failed_import_job:job-1",
-              "summary": "Import job job-1 failed for /imports/a.csv",
-              "supporting_signals": ["Import job job-1 failed for /imports/a.csv"],
-              "confidence": 0.9,
-              "severity": "warning",
-              "actionability": "action_needed",
-              "source": "llm"
-            }
-          ],
-          "narrative": "A finance import needs attention.",
-          "next_day_focus": ["Check failed finance import job job-1"]
-        }
-        """
-    )
-
-    assert result.narrative == "A finance import needs attention."
-    assert result.next_day_focus == ["Check failed finance import job job-1"]
-    assert len(result.additional_insights) == 1
-    assert result.additional_insights[0].source == "llm"
-
-
-def test_normalize_review_result_rejects_malformed_json():
-    from minx_mcp.core.llm import LLMResponseError, normalize_review_result
-
-    with pytest.raises(LLMResponseError):
-        normalize_review_result("{not-json}")
-
-
 @pytest.mark.asyncio
-async def test_json_llm_evaluate_review_wraps_provider_exceptions():
+async def test_json_backed_llm_wraps_provider_exceptions():
     from minx_mcp.core.llm import JSONBackedLLM, LLMProviderError
 
     async def explode(_prompt: str) -> str:
@@ -122,39 +81,22 @@ async def test_json_llm_evaluate_review_wraps_provider_exceptions():
     llm = JSONBackedLLM(explode)
 
     with pytest.raises(LLMProviderError):
-        await llm.evaluate_review(
-            timeline=_timeline(),
-            spending=_spending(),
-            open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
-            detector_insights=[],
-        )
+        await llm.run_json_prompt("return json")
 
 
 @pytest.mark.asyncio
-async def test_json_llm_evaluate_review_normalizes_valid_provider_output():
+async def test_json_backed_llm_serializes_dict_provider_output():
     from minx_mcp.core.llm import JSONBackedLLM
 
-    async def respond(_prompt: str) -> str:
-        return """
-        {
-          "additional_insights": [],
-          "narrative": "Quiet day overall.",
-          "next_day_focus": []
-        }
-        """
+    async def respond(prompt: str) -> dict[str, object]:
+        return {"prompt": prompt, "ok": True}
 
     llm = JSONBackedLLM(respond)
 
-    result = await llm.evaluate_review(
-        timeline=_timeline(),
-        spending=_spending(),
-        open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
-        detector_insights=[],
-    )
-
-    assert result.narrative == "Quiet day overall."
-    assert result.additional_insights == []
-    assert result.next_day_focus == []
+    assert json.loads(await llm.run_json_prompt("return json")) == {
+        "prompt": "return json",
+        "ok": True,
+    }
 
 
 def test_create_llm_builds_openai_compatible_provider(monkeypatch):
@@ -180,7 +122,7 @@ def test_create_llm_builds_openai_compatible_provider(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_llm_posts_chat_completion_and_normalizes_json(
+async def test_openai_compatible_llm_posts_chat_completion_and_returns_content(
     monkeypatch,
 ):
     from minx_mcp.core.llm_openai import OpenAICompatibleLLM
@@ -192,19 +134,7 @@ async def test_openai_compatible_llm_posts_chat_completion_and_normalizes_json(
             return None
 
         def json(self) -> dict[str, object]:
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": (
-                                '{"additional_insights": [], '
-                                '"narrative": "Goal-aware review.", '
-                                '"next_day_focus": ["Stay under budget"]}'
-                            )
-                        }
-                    }
-                ]
-            }
+            return {"choices": [{"message": {"content": '{"ok": true}'}}]}
 
     class _FakeClient:
         def __init__(self, *args, **kwargs) -> None:
@@ -231,20 +161,14 @@ async def test_openai_compatible_llm_posts_chat_completion_and_normalizes_json(
         api_key_env="OPENAI_API_KEY",
         timeout_seconds=15.0,
     )
-    result = await llm.evaluate_review(
-        timeline=_timeline(),
-        spending=_spending(),
-        open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
-        detector_insights=[],
-    )
+    result = await llm.run_json_prompt("Return JSON.")
 
-    assert result.narrative == "Goal-aware review."
-    assert result.next_day_focus == ["Stay under budget"]
+    assert result == '{"ok": true}'
     assert captured["url"] == "https://api.example.com/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
     assert captured["json"] == {
         "model": "gpt-4o-mini",
-        "messages": [{"role": "user", "content": captured["json"]["messages"][0]["content"]}],
+        "messages": [{"role": "user", "content": "Return JSON."}],
         "response_format": {"type": "json_object"},
     }
 
@@ -262,15 +186,7 @@ async def test_openai_compatible_llm_includes_provider_preferences_when_configur
             return None
 
         def json(self) -> dict[str, object]:
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": '{"additional_insights": [], "narrative": "Pinned route.", "next_day_focus": []}'
-                        }
-                    }
-                ]
-            }
+            return {"choices": [{"message": {"content": "{}"}}]}
 
     class _FakeClient:
         def __init__(self, *args, **kwargs) -> None:
@@ -301,14 +217,8 @@ async def test_openai_compatible_llm_includes_provider_preferences_when_configur
         },
     )
 
-    result = await llm.evaluate_review(
-        timeline=_timeline(),
-        spending=_spending(),
-        open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
-        detector_insights=[],
-    )
+    await llm.run_json_prompt("Return JSON.")
 
-    assert result.narrative == "Pinned route."
     assert captured["json"]["provider"] == {
         "only": ["deepinfra"],
         "quantizations": ["bf16"],
@@ -331,12 +241,7 @@ async def test_openai_compatible_llm_raises_provider_error_on_missing_key(monkey
     )
 
     with pytest.raises(LLMProviderError, match="Missing API key"):
-        await llm.evaluate_review(
-            timeline=_timeline(),
-            spending=_spending(),
-            open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
-            detector_insights=[],
-        )
+        await llm.run_json_prompt("Return JSON.")
 
 
 @pytest.mark.asyncio
@@ -374,12 +279,7 @@ async def test_openai_compatible_llm_rejects_empty_choices(monkeypatch):
     )
 
     with pytest.raises(LLMProviderError, match="malformed response"):
-        await llm.evaluate_review(
-            timeline=_timeline(),
-            spending=_spending(),
-            open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
-            detector_insights=[],
-        )
+        await llm.run_json_prompt("Return JSON.")
 
 
 @pytest.mark.asyncio
@@ -417,12 +317,7 @@ async def test_openai_compatible_llm_rejects_missing_message_content(monkeypatch
     )
 
     with pytest.raises(LLMProviderError, match="malformed response"):
-        await llm.evaluate_review(
-            timeline=_timeline(),
-            spending=_spending(),
-            open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
-            detector_insights=[],
-        )
+        await llm.run_json_prompt("Return JSON.")
 
 
 @pytest.mark.asyncio
@@ -460,46 +355,12 @@ async def test_openai_compatible_llm_rejects_non_string_message_content(monkeypa
     )
 
     with pytest.raises(LLMProviderError, match="malformed response"):
-        await llm.evaluate_review(
-            timeline=_timeline(),
-            spending=_spending(),
-            open_loops=OpenLoopsSnapshot(date="2026-03-15", loops=[]),
-            detector_insights=[],
-        )
+        await llm.run_json_prompt("Return JSON.")
 
 
 class _RecordingLLM:
     def __init__(self, config: dict[str, object]) -> None:
         self.config = config
 
-    async def evaluate_review(
-        self, timeline, spending, open_loops, detector_insights, goal_progress=None
-    ):
-        raise NotImplementedError
-
-
-def _timeline() -> DailyTimeline:
-    return DailyTimeline(
-        date="2026-03-15",
-        entries=[
-            TimelineEntry(
-                occurred_at="2026-03-15T12:00:00Z",
-                domain="finance",
-                event_type="finance.transactions_imported",
-                summary="Imported 3 transactions",
-                entity_ref="batch-1",
-            )
-        ],
-    )
-
-
-def _spending() -> SpendingSnapshot:
-    return SpendingSnapshot(
-        date="2026-03-15",
-        total_spent_cents=4200,
-        by_category={"Groceries": 4200},
-        top_merchants=[("HEB", 4200)],
-        vs_prior_week_pct=12.5,
-        uncategorized_count=0,
-        uncategorized_total_cents=0,
-    )
+    async def run_json_prompt(self, prompt: str) -> str:
+        return "{}"

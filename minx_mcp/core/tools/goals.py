@@ -431,7 +431,4 @@ def _goal_capture_option_to_dict(option: GoalCaptureOption) -> dict[str, object]
 
 
 def _resolve_goal_capture_llm(config: CoreServiceConfig) -> JSONLLMInterface | None:
-    configured = create_llm(db_path=config.db_path)
-    if not isinstance(configured, JSONLLMInterface):
-        return None
-    return configured
+    return create_llm(db_path=config.db_path)

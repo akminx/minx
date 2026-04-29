@@ -11,28 +11,11 @@ from minx_mcp.finance.read_models import (
 )
 
 if TYPE_CHECKING:
-    from minx_mcp.core.goal_models import GoalProgress
     from minx_mcp.core.snapshot_models import (
-        DailyTimeline,
-        InsightCandidate,
-        LLMReviewResult,
         NutritionSnapshot,
-        OpenLoopsSnapshot,
-        SpendingSnapshot,
         TrainingSnapshot,
     )
     from minx_mcp.meals.models import PantryItem
-
-
-class LLMInterface(Protocol):
-    async def evaluate_review(
-        self,
-        timeline: DailyTimeline,
-        spending: SpendingSnapshot,
-        open_loops: OpenLoopsSnapshot,
-        detector_insights: list[InsightCandidate],
-        goal_progress: list[GoalProgress] | None = None,
-    ) -> LLMReviewResult: ...
 
 
 @runtime_checkable
@@ -88,7 +71,6 @@ class TrainingReadInterface(Protocol):
 __all__ = [
     "FinanceReadInterface",
     "JSONLLMInterface",
-    "LLMInterface",
     "MealsReadInterface",
     "TrainingReadInterface",
 ]

@@ -10,17 +10,7 @@ from pydantic import BaseModel
 from minx_mcp.core.llm import (
     MALFORMED_PROVIDER_RESPONSE_MESSAGE,
     LLMProviderError,
-    _render_review_prompt,
     extract_openai_message_content,
-    normalize_review_result,
-)
-from minx_mcp.core.models import (
-    DailyTimeline,
-    GoalProgress,
-    InsightCandidate,
-    LLMReviewResult,
-    OpenLoopsSnapshot,
-    SpendingSnapshot,
 )
 
 
@@ -54,29 +44,6 @@ class OpenAICompatibleLLM:
         )
         content = extract_openai_message_content(payload)
         return result_model.model_validate_json(content).model_dump()
-
-    async def evaluate_review(
-        self,
-        timeline: DailyTimeline,
-        spending: SpendingSnapshot,
-        open_loops: OpenLoopsSnapshot,
-        detector_insights: list[InsightCandidate],
-        goal_progress: list[GoalProgress] | None = None,
-    ) -> LLMReviewResult:
-        api_key = os.getenv(self.api_key_env)
-        if not api_key:
-            raise LLMProviderError(f"Missing API key environment variable: {self.api_key_env}")
-
-        prompt = _render_review_prompt(
-            timeline=timeline,
-            spending=spending,
-            open_loops=open_loops,
-            detector_insights=detector_insights,
-            goal_progress=goal_progress or [],
-        )
-        payload = await self._post_chat_completion(prompt)
-        content = extract_openai_message_content(payload)
-        return normalize_review_result(content)
 
     async def _post_chat_completion(
         self,

@@ -6,19 +6,9 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError
-
 from minx_mcp.config import get_settings
 from minx_mcp.contracts import LLMError
-from minx_mcp.core.models import (
-    DailyTimeline,
-    GoalProgress,
-    InsightCandidate,
-    LLMInterface,
-    LLMReviewResult,
-    OpenLoopsSnapshot,
-    SpendingSnapshot,
-)
+from minx_mcp.core.models import JSONLLMInterface
 from minx_mcp.db import get_connection
 from minx_mcp.preferences import get_preference
 
@@ -29,32 +19,7 @@ class LLMProviderError(LLMError):
     """Raised when the underlying provider call fails."""
 
 
-class LLMResponseError(LLMError):
-    """Raised when provider output cannot be normalized."""
-
-
 MALFORMED_PROVIDER_RESPONSE_MESSAGE = "Provider returned malformed response envelope"
-
-
-class _InsightCandidatePayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    insight_type: str
-    dedupe_key: str
-    summary: str
-    supporting_signals: list[str]
-    confidence: float
-    severity: str
-    actionability: str
-    source: str
-
-
-class _LLMReviewPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    additional_insights: list[_InsightCandidatePayload]
-    narrative: str
-    next_day_focus: list[str]
 
 
 class JSONBackedLLM:
@@ -76,31 +41,8 @@ class JSONBackedLLM:
             return response
         return json.dumps(response)
 
-    async def evaluate_review(
-        self,
-        timeline: DailyTimeline,
-        spending: SpendingSnapshot,
-        open_loops: OpenLoopsSnapshot,
-        detector_insights: list[InsightCandidate],
-        goal_progress: list[GoalProgress] | None = None,
-    ) -> LLMReviewResult:
-        prompt = _render_review_prompt(
-            timeline=timeline,
-            spending=spending,
-            open_loops=open_loops,
-            detector_insights=detector_insights,
-            goal_progress=goal_progress or [],
-        )
-        try:
-            response = await self._runner(prompt)
-        except LLMError:
-            raise
-        except Exception as exc:  # pragma: no cover - exercised via tests
-            raise LLMProviderError(str(exc)) from exc
-        return normalize_review_result(response)
 
-
-def _build_openai_compatible(config: dict[str, Any]) -> LLMInterface:
+def _build_openai_compatible(config: dict[str, Any]) -> JSONLLMInterface:
     from minx_mcp.core.llm_openai import OpenAICompatibleLLM
 
     provider_preferences = config.get("provider_preferences")
@@ -113,7 +55,7 @@ def _build_openai_compatible(config: dict[str, Any]) -> LLMInterface:
     )
 
 
-_PROVIDER_BUILDERS: dict[str, Callable[[dict[str, Any]], LLMInterface | None]] = {
+_PROVIDER_BUILDERS: dict[str, Callable[[dict[str, Any]], JSONLLMInterface | None]] = {
     "openai_compatible": _build_openai_compatible,
 }
 
@@ -122,7 +64,7 @@ def create_llm(
     config: dict[str, Any] | None = None,
     *,
     db_path: str | Path | None = None,
-) -> LLMInterface | None:
+) -> JSONLLMInterface | None:
     resolved = config if config is not None else _load_default_config(db_path=db_path)
     if not isinstance(resolved, dict) or not resolved:
         return None
@@ -149,36 +91,6 @@ def create_llm(
             exc,
         )
         return None
-
-
-def normalize_review_result(payload: str | dict[str, Any]) -> LLMReviewResult:
-    try:
-        data = json.loads(payload) if isinstance(payload, str) else payload
-    except json.JSONDecodeError as exc:
-        raise LLMResponseError("LLM response was not valid JSON") from exc
-
-    try:
-        validated = _LLMReviewPayload.model_validate(data)
-    except ValidationError as exc:
-        raise LLMResponseError("LLM response did not match the review schema") from exc
-
-    return LLMReviewResult(
-        additional_insights=[
-            InsightCandidate(
-                insight_type=item.insight_type,
-                dedupe_key=item.dedupe_key,
-                summary=item.summary,
-                supporting_signals=item.supporting_signals,
-                confidence=item.confidence,
-                severity=item.severity,
-                actionability=item.actionability,
-                source=item.source,
-            )
-            for item in validated.additional_insights
-        ],
-        narrative=validated.narrative,
-        next_day_focus=validated.next_day_focus,
-    )
 
 
 def extract_openai_message_content(payload: Any) -> str:
@@ -222,52 +134,3 @@ def _load_default_config(db_path: str | Path | None = None) -> dict[str, Any] | 
         return None
     finally:
         conn.close()
-
-
-def _render_review_prompt(
-    *,
-    timeline: DailyTimeline,
-    spending: SpendingSnapshot,
-    open_loops: OpenLoopsSnapshot,
-    detector_insights: list[InsightCandidate],
-    goal_progress: list[GoalProgress] | None = None,
-) -> str:
-    timeline_lines = [
-        f"- {entry.occurred_at} | {entry.domain} | {entry.summary}" for entry in timeline.entries
-    ] or ["- No timeline events."]
-    open_loop_lines = [
-        f"- {loop.loop_type} | {loop.severity} | {loop.description}" for loop in open_loops.loops
-    ] or ["- No open loops."]
-    detector_lines = [
-        f"- {insight.severity} | {insight.summary}" for insight in detector_insights
-    ] or ["- No detector insights."]
-
-    goal_lines = [
-        (
-            f"- {goal.title} | status={goal.status} | actual={goal.actual_value} | "
-            f"target={goal.target_value} | summary={goal.summary}"
-        )
-        for goal in (goal_progress or [])
-    ] or ["- No active goals."]
-
-    return "\n".join(
-        [
-            "Generate a daily review as JSON.",
-            "Return keys: additional_insights, narrative, next_day_focus.",
-            f"Review date: {timeline.date}",
-            "Timeline:",
-            *timeline_lines,
-            (
-                "Spending: "
-                f"total={spending.total_spent_cents}, "
-                f"vs_prior_week_pct={spending.vs_prior_week_pct}, "
-                f"by_category={json.dumps(spending.by_category, sort_keys=True)}"
-            ),
-            "Open loops:",
-            *open_loop_lines,
-            "Goals:",
-            *goal_lines,
-            "Detector insights:",
-            *detector_lines,
-        ]
-    )

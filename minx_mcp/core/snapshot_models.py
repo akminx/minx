@@ -98,13 +98,6 @@ class InsightCandidate:
 
 
 @dataclass(frozen=True)
-class LLMReviewResult:
-    additional_insights: list[InsightCandidate]
-    narrative: str
-    next_day_focus: list[str]
-
-
-@dataclass(frozen=True)
 class MemoryContextItem:
     id: int
     memory_type: str
@@ -176,7 +169,6 @@ __all__ = [
     "DailyTimeline",
     "DurabilitySinkFailure",
     "InsightCandidate",
-    "LLMReviewResult",
     "MemoryContext",
     "MemoryContextItem",
     "MemoryEventItem",
