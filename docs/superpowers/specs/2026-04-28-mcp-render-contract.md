@@ -68,7 +68,7 @@ For clarification responses, prefer:
 }
 ```
 
-Compatibility fields such as `question`, `assistant_message`, and deterministic fallback strings may remain temporarily for old callers. New Hermes behavior should prefer `*_template` and `*_slots`.
+Compatibility fields such as `question` may remain temporarily for old callers. Do not add or revive `assistant_message`; goal parsing now returns render templates/slots only and Hermes owns acknowledgement prose.
 
 ## Template Names
 
