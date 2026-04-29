@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from math import sqrt
+from datetime import UTC, datetime
+from math import isfinite, sqrt
 from pathlib import Path
 from sqlite3 import Connection, IntegrityError
 
@@ -129,9 +130,9 @@ def openrouter_embedder(config: EmbeddingConfig) -> EmbedFn:
 
 def enqueue_memory_embedding(conn: Connection, memory_id: int) -> EnrichmentJob:
     mid = _validate_positive_int("memory_id", memory_id)
-    row = conn.execute("SELECT id FROM memories WHERE id = ?", (mid,)).fetchone()
-    if row is None:
-        raise NotFoundError(f"Memory {mid} not found")
+    service = MemoryService(Path(":memory:"), conn=conn)
+    memory = service.get_memory(mid)
+    _require_embedding_eligible(memory)
     return enqueue_enrichment_job(
         conn,
         job_type="memory.embedding",
@@ -330,6 +331,7 @@ def _process_memory_embedding_job(
     memory_id = _validate_positive_int("memory_id", raw_memory_id)
     service = MemoryService(Path(":memory:"), conn=conn)
     memory = service.get_memory(memory_id)
+    _require_embedding_eligible(memory)
     fingerprint = ensure_memory_content_fingerprint(conn, memory)
     document = _memory_embedding_document(memory)
     _block_if_secret_text(document)
@@ -472,11 +474,28 @@ def _block_if_secret_text(text: str) -> None:
         )
 
 
+def _require_embedding_eligible(memory: MemoryRecord) -> None:
+    if memory.status != "active":
+        raise InvalidInputError("memory embeddings require an active memory")
+    if memory.expires_at is None:
+        return
+    try:
+        expires_at = datetime.fromisoformat(memory.expires_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise InvalidInputError("memory expires_at must be a valid ISO8601 timestamp") from exc
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at.astimezone(UTC) <= datetime.now(UTC):
+        raise InvalidInputError("memory embeddings require an unexpired memory")
+
+
 def _validate_vector(vector: list[float]) -> None:
     if not vector:
         raise InvalidInputError("embedding vector must not be empty")
     if any(not isinstance(value, (int, float)) or isinstance(value, bool) for value in vector):
         raise InvalidInputError("embedding vector values must be numbers")
+    if any(not isfinite(float(value)) for value in vector):
+        raise InvalidInputError("embedding vector values must be finite")
 
 
 def _validate_positive_int(field: str, value: int) -> int:

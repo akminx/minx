@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
@@ -430,6 +431,7 @@ class MemoryService(BaseService):
             if redaction_payload is not None:
                 event_payload = {**event_payload, **redaction_payload}
             _insert_event(self.conn, memory_id, "rejected", event_payload, actor)
+            _delete_memory_embedding(self.conn, memory_id)
             self.conn.commit()
         except Exception:
             if self.conn.in_transaction:
@@ -490,6 +492,7 @@ class MemoryService(BaseService):
             if redaction_payload is not None:
                 event_payload = {**event_payload, **redaction_payload}
             _insert_event(self.conn, memory_id, "expired", event_payload, actor)
+            _delete_memory_embedding(self.conn, memory_id)
             self.conn.commit()
         except Exception:
             if self.conn.in_transaction:
@@ -903,6 +906,10 @@ def _insert_event(
     )
 
 
+def _delete_memory_embedding(conn: Connection, memory_id: int) -> None:
+    conn.execute("DELETE FROM memory_embeddings WHERE memory_id = ?", (memory_id,))
+
+
 def _parse_payload_json(raw: str, *, source_id: int | None = None) -> dict[str, object]:
     return parse_payload_json(raw, label="memory", source_id=source_id)
 
@@ -939,7 +946,7 @@ def _validate_confidence(confidence: float) -> None:
     if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
         raise InvalidInputError("confidence must be a number")
     c = float(confidence)
-    if c < 0 or c > 1:
+    if not math.isfinite(c) or c < 0 or c > 1:
         raise InvalidInputError("confidence must be between 0 and 1 inclusive")
 
 

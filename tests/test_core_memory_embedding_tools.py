@@ -43,6 +43,20 @@ def test_memory_embedding_enqueue_and_status_tools_when_provider_configured(tmp_
     assert counts["data"]["status"]["queued_jobs"] == 1
 
 
+def test_memory_embedding_enqueue_rejects_candidate_memory(tmp_path: Path) -> None:
+    db_path = tmp_path / "candidate.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault", openrouter_api_key="test-key"))
+    create_memory = get_tool(server, "memory_create").fn
+    enqueue = get_tool(server, "memory_embedding_enqueue").fn
+
+    created = create_memory("preference", "core", "candidate", 0.4, {"value": "draft"}, "user", "")
+    queued = enqueue(created["data"]["memory"]["id"])
+
+    assert queued["success"] is False
+    assert queued["error_code"] == "INVALID_INPUT"
+
+
 def test_memory_hybrid_search_tool_falls_back_to_fts(tmp_path: Path) -> None:
     db_path = tmp_path / "m.db"
     get_connection(db_path).close()

@@ -401,11 +401,38 @@ def test_memory_search_tool_invalid_inputs_return_invalid_input(tmp_path: Path) 
 
     blank = search_fn("   ", None, None, "active", 10)
     bad_limit = search_fn("coffee", None, None, "active", 0)
+    bad_status_type = search_fn("coffee", None, None, 123, 10)
 
     assert blank["success"] is False
     assert blank["error_code"] == "INVALID_INPUT"
     assert bad_limit["success"] is False
     assert bad_limit["error_code"] == "INVALID_INPUT"
+    assert bad_status_type["success"] is False
+    assert bad_status_type["error_code"] == "INVALID_INPUT"
+
+
+def test_memory_list_tool_rejects_non_string_filters(tmp_path: Path) -> None:
+    db_path = tmp_path / "invalid-list-filter.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    list_fn = get_tool(server, "memory_list").fn
+
+    result = list_fn(123, None, None, 10)
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_memory_create_tool_rejects_nan_confidence(tmp_path: Path) -> None:
+    db_path = tmp_path / "nan-confidence.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+    create_fn = get_tool(server, "memory_create").fn
+
+    result = create_fn("preference", "core", "nan", float("nan"), {"value": "x"}, "user", "")
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
 
 
 def test_memory_edge_tools_round_trip(tmp_path: Path) -> None:

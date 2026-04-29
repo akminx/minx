@@ -47,6 +47,87 @@ def test_enqueue_memory_embedding_creates_queue_job(tmp_path) -> None:
     assert json.loads(job.payload_json) == {"memory_id": memory.id}
 
 
+def test_enqueue_memory_embedding_rejects_non_active_memory(tmp_path) -> None:
+    svc = _service(tmp_path)
+    memory = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="coffee",
+        confidence=0.4,
+        payload={"value": "espresso"},
+        source="user",
+        reason="manual",
+    )
+
+    with pytest.raises(InvalidInputError):
+        enqueue_memory_embedding(svc.conn, memory.id)
+
+
+def test_embedding_job_skips_memory_rejected_after_enqueue(tmp_path) -> None:
+    svc = _service(tmp_path)
+    memory = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="coffee",
+        confidence=0.95,
+        payload={"value": "espresso"},
+        source="user",
+        reason="manual",
+    )
+    enqueue_memory_embedding(svc.conn, memory.id)
+    svc.expire_memory(memory.id, actor="user", reason="stale")
+    called = False
+
+    def embed(_text: str) -> tuple[list[float], int]:
+        nonlocal called
+        called = True
+        return [0.1], 10
+
+    report = sweep_enrichment_queue(
+        svc.conn,
+        limit=10,
+        handlers=memory_embedding_sweep_handlers(
+            svc.conn,
+            config=EmbeddingConfig(provider="test", model="fake-embedding", max_cost_microusd_per_sweep=100),
+            embed=embed,
+        ),
+    )
+
+    assert report.failed == 1
+    assert called is False
+    assert svc.conn.execute("SELECT COUNT(*) FROM memory_embeddings").fetchone()[0] == 0
+
+
+def test_memory_embedding_handler_rejects_non_finite_vector(tmp_path) -> None:
+    svc = _service(tmp_path)
+    memory = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="coffee",
+        confidence=0.95,
+        payload={"value": "espresso"},
+        source="user",
+        reason="manual",
+    )
+    enqueue_memory_embedding(svc.conn, memory.id)
+
+    def embed(_text: str) -> tuple[list[float], int]:
+        return [float("nan")], 10
+
+    report = sweep_enrichment_queue(
+        svc.conn,
+        limit=10,
+        handlers=memory_embedding_sweep_handlers(
+            svc.conn,
+            config=EmbeddingConfig(provider="test", model="fake-embedding", max_cost_microusd_per_sweep=100),
+            embed=embed,
+        ),
+    )
+
+    assert report.failed == 1
+    assert svc.conn.execute("SELECT COUNT(*) FROM memory_embeddings").fetchone()[0] == 0
+
+
 def test_memory_embedding_handler_writes_embedding_with_configured_cost(tmp_path) -> None:
     svc = _service(tmp_path)
     memory = svc.create_memory(

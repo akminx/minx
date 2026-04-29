@@ -638,6 +638,79 @@ def test_invalid_confidence_raises(tmp_path) -> None:
         )
 
 
+def test_nan_confidence_raises_invalid_input(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+
+    with pytest.raises(InvalidInputError):
+        svc.create_memory(
+            memory_type="preference",
+            scope="core",
+            subject="nan",
+            confidence=float("nan"),
+            payload={"value": "x"},
+            source="user",
+            actor="user",
+        )
+
+
+def test_expire_memory_deletes_existing_embedding(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    record = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="embedded",
+        confidence=0.9,
+        payload={"value": "espresso"},
+        source="user",
+        actor="user",
+    )
+    row = svc.conn.execute("SELECT content_fingerprint FROM memories WHERE id = ?", (record.id,)).fetchone()
+    svc.conn.execute(
+        """
+        INSERT INTO memory_embeddings (
+            memory_id, content_fingerprint, provider, model, dimensions,
+            embedding_json, cost_microusd
+        ) VALUES (?, ?, 'test', 'fake', 1, '[0.1]', 0)
+        """,
+        (record.id, row["content_fingerprint"]),
+    )
+    svc.conn.commit()
+
+    svc.expire_memory(record.id, actor="user", reason="stale")
+
+    count = svc.conn.execute("SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", (record.id,)).fetchone()[0]
+    assert count == 0
+
+
+def test_reject_memory_deletes_legacy_candidate_embedding(tmp_path) -> None:
+    svc = _fresh_memory_service(tmp_path)
+    record = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="candidate-embedded",
+        confidence=0.4,
+        payload={"value": "draft"},
+        source="user",
+        actor="user",
+    )
+    row = svc.conn.execute("SELECT content_fingerprint FROM memories WHERE id = ?", (record.id,)).fetchone()
+    svc.conn.execute(
+        """
+        INSERT INTO memory_embeddings (
+            memory_id, content_fingerprint, provider, model, dimensions,
+            embedding_json, cost_microusd
+        ) VALUES (?, ?, 'test', 'fake', 1, '[0.1]', 0)
+        """,
+        (record.id, row["content_fingerprint"]),
+    )
+    svc.conn.commit()
+
+    svc.reject_memory(record.id, actor="user", reason="not useful")
+
+    count = svc.conn.execute("SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", (record.id,)).fetchone()[0]
+    assert count == 0
+
+
 def test_external_connection_path(tmp_path) -> None:
     db_path = tmp_path / "shared.db"
     conn = get_connection(db_path)

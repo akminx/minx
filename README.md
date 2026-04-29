@@ -1,26 +1,112 @@
-# minx-mcp
+# Minx MCP
 
-A personal Life OS built as a set of MCP servers. Domain MCPs own facts (Finance, Meals, and Training). Minx Core owns interpretation — it consumes domain events, runs deterministic detectors, and exposes structured snapshots, historical signals, and goal trajectories for any MCP-capable harness to consume.
+Minx MCP is a local-first personal Life OS built as a set of Model Context Protocol servers. It turns everyday personal data into structured, auditable context that an MCP-capable harness can use for coaching, reflection, planning, and investigation.
 
-**Architecture:** Domains emit events → Core builds read models → Detectors generate signals → Harness consumes structured data and owns narrative, coaching, and scheduling. See [architecture design](docs/superpowers/specs/2026-04-06-minx-life-os-architecture-design.md) for the full picture.
+The project is intentionally split between durable systems and conversational systems:
 
-**Current state:** Slices 1–4, Slice 6a–6l, and Core-side Slice 8 are implemented. Finance/Meals/Training domains are online. Core exposes structured snapshots, insight history, goal trajectories, vault/wiki primitives, durable memory CRUD/reconciliation/search/graph edges, recoverable enrichment queue sweeps, OpenRouter-backed queued memory embeddings when configured, FTS-backed hybrid search fallback, snapshot archives, secret-gated memory/vault writes, and playbook audit tools.
+- Domain MCPs own facts and deterministic domain operations.
+- Minx Core owns interpretation, memory, read models, detectors, and audit trails.
+- Hermes or another harness owns dialogue, scheduling, LLM prose, and agent loops.
 
-**Next implementation focus:** Run CI parity and slow MCP smoke checks, then start Slice 9 Agentic Investigations on top of the completed Slice 6 retrieval/enrichment foundation.
+That boundary is the heart of the system. The database should know what happened. The harness should decide how to talk about it.
 
-**Hermes cutover status (2026-04-14):**
-- Legacy MCPs (`financehub`, `souschef`) disabled in Hermes config for rollback-safe migration.
-- Minx MCP endpoints are active for `minx_finance`, `minx_core`, `minx_meals`, and `minx_training`.
-- Finance MCP canonical local port is `8000`.
+## What It Does
 
-## Setup
+Minx currently ships four MCP servers:
+
+| Server | Responsibility | Examples |
+| --- | --- | --- |
+| `minx-finance` | Personal finance imports, categorization, reports, and read APIs | CSV/PDF imports, merchant/category filters, weekly/monthly reports |
+| `minx-meals` | Meal, pantry, recipe, and nutrition state | Meal logging, pantry items, recipe vault sync, nutrition summaries |
+| `minx-training` | Training logs and progression state | Workout entries, progression signals, training read models |
+| `minx-core` | Cross-domain interpretation and memory | Daily snapshots, goals, durable memory, vault sync, playbook and investigation audit |
+
+The current implementation supports local SQLite durability, Obsidian-style vault integration, secret-gated memory/vault writes, FTS5 memory search, optional OpenRouter-backed embedding rerank, and digest-only investigation history.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    F["Finance MCP"] --> E["Domain events"]
+    M["Meals MCP"] --> E
+    T["Training MCP"] --> E
+    E --> C["Minx Core"]
+    C --> R["Read models and snapshots"]
+    C --> G["Goals and trajectories"]
+    C --> MEM["Durable memory and search"]
+    C --> A["Playbook and investigation audit"]
+    C --> V["Obsidian vault primitives"]
+    R --> H["Hermes or MCP harness"]
+    G --> H
+    MEM --> H
+    A --> H
+    V --> H
+```
+
+Core exposes structured facts, not final coaching prose. That makes the system inspectable, testable, and resilient when the LLM layer changes.
+
+## Why This Project Matters
+
+This codebase demonstrates several engineering patterns that matter beyond the personal-data domain:
+
+- Local-first architecture with SQLite migrations and explicit upgrade paths.
+- Clear domain boundaries between finance, meals, training, and core interpretation.
+- MCP tool contracts that return structured success/error envelopes.
+- Durable audit trails for autonomous or semi-autonomous workflows.
+- Careful handling of money as integer cents.
+- Secret scanning before memory, vault, or embedding surfaces persist sensitive-looking data.
+- Test-driven hardening of concurrency, lifecycle, import, and validation edge cases.
+
+## Repository Guide
+
+```text
+minx_mcp/
+  core/       Cross-domain interpretation, memory, goals, vault sync, audits
+  finance/    Finance import/read/report tools
+  meals/      Meal, pantry, recipe, and nutrition tools
+  training/   Workout and progression tools
+  schema/     Packaged SQLite migrations
+scripts/      Maintenance and smoke-test helpers
+tests/        Unit, integration, transport, and regression coverage
+docs/         Architecture specs, implementation plans, and archives
+```
+
+Start with:
+
+- [STATUS.md](STATUS.md) for the current implementation state and next work.
+- [OPERATIONS.md](OPERATIONS.md) for setup, commands, configuration, and maintenance.
+- [docs/archive/handoff-history.md](docs/archive/handoff-history.md) for the historical slice log.
+
+## Quick Start
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
+uv run pytest tests/ -x -q
 ```
 
-## Verify
+Run a server over stdio:
+
+```bash
+uv run python -m minx_mcp.core --transport stdio
+```
+
+Run the full local HTTP stack:
+
+```bash
+./scripts/start_hermes_stack.sh
+```
+
+Default HTTP ports:
+
+| Server | Port |
+| --- | --- |
+| Finance | `8000` |
+| Core | `8001` |
+| Meals | `8002` |
+| Training | `8003` |
+
+## Verification
 
 ```bash
 uv run ruff check minx_mcp tests scripts
@@ -28,138 +114,19 @@ uv run mypy minx_mcp
 uv run pytest tests/ -x -q
 ```
 
-## Run finance over stdio
+The project currently uses strict mypy for source files and broad pytest coverage across domain services, SQLite migrations, MCP tools, transport smoke tests, and historical bug regressions.
 
-```bash
-.venv/bin/python -m minx_mcp.finance --transport stdio
-```
+## Current Limitations
 
-## Run finance over HTTP
+- This is a local single-user tool. It does not provide auth, multi-user isolation, or remote durability.
+- SQLite and filesystem writes are carefully handled, but cross-resource operations cannot be globally atomic.
+- LLM-backed features are optional and must degrade to deterministic local behavior when unavailable.
+- Hermes-side agent loops live outside this repository; Core only stores the durable surfaces they use.
 
-```bash
-.venv/bin/python -m minx_mcp.finance --transport http --host 127.0.0.1 --port 8000
-```
+## More Documentation
 
-## Run core over stdio
-
-```bash
-.venv/bin/python -m minx_mcp.core --transport stdio
-```
-
-## Run core over HTTP
-
-```bash
-.venv/bin/python -m minx_mcp.core --transport http --host 127.0.0.1 --port 8001
-```
-
-## Run meals over HTTP
-
-```bash
-.venv/bin/python -m minx_mcp.meals --transport http --host 127.0.0.1 --port 8002
-```
-
-## Run training over HTTP
-
-```bash
-.venv/bin/python -m minx_mcp.training --transport http --host 127.0.0.1 --port 8003
-```
-
-## Start full stack for Hermes harness
-
-```bash
-./scripts/start_hermes_stack.sh
-```
-
-This launches:
-- `minx-finance` on `http://127.0.0.1:8000`
-- `minx-core` on `http://127.0.0.1:8001`
-- `minx-meals` on `http://127.0.0.1:8002`
-- `minx-training` on `http://127.0.0.1:8003`
-
-## Run Slice 4 cross-domain smoke flow
-
-```bash
-.venv/bin/python scripts/hermes_slice4_smoke.py --db-path ~/.minx/data/minx.db --review-date 2026-04-13
-```
-
-This seeds a small meals+training scenario and prints the combined snapshot payload (including `cross.training_nutrition_mismatch` when conditions are met). By default the script runs against a temporary copy of the database so your source DB is not modified.
-
-To intentionally write seed data directly into the provided DB:
-
-```bash
-.venv/bin/python scripts/hermes_slice4_smoke.py --db-path ~/.minx/data/minx.db --review-date 2026-04-13 --in-place
-```
-
-## Default local paths
-
-- Database: `~/.minx/data/minx.db`
-- Vault root: `~/Documents/minx-vault`
-- Import staging root: `~/.minx/staging`
-
-You can override these with:
-
-- `MINX_DATA_DIR`
-- `MINX_DB_PATH`
-- `MINX_VAULT_PATH`
-- `MINX_STAGING_PATH`
-- `MINX_HTTP_HOST`
-- `MINX_HTTP_PORT`
-- `MINX_DEFAULT_TRANSPORT`
-
-## What works
-
-- Finance imports are restricted to the configured staging/import root.
-- Finance stores money internally as integer cents and renders dollars at the MCP/report boundary.
-- Weekly and monthly finance reports are generated with explicit lifecycle state in SQLite.
-- The Core snapshot pipeline is implemented and covered by tests. `get_daily_snapshot` returns structured read models, detector signals, and attention items, and surfaces detector persistence problems as an inline `persistence_warning` instead of failing the whole call.
-- The Core MCP server exposes `get_daily_snapshot`, `get_insight_history`, `get_goal_trajectory`, `persist_note`, `vault_replace_section`, `vault_replace_frontmatter`, `vault_scan`, `vault_reconcile_memories`, `goal_parse`, goal CRUD, memory CRUD/search/graph/embedding tools, enrichment queue tools, pending memory review, and playbook audit/history tools.
-- `goal_get` returns both the stored goal DTO and derived progress for an optional `review_date`; progress is `null` outside the goal lifetime.
-- Goal progress `summary` text is human-facing convenience copy, not a strict downstream machine contract; clients should rely on structured fields like `status`, `actual_value`, `target_value`, and the current window instead of parsing summary wording.
-- `goal_list()` defaults to active goals, while `goal_list(status=...)` can query other lifecycle states explicitly.
-- Goal progress clamps to the goal lifetime, goal updates can intentionally clear `ends_on` and `notes`, and category drift is based on a real equal-length prior baseline instead of goal status alone.
-- Goal drift/category drift work for category-, merchant-, and account-scoped finance goals, and non-`normal` events are excluded from the review timeline/output path.
-- `goal_parse` supports both natural-language parsing and a structured-input validation path.
-- `finance_query` supports both natural-language interpretation and a structured `intent` + `filters` path.
-- A real stdio MCP smoke test now exists at [tests/test_core_mcp_stdio.py](tests/test_core_mcp_stdio.py).
-- New memory/vault writes are scanned locally for secret-shaped values before persistence or external embedding; run `python scripts/scan_memory_for_secrets.py` once against existing databases after pulling Slice 6h.
-
-## LLM config
-
-Set the `core/llm_config` preference to a payload like:
-
-```json
-{
-  "provider": "openai_compatible",
-  "base_url": "https://openrouter.ai/api/v1",
-  "model": "nvidia/nemotron-3-super-120b-a12b",
-  "api_key_env": "OPENROUTER_API_KEY",
-  "provider_preferences": {
-    "only": ["deepinfra"],
-    "quantizations": ["bf16"],
-    "allow_fallbacks": false,
-    "require_parameters": true
-  }
-}
-```
-
-`api_key_env` must point to an environment variable; API keys are not stored in preferences. `provider_preferences` is optional and is forwarded verbatim to the OpenAI-compatible provider request body, which is useful for OpenRouter provider routing.
-
-## Memory Embeddings
-
-Memory embeddings are offline-safe by default. `memory_hybrid_search` always works through SQLite FTS5; it reranks FTS candidates with stored embeddings only when OpenRouter is configured and compatible candidate embeddings exist.
-
-## Quick Capture Vs Structured Create
-
-Use `memory_capture` for fast, review-first notes. It stores `captured_thought` memories with default `confidence=0.5`, so rows are candidates until `memory_confirm` promotes them. Use `memory_create` when the caller already has a structured memory payload and intentionally wants the normal confidence/status behavior, including active rows at high confidence.
-
-`memory_search` defaults to `status="active"`, so reviewers looking for captures should pass `status="candidate"` or `status=null`. Capture acknowledgements expose `response_template` / `response_slots`; Hermes or another harness owns the final user-facing wording.
-
-Set `MINX_OPENROUTER_API_KEY` to enable `memory_embedding_enqueue` and `enrichment_sweep` processing for `memory.embedding` jobs. Optional knobs are `MINX_EMBEDDING_MODEL` (default `openai/text-embedding-3-small`), `MINX_EMBEDDING_DIMENSIONS`, `MINX_EMBEDDING_REQUEST_TIMEOUT_S`, and `MINX_EMBEDDING_MAX_COST_MICROUSD`. API keys are read from the environment only and are not returned in MCP responses.
-
-For existing databases, run `python -m scripts.rebuild_memory_fts` after pulling Slice 6i and `python -m scripts.backfill_memory_fingerprints` for rows that pre-date Slice 6g fingerprints.
-
-## Known limitations
-
-- This is still a local single-user tool. There is no auth, multi-user coordination, or remote durability story beyond local SQLite and the filesystem.
-- Report generation is recoverable and tracked, but it is not globally atomic across SQLite and the vault filesystem.
-- Core detector persistence is local SQLite durability only. `get_daily_snapshot` remains useful when persistence fails, but historical queries may lag behind the latest snapshot until persistence succeeds.
+- [Operations](OPERATIONS.md)
+- [Current status](STATUS.md)
+- [Architecture design](docs/superpowers/specs/2026-04-06-minx-life-os-architecture-design.md)
+- [Slice roadmap](docs/superpowers/specs/2026-04-06-minx-roadmap-slices.md)
+- [Historical handoff archive](docs/archive/handoff-history.md)

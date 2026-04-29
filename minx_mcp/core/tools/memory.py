@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -543,10 +544,12 @@ def _get_pending_memory_candidates(
         return {"memories": [memory_record_as_dict(r) for r in rows]}
 
 
-def _normalize_optional_filter(value: str | None) -> str | None:
+def _normalize_optional_filter(value: object, *, field_name: str = "filter") -> str | None:
     """Treat whitespace-only strings as "no filter" for MCP tool ergonomics."""
-    if not isinstance(value, str):
+    if value is None:
         return None
+    if not isinstance(value, str):
+        raise InvalidInputError(f"{field_name} must be a string")
     stripped = value.strip()
     return stripped or None
 
@@ -563,6 +566,6 @@ def _coerce_confidence(value: float | int) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise InvalidInputError("confidence must be a number")
     result = float(value)
-    if result < 0 or result > 1:
+    if not math.isfinite(result) or result < 0 or result > 1:
         raise InvalidInputError("confidence must be between 0 and 1 inclusive")
     return result
