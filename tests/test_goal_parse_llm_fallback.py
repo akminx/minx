@@ -132,13 +132,7 @@ async def test_llm_none_falls_back_to_deterministic_regex() -> None:
 
 
 @pytest.mark.asyncio
-async def test_render_fields_do_not_reuse_assistant_message_from_llm_path(monkeypatch) -> None:
-    chatty = "Woohoo, I made you a shiny goal!"
-    monkeypatch.setattr(
-        "minx_mcp.core.goal_capture_llm._build_create_assistant_message",
-        lambda subject: chatty,
-    )
-
+async def test_llm_path_returns_render_contract_without_assistant_message() -> None:
     result = await capture_goal_message(
         message="spend less than $100 on Dining Out monthly",
         review_date="2026-04-12",
@@ -147,7 +141,12 @@ async def test_render_fields_do_not_reuse_assistant_message_from_llm_path(monkey
         llm=_CreateLLM(),
     )
 
-    assert result.assistant_message == chatty
     assert result.response_template == "goal_parse.create.ready"
-    assert chatty not in str(result.response_template)
-    assert chatty not in str(result.response_slots)
+    assert result.response_slots == {
+        "action": "goal_create",
+        "goal_type": "spending_cap",
+        "subject": "Dining Out",
+        "subject_kind": "category",
+        "period": "monthly",
+        "target_value": 10000,
+    }

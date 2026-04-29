@@ -151,7 +151,6 @@ class GoalCaptureOption:
 @dataclass(frozen=True)
 class GoalCaptureResult:
     result_type: GoalCaptureResultType
-    assistant_message: str | None = None
     action: GoalCaptureAction | None = None
     payload: dict[str, object] | None = None
     goal_id: int | None = None
@@ -170,8 +169,6 @@ class GoalCaptureResult:
                 raise ValueError("action must be goal_create for create results")
             if self.payload is None:
                 raise ValueError("payload is required for create results")
-            if self.assistant_message is None:
-                raise ValueError("assistant_message is required for create results")
             self._require_absent(
                 "goal_id",
                 "clarification_type",
@@ -189,8 +186,6 @@ class GoalCaptureResult:
                 raise ValueError("goal_id is required for update results")
             if self.payload is None:
                 raise ValueError("payload is required for update results")
-            if self.assistant_message is None:
-                raise ValueError("assistant_message is required for update results")
             self._require_absent(
                 "clarification_type",
                 "question",
@@ -233,12 +228,10 @@ class GoalCaptureResult:
                 )
             if self.clarification_type == "missing_goal" and self.options is not None:
                 raise ValueError("options must be omitted for missing_goal clarify results")
-            self._require_absent("payload", "goal_id", "assistant_message")
+            self._require_absent("payload", "goal_id")
             self._require_absent("response_template", "response_slots")
             self._populate_clarification_render_fields()
         elif self.result_type == "no_match":
-            if self.assistant_message is None:
-                raise ValueError("assistant_message is required for no_match results")
             self._require_absent(
                 "action",
                 "payload",

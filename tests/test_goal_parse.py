@@ -15,7 +15,6 @@ def test_goal_capture_result_requires_top_level_goal_id_for_updates() -> None:
             result_type="update",
             action="goal_update",
             payload={"status": "paused"},
-            assistant_message="I can update that goal.",
         )
 
 

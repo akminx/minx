@@ -54,7 +54,6 @@ from __future__ import annotations
 
 import re
 from datetime import date, timedelta
-from typing import cast
 
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.core.goal_capture_utils import (
@@ -74,7 +73,7 @@ from minx_mcp.core.models import (
     GoalRecord,
 )
 from minx_mcp.finance.normalization import normalize_merchant
-from minx_mcp.money import format_cents, parse_dollars_to_cents
+from minx_mcp.money import parse_dollars_to_cents
 
 
 def _looks_like_create_message(normalized_message: str) -> bool:
@@ -307,24 +306,6 @@ def _build_vague_intent_clarify() -> GoalCaptureResult:
     )
 
 
-def _build_create_assistant_message(subject: str) -> str:
-    return f"I can create {subject} Spending Cap."
-
-
-def _build_update_assistant_message(goal: GoalRecord, payload: dict[str, object]) -> str:
-    status = payload.get("status")
-    if status == "paused":
-        return f"I can pause {goal.title}."
-    if status == "active":
-        return f"I can resume {goal.title}."
-    if status == "archived":
-        return f"I can archive {goal.title}."
-    if "target_value" in payload:
-        target_value = cast(int, payload["target_value"])
-        return f"I can update {goal.title} to {format_cents(target_value)}."
-    return f"I can update {goal.title}."
-
-
 def _strip_create_period_suffix(subject: str) -> str:
     normalized_subject = subject.lower()
     for suffix in (" today", " this month", " this week", " monthly", " weekly"):
@@ -469,7 +450,6 @@ def _capture_create(
         result_type="create",
         action="goal_create",
         payload=payload,
-        assistant_message=_build_create_assistant_message(canonical_subject),
     )
 
 
@@ -498,7 +478,6 @@ def _capture_update(
     if not supported_candidates:
         return GoalCaptureResult(
             result_type="no_match",
-            assistant_message="That goal family is not supported for conversational updates.",
         )
     if _update_kind == "retarget_missing_target":
         if len(supported_candidates) == 1:
@@ -546,5 +525,4 @@ def _capture_update(
         action="goal_update",
         goal_id=goal.id,
         payload=payload,
-        assistant_message=_build_update_assistant_message(goal, payload),
     )

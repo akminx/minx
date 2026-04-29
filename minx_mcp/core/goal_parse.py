@@ -88,7 +88,6 @@ async def capture_goal_message(
 
     return GoalCaptureResult(
         result_type="no_match",
-        assistant_message="I couldn't map that to a supported finance goal action.",
     )
 
 

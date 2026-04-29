@@ -61,7 +61,6 @@ def _validate_structured_goal_input(
             result_type="create",
             action="goal_create",
             payload=payload,
-            assistant_message="I can create that goal.",
         )
 
     goal_id = structured_input.get("goal_id")
@@ -73,7 +72,6 @@ def _validate_structured_goal_input(
     if not _supported_conversational_goal(goal):
         return GoalCaptureResult(
             result_type="no_match",
-            assistant_message="That goal family is not supported for conversational updates.",
         )
     _validate_structured_update_payload(payload, goal_service=goal_service, goal_id=goal_id)
     return GoalCaptureResult(
@@ -81,7 +79,6 @@ def _validate_structured_goal_input(
         action="goal_update",
         goal_id=goal_id,
         payload=payload,
-        assistant_message=f"I can update {goal.title}.",
     )
 
 
@@ -96,7 +93,6 @@ def _validate_structured_create_payload(
     if not (goal_type == "spending_cap" and metric_type == "sum_below" and domain == "finance"):
         return GoalCaptureResult(
             result_type="no_match",
-            assistant_message="That goal family is not supported for conversational creation.",
         )
 
     validate_goal_state(

@@ -5,8 +5,6 @@ import logging
 from minx_mcp.contracts import LLMError
 from minx_mcp.core.goal_capture_nl import (
     _build_ambiguous_subject_clarify,
-    _build_create_assistant_message,
-    _build_update_assistant_message,
     _extract_subject_phrase,
     _resolve_exact_subject,
     _resolve_starts_on,
@@ -116,7 +114,6 @@ async def _capture_with_llm(
         result_type="create",
         action="goal_create",
         payload=payload,
-        assistant_message=_build_create_assistant_message(canonical_subject),
     )
 
 
@@ -189,5 +186,4 @@ def _build_llm_update_result(
         action="goal_update",
         goal_id=goal.id,
         payload=payload,
-        assistant_message=_build_update_assistant_message(goal, payload),
     )

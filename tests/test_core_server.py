@@ -140,7 +140,7 @@ async def test_goal_parse_does_not_hold_db_connection_across_llm_await(
             second.execute("ROLLBACK")
         finally:
             second.close()
-        return GoalCaptureResult(result_type="no_match", assistant_message="probe ok")
+        return GoalCaptureResult(result_type="no_match")
 
     monkeypatch.setattr(goal_tools_module, "parse_goal_input", fake_parse_goal_input)
     server = create_core_server(config)
@@ -150,7 +150,8 @@ async def test_goal_parse_does_not_hold_db_connection_across_llm_await(
 
     assert result["success"] is True
     assert result["data"]["result_type"] == "no_match"
-    assert result["data"]["assistant_message"] == "probe ok"
+    assert result["data"]["response_template"] == "goal_parse.no_match.unsupported"
+    assert "assistant_message" not in result["data"]
     assert called["n"] == 1
 
 
@@ -183,7 +184,6 @@ async def test_goal_parse_persists_result_after_llm_returns(
             action="goal_update",
             goal_id=1,
             payload={"status": "paused"},
-            assistant_message="Paused.",
         )
 
     monkeypatch.setattr(goal_tools_module, "parse_goal_input", fake_parse_goal_input)

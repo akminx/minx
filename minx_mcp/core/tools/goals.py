@@ -384,8 +384,6 @@ def _goal_parse_result_to_dict(result: GoalCaptureResult) -> dict[str, object]:
     data: dict[str, object] = {
         "result_type": result.result_type,
     }
-    if result.assistant_message is not None:
-        data["assistant_message"] = result.assistant_message
     if result.action is not None:
         data["action"] = result.action
     if result.payload is not None:
