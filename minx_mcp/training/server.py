@@ -7,6 +7,11 @@ from mcp.server.fastmcp import FastMCP
 from minx_mcp.contracts import ToolResponse, wrap_tool_call
 from minx_mcp.training.service import TrainingService
 from minx_mcp.transport import health_payload
+from minx_mcp.validation import (
+    require_non_empty,
+    validate_iso_datetime,
+    validate_optional_date_range,
+)
 
 
 def create_training_server(service: TrainingService) -> FastMCP:
@@ -20,16 +25,13 @@ def create_training_server(service: TrainingService) -> FastMCP:
         notes: str | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: {
-                "exercise": asdict(
-                    service.upsert_exercise(
-                        display_name=display_name,
-                        muscle_group=muscle_group,
-                        is_compound=is_compound,
-                        notes=notes,
-                    )
-                )
-            },
+            lambda: _training_exercise_upsert(
+                service,
+                display_name=display_name,
+                muscle_group=muscle_group,
+                is_compound=is_compound,
+                notes=notes,
+            ),
             tool_name="training_exercise_upsert",
         )
 
@@ -81,16 +83,13 @@ def create_training_server(service: TrainingService) -> FastMCP:
         notes: str | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: {
-                "session": asdict(
-                    service.log_session(
-                        occurred_at=occurred_at,
-                        sets=sets,
-                        program_id=program_id,
-                        notes=notes,
-                    )
-                )
-            },
+            lambda: _training_session_log(
+                service,
+                occurred_at=occurred_at,
+                sets=sets,
+                program_id=program_id,
+                notes=notes,
+            ),
             tool_name="training_session_log",
         )
 
@@ -101,16 +100,12 @@ def create_training_server(service: TrainingService) -> FastMCP:
         limit: int = 50,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: {
-                "sessions": [
-                    asdict(session)
-                    for session in service.list_sessions(
-                        start_date=start_date,
-                        end_date=end_date,
-                        limit=limit,
-                    )
-                ]
-            },
+            lambda: _training_session_list(
+                service,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            ),
             tool_name="training_session_list",
         )
 
@@ -136,3 +131,65 @@ def create_training_server(service: TrainingService) -> FastMCP:
         return health_payload("minx-training")
 
     return mcp
+
+
+def _training_exercise_upsert(
+    service: TrainingService,
+    *,
+    display_name: str,
+    muscle_group: str | None,
+    is_compound: bool | None,
+    notes: str | None,
+) -> dict[str, object]:
+    name = require_non_empty("display_name", display_name).strip()
+    return {
+        "exercise": asdict(
+            service.upsert_exercise(
+                display_name=name,
+                muscle_group=muscle_group,
+                is_compound=is_compound,
+                notes=notes,
+            )
+        )
+    }
+
+
+def _training_session_log(
+    service: TrainingService,
+    *,
+    occurred_at: str,
+    sets: list[dict[str, object]],
+    program_id: int | None,
+    notes: str | None,
+) -> dict[str, object]:
+    validate_iso_datetime(occurred_at, field_name="occurred_at")
+    return {
+        "session": asdict(
+            service.log_session(
+                occurred_at=occurred_at,
+                sets=sets,
+                program_id=program_id,
+                notes=notes,
+            )
+        )
+    }
+
+
+def _training_session_list(
+    service: TrainingService,
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int,
+) -> dict[str, object]:
+    validate_optional_date_range(start_date, end_date)
+    return {
+        "sessions": [
+            asdict(session)
+            for session in service.list_sessions(
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            )
+        ]
+    }

@@ -79,161 +79,9 @@ async def test_hermes_http_stack_smoke(tmp_path: Path) -> None:
             assert set(expected_tools).issubset(tools)
 
         review_date = "2026-04-13"
-        meal_result = await _call_tool(
-            urls["minx-meals"],
-            "meal_log",
-            {
-                "meal_kind": "lunch",
-                "occurred_at": f"{review_date}T12:00:00Z",
-                "summary": "hermes smoke meal",
-                "protein_grams": 34.0,
-                "calories": 650,
-            },
-        )
-        assert meal_result["success"] is True
-        meal_entry = meal_result["data"]["meal"]
-        assert meal_entry["meal_kind"] == "lunch"
-
-        exercise_result = await _call_tool(
-            urls["minx-training"],
-            "training_exercise_upsert",
-            {
-                "display_name": "Deadlift",
-                "is_compound": True,
-            },
-        )
-        assert exercise_result["success"] is True
-        exercise_id = exercise_result["data"]["exercise"]["id"]
-
-        session_result = await _call_tool(
-            urls["minx-training"],
-            "training_session_log",
-            {
-                "occurred_at": f"{review_date}T08:00:00Z",
-                "sets": [
-                    {
-                        "exercise_id": exercise_id,
-                        "reps": 5,
-                        "weight_kg": 145.0,
-                    }
-                ],
-            },
-        )
-        assert session_result["success"] is True
-        assert session_result["data"]["session"]["set_count"] == 1
-        assert session_result["data"]["session"]["total_volume_kg"] == pytest.approx(725.0)
-
-        snapshot_result = await _call_tool(
-            urls["minx-core"],
-            "get_daily_snapshot",
-            {"review_date": review_date, "force": False},
-        )
-        assert snapshot_result["success"] is True
-        snapshot = snapshot_result["data"]
-        assert snapshot["date"] == review_date
-        assert snapshot["nutrition"] is not None
-        assert snapshot["nutrition"]["meal_count"] == 1
-        assert snapshot["nutrition"]["protein_grams"] == pytest.approx(34.0)
-        assert snapshot["training"] is not None
-        assert snapshot["training"]["sessions_logged"] == 1
-        assert snapshot["training"]["total_sets"] == 1
-
-        # Slice 6a durable memory lifecycle, end-to-end over real HTTP.
-        # Low-confidence proposals land as candidates; high-confidence ones auto-
-        # promote to active (threshold = 0.8 in memory_service._create_memory).
-        candidate_result = await _call_tool(
-            urls["minx-core"],
-            "memory_create",
-            {
-                "memory_type": "preference",
-                "scope": "core",
-                "subject": "hermes_smoke_timezone",
-                "confidence": 0.5,
-                "payload": {"category": "timezone", "value": "UTC"},
-                "source": "hermes-http-smoke",
-                "reason": "stated in smoke test",
-            },
-        )
-        assert candidate_result["success"] is True
-        candidate_mem = candidate_result["data"]["memory"]
-        assert candidate_mem["status"] == "candidate"
-        candidate_id = int(candidate_mem["id"])
-
-        auto_result = await _call_tool(
-            urls["minx-core"],
-            "memory_create",
-            {
-                "memory_type": "preference",
-                "scope": "finance",
-                "subject": "hermes_smoke_weekly_review",
-                "confidence": 0.9,
-                "payload": {"category": "weekly_review", "value": "sunday"},
-                "source": "hermes-http-smoke",
-            },
-        )
-        assert auto_result["success"] is True
-        assert auto_result["data"]["memory"]["status"] == "active"
-
-        # Scope filter must exclude the finance-scoped auto-promoted memory even
-        # though it's also fresh; it was never a candidate.
-        pending = await _call_tool(
-            urls["minx-core"],
-            "get_pending_memory_candidates",
-            {"scope": "core", "limit": 50},
-        )
-        assert pending["success"] is True
-        pending_subjects = {m["subject"] for m in pending["data"]["memories"]}
-        assert "hermes_smoke_timezone" in pending_subjects
-        assert "hermes_smoke_weekly_review" not in pending_subjects
-
-        confirm_result = await _call_tool(
-            urls["minx-core"],
-            "memory_confirm",
-            {"memory_id": candidate_id},
-        )
-        assert confirm_result["success"] is True
-        assert confirm_result["data"]["memory"]["status"] == "active"
-
-        # Duplicate (memory_type, scope, subject) against a live row must surface
-        # as a structured CONFLICT envelope, not a transport-level error.
-        duplicate_result = await _call_tool(
-            urls["minx-core"],
-            "memory_create",
-            {
-                "memory_type": "preference",
-                "scope": "core",
-                "subject": "hermes_smoke_timezone",
-                "confidence": 0.9,
-                "payload": {"category": "timezone", "value": "UTC"},
-                "source": "hermes-http-smoke",
-            },
-        )
-        assert duplicate_result["success"] is False
-        assert duplicate_result["error_code"] == "CONFLICT"
-
-        expire_result = await _call_tool(
-            urls["minx-core"],
-            "memory_expire",
-            {"memory_id": candidate_id, "reason": "hermes smoke cleanup"},
-        )
-        assert expire_result["success"] is True
-        assert expire_result["data"]["memory"]["status"] == "expired"
-
-        # recipe_template surfaces the packaged markdown scaffold byte-for-byte
-        # through the Meals MCP so the harness can hand it to a user verbatim.
-        recipe_template_result = await _call_tool(
-            urls["minx-meals"],
-            "recipe_template",
-            {},
-        )
-        assert recipe_template_result["success"] is True
-        assert recipe_template_result["data"]["filename"] == "recipe-starter.md"
-        template_text = recipe_template_result["data"]["template"]
-        assert isinstance(template_text, str)
-        assert template_text.startswith("---")
-        assert "## Ingredients" in template_text
-        assert "## Substitutions" in template_text
-        assert "## Notes" in template_text
+        await _assert_domain_snapshot_roundtrip(urls, review_date)
+        await _assert_memory_lifecycle_roundtrip(urls["minx-core"])
+        await _assert_recipe_template_roundtrip(urls["minx-meals"])
     finally:
         _terminate_processes(procs)
 
@@ -242,6 +90,151 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+async def _assert_domain_snapshot_roundtrip(urls: dict[str, str], review_date: str) -> None:
+    meal_result = await _call_tool(
+        urls["minx-meals"],
+        "meal_log",
+        {
+            "meal_kind": "lunch",
+            "occurred_at": f"{review_date}T12:00:00Z",
+            "summary": "hermes smoke meal",
+            "protein_grams": 34.0,
+            "calories": 650,
+        },
+    )
+    assert meal_result["success"] is True
+    assert meal_result["data"]["meal"]["meal_kind"] == "lunch"
+
+    exercise_result = await _call_tool(
+        urls["minx-training"],
+        "training_exercise_upsert",
+        {
+            "display_name": "Deadlift",
+            "is_compound": True,
+        },
+    )
+    assert exercise_result["success"] is True
+    exercise_id = exercise_result["data"]["exercise"]["id"]
+
+    session_result = await _call_tool(
+        urls["minx-training"],
+        "training_session_log",
+        {
+            "occurred_at": f"{review_date}T08:00:00Z",
+            "sets": [
+                {
+                    "exercise_id": exercise_id,
+                    "reps": 5,
+                    "weight_kg": 145.0,
+                }
+            ],
+        },
+    )
+    assert session_result["success"] is True
+    assert session_result["data"]["session"]["set_count"] == 1
+    assert session_result["data"]["session"]["total_volume_kg"] == pytest.approx(725.0)
+
+    snapshot_result = await _call_tool(
+        urls["minx-core"],
+        "get_daily_snapshot",
+        {"review_date": review_date, "force": False},
+    )
+    assert snapshot_result["success"] is True
+    snapshot = snapshot_result["data"]
+    assert snapshot["date"] == review_date
+    assert snapshot["nutrition"] is not None
+    assert snapshot["nutrition"]["meal_count"] == 1
+    assert snapshot["nutrition"]["protein_grams"] == pytest.approx(34.0)
+    assert snapshot["training"] is not None
+    assert snapshot["training"]["sessions_logged"] == 1
+    assert snapshot["training"]["total_sets"] == 1
+
+
+async def _assert_memory_lifecycle_roundtrip(core_url: str) -> None:
+    # Low-confidence proposals land as candidates; high-confidence ones auto-promote.
+    candidate_result = await _call_tool(
+        core_url,
+        "memory_create",
+        {
+            "memory_type": "preference",
+            "scope": "core",
+            "subject": "hermes_smoke_timezone",
+            "confidence": 0.5,
+            "payload": {"category": "timezone", "value": "UTC"},
+            "source": "hermes-http-smoke",
+            "reason": "stated in smoke test",
+        },
+    )
+    assert candidate_result["success"] is True
+    candidate_mem = candidate_result["data"]["memory"]
+    assert candidate_mem["status"] == "candidate"
+    candidate_id = int(candidate_mem["id"])
+
+    auto_result = await _call_tool(
+        core_url,
+        "memory_create",
+        {
+            "memory_type": "preference",
+            "scope": "finance",
+            "subject": "hermes_smoke_weekly_review",
+            "confidence": 0.9,
+            "payload": {"category": "weekly_review", "value": "sunday"},
+            "source": "hermes-http-smoke",
+        },
+    )
+    assert auto_result["success"] is True
+    assert auto_result["data"]["memory"]["status"] == "active"
+
+    pending = await _call_tool(
+        core_url,
+        "get_pending_memory_candidates",
+        {"scope": "core", "limit": 50},
+    )
+    assert pending["success"] is True
+    pending_subjects = {m["subject"] for m in pending["data"]["memories"]}
+    assert "hermes_smoke_timezone" in pending_subjects
+    assert "hermes_smoke_weekly_review" not in pending_subjects
+
+    confirm_result = await _call_tool(core_url, "memory_confirm", {"memory_id": candidate_id})
+    assert confirm_result["success"] is True
+    assert confirm_result["data"]["memory"]["status"] == "active"
+
+    duplicate_result = await _call_tool(
+        core_url,
+        "memory_create",
+        {
+            "memory_type": "preference",
+            "scope": "core",
+            "subject": "hermes_smoke_timezone",
+            "confidence": 0.9,
+            "payload": {"category": "timezone", "value": "UTC"},
+            "source": "hermes-http-smoke",
+        },
+    )
+    assert duplicate_result["success"] is False
+    assert duplicate_result["error_code"] == "CONFLICT"
+
+    expire_result = await _call_tool(
+        core_url,
+        "memory_expire",
+        {"memory_id": candidate_id, "reason": "hermes smoke cleanup"},
+    )
+    assert expire_result["success"] is True
+    assert expire_result["data"]["memory"]["status"] == "expired"
+
+
+async def _assert_recipe_template_roundtrip(meals_url: str) -> None:
+    recipe_template_result = await _call_tool(meals_url, "recipe_template", {})
+    assert recipe_template_result["success"] is True
+    assert recipe_template_result["data"]["filename"] == "recipe-starter.md"
+    template_text = recipe_template_result["data"]["template"]
+    assert isinstance(template_text, str)
+    assert template_text.startswith("---")
+    assert "## Ingredients" in template_text
+    assert "## Substitutions" in template_text
+    assert "## Notes" in template_text
 
 
 def _start_server(

@@ -103,12 +103,14 @@ class FinanceServiceLike(Protocol):
         source_ref: str,
         account_name: str,
         source_kind: str | None = None,
+        mapping: dict[str, object] | None = None,
     ) -> dict[str, object]: ...
     def finance_import_preview(
         self,
         source_ref: str,
         account_name: str,
         source_kind: str | None = None,
+        mapping: dict[str, object] | None = None,
     ) -> dict[str, object]: ...
     def missing_transaction_ids(self, transaction_ids: list[int]) -> list[int]: ...
     def finance_categorize(self, transaction_ids: list[int], category_name: str) -> int: ...
@@ -180,9 +182,10 @@ def create_finance_server(
         source_ref: str,
         account_name: str,
         source_kind: str | None = None,
+        mapping: dict[str, object] | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: _finance_import(service, source_ref, account_name, source_kind),
+            lambda: _finance_import(service, source_ref, account_name, source_kind, mapping),
             tool_name="finance_import",
         )
 
@@ -191,9 +194,10 @@ def create_finance_server(
         source_ref: str,
         account_name: str,
         source_kind: str | None = None,
+        mapping: dict[str, object] | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: _finance_import_preview(service, source_ref, account_name, source_kind),
+            lambda: _finance_import_preview(service, source_ref, account_name, source_kind, mapping),
             tool_name="finance_import_preview",
         )
 
@@ -325,13 +329,19 @@ def _finance_import(
     source_ref: str,
     account_name: str,
     source_kind: str | None,
+    mapping: dict[str, object] | None,
 ) -> dict[str, object]:
     _require_non_empty("account_name", account_name)
     _validate_source_ref(source_ref)
     if source_kind is not None and source_kind not in SUPPORTED_SOURCE_KINDS:
         raise InvalidInputError(f"Unsupported finance source kind: {source_kind}")
     with service:
-        return service.finance_import(source_ref, account_name, source_kind=source_kind)
+        return service.finance_import(
+            source_ref,
+            account_name,
+            source_kind=source_kind,
+            mapping=mapping,
+        )
 
 
 def _finance_import_preview(
@@ -339,13 +349,19 @@ def _finance_import_preview(
     source_ref: str,
     account_name: str,
     source_kind: str | None,
+    mapping: dict[str, object] | None,
 ) -> dict[str, object]:
     _require_non_empty("account_name", account_name)
     _validate_source_ref(source_ref)
     if source_kind is not None and source_kind not in SUPPORTED_SOURCE_KINDS:
         raise InvalidInputError(f"Unsupported finance source kind: {source_kind}")
     with service:
-        return service.finance_import_preview(source_ref, account_name, source_kind=source_kind)
+        return service.finance_import_preview(
+            source_ref,
+            account_name,
+            source_kind=source_kind,
+            mapping=mapping,
+        )
 
 
 def _finance_categorize(

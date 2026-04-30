@@ -66,9 +66,9 @@ class OpenAICompatibleLLM:
     ) -> ToolCallingTurn:
         """Run one chat turn with tools. Returns either tool_calls or final content.
 
-        Preserves OpenRouter `reasoning_details` from the assistant message so the
-        caller can feed it back on the next turn (Nemotron-3-Super requires this
-        for multi-turn reasoning continuity).
+        Preserves provider-specific `reasoning_details` from the assistant
+        message so callers can feed it back on the next turn when a provider
+        uses that field for reasoning continuity.
         """
 
         request_extras: dict[str, Any] = {"tools": tools, "tool_choice": tool_choice}
@@ -78,36 +78,7 @@ class OpenAICompatibleLLM:
             request_extras=request_extras,
         )
         message = _extract_assistant_message(payload)
-        tool_calls_raw = message.get("tool_calls")
-        tool_calls: list[ToolCall] = []
-        if isinstance(tool_calls_raw, list):
-            for raw in tool_calls_raw:
-                if not isinstance(raw, dict):
-                    continue
-                fn = raw.get("function") or {}
-                if not isinstance(fn, dict):
-                    continue
-                name = fn.get("name")
-                args = fn.get("arguments")
-                if not isinstance(name, str):
-                    continue
-                try:
-                    parsed_args = (
-                        json.loads(args) if isinstance(args, str) and args else {}
-                    )
-                except json.JSONDecodeError as exc:
-                    raise LLMProviderError(
-                        f"tool_calls arguments not valid JSON for {name}: {exc}"
-                    ) from exc
-                if not isinstance(parsed_args, dict):
-                    parsed_args = {}
-                tool_calls.append(
-                    ToolCall(
-                        id=str(raw.get("id") or ""),
-                        name=name,
-                        arguments=parsed_args,
-                    )
-                )
+        tool_calls = _extract_tool_calls(message.get("tool_calls"))
 
         content = message.get("content") if isinstance(message.get("content"), str) else None
         reasoning_details = message.get("reasoning_details")
@@ -157,6 +128,8 @@ class OpenAICompatibleLLM:
                     json=request_json,
                 )
                 response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise LLMProviderError(_format_http_status_error(exc)) from exc
         except httpx.HTTPError as exc:
             raise LLMProviderError(str(exc)) from exc
 
@@ -183,6 +156,82 @@ class ToolCallingTurn:
     reasoning_details: list[Any] | None
     # Preserved verbatim so the caller can echo it on the next request.
     raw_assistant_message: dict[str, Any]
+
+
+def _extract_tool_calls(tool_calls_raw: Any) -> list[ToolCall]:
+    if not isinstance(tool_calls_raw, list):
+        return []
+
+    calls: list[ToolCall] = []
+    for raw in tool_calls_raw:
+        call = _tool_call_from_raw(raw)
+        if call is not None:
+            calls.append(call)
+    return calls
+
+
+def _tool_call_from_raw(raw: Any) -> ToolCall | None:
+    if not isinstance(raw, dict):
+        return None
+
+    fn = raw.get("function")
+    if not isinstance(fn, dict):
+        return None
+
+    name = fn.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+
+    return ToolCall(
+        id=str(raw.get("id") or ""),
+        name=name,
+        arguments=_parse_tool_arguments(name, fn.get("arguments")),
+    )
+
+
+def _parse_tool_arguments(name: str, args: Any) -> dict[str, Any]:
+    if args is None or args == "":
+        return {}
+    if isinstance(args, dict):
+        return dict(args)
+    if isinstance(args, str):
+        return _parse_tool_argument_json(name, args)
+    raise LLMProviderError(
+        f"tool_calls arguments must be a JSON object for {name}; got {type(args).__name__}"
+    )
+
+
+def _parse_tool_argument_json(name: str, raw_args: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw_args)
+    except json.JSONDecodeError as exc:
+        raise LLMProviderError(
+            f"tool_calls arguments not valid JSON for {name}: {exc}"
+        ) from exc
+    return _require_tool_argument_object(name, parsed)
+
+
+def _require_tool_argument_object(name: str, parsed_args: Any) -> dict[str, Any]:
+    if isinstance(parsed_args, dict):
+        return parsed_args
+    raise LLMProviderError(
+        f"tool_calls arguments must be a JSON object for {name}; got {type(parsed_args).__name__}"
+    )
+
+
+def _format_http_status_error(exc: httpx.HTTPStatusError) -> str:
+    status = exc.response.status_code
+    body = exc.response.text.strip()
+    if not body:
+        return f"LLM provider HTTP {status}: {exc.request.method} {exc.request.url}"
+    return (
+        f"LLM provider HTTP {status}: {exc.request.method} {exc.request.url}: "
+        f"{_preview_response_body(body)}"
+    )
+
+
+def _preview_response_body(body: str, limit: int = 512) -> str:
+    return body if len(body) <= limit else f"{body[:limit]}..."
 
 
 def _extract_assistant_message(payload: dict[str, Any]) -> dict[str, Any]:

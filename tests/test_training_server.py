@@ -78,6 +78,44 @@ def test_training_tool_roundtrip_for_program_and_session(db_path) -> None:
     assert summary["data"]["summary"]["sessions_logged"] == 1
 
 
+def test_training_exercise_upsert_rejects_blank_display_name(db_path) -> None:
+    server = create_training_server(TrainingService(db_path))
+
+    result = _call(server, "training_exercise_upsert", {"display_name": "   "})
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "display_name must not be empty" in result["error"]
+
+
+def test_training_session_list_rejects_invalid_date_window(db_path) -> None:
+    server = create_training_server(TrainingService(db_path))
+
+    result = _call(
+        server,
+        "training_session_list",
+        {"start_date": "2026-04-14", "end_date": "2026-04-13"},
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "start_date must be on or before end_date" in result["error"]
+
+
+def test_training_session_log_rejects_invalid_occurred_at(db_path) -> None:
+    server = create_training_server(TrainingService(db_path))
+
+    result = _call(
+        server,
+        "training_session_log",
+        {"occurred_at": "not-a-timestamp", "sets": [{"display_name": "Deadlift", "reps": 5}]},
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "occurred_at must be a valid ISO timestamp" in result["error"]
+
+
 def test_training_session_log_returns_invalid_input_for_empty_sets(db_path) -> None:
     server = create_training_server(TrainingService(db_path))
     result = _call(

@@ -9,6 +9,7 @@ from minx_mcp.meals.recommendations import recommend_recipes as recommend
 from minx_mcp.meals.service import MealsService
 from minx_mcp.meals.templates import read_recipe_starter_template, recipe_starter_template_path
 from minx_mcp.transport import health_payload
+from minx_mcp.validation import require_non_empty, validate_iso_date, validate_iso_datetime
 
 
 def create_meals_server(service: MealsService) -> FastMCP:
@@ -24,18 +25,15 @@ def create_meals_server(service: MealsService) -> FastMCP:
         calories: int | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: {
-                "meal": asdict(
-                    service.log_meal(
-                        meal_kind=meal_kind,
-                        occurred_at=occurred_at,
-                        summary=summary,
-                        food_items=food_items,
-                        protein_grams=protein_grams,
-                        calories=calories,
-                    )
-                )
-            },
+            lambda: _meal_log(
+                service,
+                meal_kind=meal_kind,
+                occurred_at=occurred_at,
+                summary=summary,
+                food_items=food_items,
+                protein_grams=protein_grams,
+                calories=calories,
+            ),
             tool_name="meal_log",
         )
 
@@ -48,17 +46,14 @@ def create_meals_server(service: MealsService) -> FastMCP:
         low_stock_threshold: float | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: {
-                "item": asdict(
-                    service.add_pantry_item(
-                        display_name=display_name,
-                        quantity=quantity,
-                        unit=unit,
-                        expiration_date=expiration_date,
-                        low_stock_threshold=low_stock_threshold,
-                    )
-                )
-            },
+            lambda: _pantry_add(
+                service,
+                display_name=display_name,
+                quantity=quantity,
+                unit=unit,
+                expiration_date=expiration_date,
+                low_stock_threshold=low_stock_threshold,
+            ),
             tool_name="pantry_add",
         )
 
@@ -205,3 +200,53 @@ def create_meals_server(service: MealsService) -> FastMCP:
 def _remove_pantry_item(service: MealsService, item_id: int) -> dict[str, bool]:
     service.remove_pantry_item(item_id)
     return {"removed": True}
+
+
+def _meal_log(
+    service: MealsService,
+    *,
+    meal_kind: str,
+    occurred_at: str,
+    summary: str | None,
+    food_items: list[dict[str, object]] | None,
+    protein_grams: float | None,
+    calories: int | None,
+) -> dict[str, object]:
+    validate_iso_datetime(occurred_at, field_name="occurred_at")
+    return {
+        "meal": asdict(
+            service.log_meal(
+                meal_kind=meal_kind,
+                occurred_at=occurred_at,
+                summary=summary,
+                food_items=food_items,
+                protein_grams=protein_grams,
+                calories=calories,
+            )
+        )
+    }
+
+
+def _pantry_add(
+    service: MealsService,
+    *,
+    display_name: str,
+    quantity: float | None,
+    unit: str | None,
+    expiration_date: str | None,
+    low_stock_threshold: float | None,
+) -> dict[str, object]:
+    name = require_non_empty("display_name", display_name).strip()
+    if expiration_date is not None:
+        validate_iso_date(expiration_date, field_name="expiration_date")
+    return {
+        "item": asdict(
+            service.add_pantry_item(
+                display_name=name,
+                quantity=quantity,
+                unit=unit,
+                expiration_date=expiration_date,
+                low_stock_threshold=low_stock_threshold,
+            )
+        )
+    }

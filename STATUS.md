@@ -2,7 +2,7 @@
 
 Last updated: 2026-04-30
 
-For setup and end-to-end smokes, see [docs/RUNBOOK.md](docs/RUNBOOK.md). For agent-oriented orientation, see [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md).
+For architecture, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). For setup and end-to-end smokes, see [docs/RUNBOOK.md](docs/RUNBOOK.md). For agent-oriented orientation, see [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md).
 
 Minx MCP is implemented through Slice 9 investigation storage / read / re-query surfaces. The system has four active MCP servers: Finance, Core, Meals, and Training, plus a harness-side production runner in [minx-hermes](https://github.com/akminx/minx-hermes) that drives the agentic investigation loop end to end.
 
@@ -43,8 +43,8 @@ Minx MCP is implemented through Slice 9 investigation storage / read / re-query 
 - Render template registry (`minx_mcp/core/render_templates.py`) — 18 IDs covering finance_query, goal_parse, memory_capture, and investigation surfaces. Fulfills the MCP render contract and template-registry specs.
 - Soft tool-call cap in `append_investigation_step` (`MINX_MAX_TOOL_CALLS_PER_INVESTIGATION`, default 1000) as defense in depth against runaway harnesses.
 - Bounded `memory_list(include_cited_investigations=true)` (last 200 investigations, max 20 citations per memory).
-- Live Hermes overlay skills for `/minx-investigate`, `/minx-plan`, `/minx-retro`, `/minx-onboard-entity`, all driven end-to-end by the production runner `scripts/minx-investigate.py` in the minx-hermes repo. Stack: budget-enforcing agentic loop (`hermes_loop/runtime.py`), OpenAI tool-calling policy (`hermes_loop/policies.py`) on Nemotron-3-Super-120B-A12B via OpenRouter with `data_collection: deny` no-logging routing, MCP fan-out dispatcher and Core client (`hermes_loop/mcp_clients.py`) over `streamablehttp_client`.
-- LLM provider config: OpenRouter for both chat (Nemotron-3-Super, no-logging providers, fp8/bf16 only, reasoning_effort: medium) and embeddings (`openai/text-embedding-3-small`, `OpenRouterEmbedder` shipped in `memory_embeddings.py:69`). One-shot setup: `uv run scripts/configure-openrouter.py`.
+- Live Hermes overlay skills for `/minx-investigate`, `/minx-plan`, `/minx-retro`, `/minx-onboard-entity`, all driven end to end by the production runner `scripts/minx-investigate.py` in the minx-hermes repo. Stack: budget-enforcing agentic loop (`hermes_loop/runtime.py`), OpenAI-compatible tool-calling policy (`hermes_loop/policies.py`), MCP fan-out dispatcher and Core client (`hermes_loop/mcp_clients.py`) over `streamablehttp_client`.
+- LLM provider config: chat model is deployment configuration through Core `llm_config` or minx-hermes `MINX_INVESTIGATION_MODEL`; setup examples recommend `google/gemini-2.5-flash` on OpenRouter. Optional memory embeddings use `openai/text-embedding-3-small` by default through `minx_mcp/core/memory_embeddings.py:OpenRouterEmbedder`.
 
 ## Current Architecture Boundary
 

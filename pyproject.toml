@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "minx-mcp"
 version = "0.1.0"
-description = "Shared Minx MCP services and finance domain"
+description = "Local-first Minx MCP servers for finance, meals, training, memory, and cross-domain core workflows"
 requires-python = ">=3.12"
 dependencies = [
   "httpx>=0.27.0",

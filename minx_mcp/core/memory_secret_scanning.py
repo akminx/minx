@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from minx_mcp.contracts import InvalidInputError
+from minx_mcp.core.memory_payloads import validate_memory_payload
 from minx_mcp.core.secret_scanner import SecretVerdictKind, redact_secrets, scan_for_secrets
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "SecretAuditLocation",
     "SecretErrorLocation",
     "merge_event_payload",
+    "prepare_validated_memory_write",
     "raise_secret_detected",
     "redaction_event_payload",
     "sanitize_existing_subject",
@@ -51,6 +53,17 @@ class MemorySecretScanResult:
     detected_kinds: tuple[str, ...]
     error_locations: tuple[SecretErrorLocation, ...]
     audit_locations: tuple[SecretAuditLocation, ...]
+
+
+@dataclass(frozen=True)
+class PreparedMemoryWrite:
+    memory_type: str
+    scope: str
+    subject: str
+    payload: dict[str, object]
+    source: str
+    reason: str
+    redaction_payload: dict[str, object] | None
 
 
 @dataclass
@@ -125,6 +138,58 @@ def scan_payload_only(payload: dict[str, object], *, scan_payload_values: bool =
         source="memory",
         reason="",
         scan_payload_values=scan_payload_values,
+    )
+
+
+def prepare_validated_memory_write(
+    *,
+    memory_type: str,
+    scope: str,
+    subject: str,
+    payload: dict[str, object],
+    source: str,
+    reason: str,
+) -> PreparedMemoryWrite:
+    """Scan, schema-validate, and rescan a memory write input.
+
+    The first pass skips payload values so structured validation can normalize
+    the payload shape before the second pass redacts or blocks user-visible
+    values. Keeping this sequence in one place prevents the memory service,
+    vault scanner, and reconciler from drifting apart.
+    """
+
+    raw_scan = scan_memory_input(
+        memory_type=memory_type,
+        scope=scope,
+        subject=subject,
+        payload=dict(payload),
+        source=source,
+        reason=reason,
+        scan_payload_values=False,
+    )
+    if raw_scan.verdict is SecretVerdictKind.BLOCK:
+        raise_secret_detected(raw_scan)
+
+    validated_payload = validate_memory_payload(raw_scan.memory_type, raw_scan.payload)
+    validated_scan = scan_memory_input(
+        memory_type=raw_scan.memory_type,
+        scope=raw_scan.scope,
+        subject=raw_scan.subject,
+        payload=validated_payload,
+        source=raw_scan.source,
+        reason=raw_scan.reason,
+    )
+    if validated_scan.verdict is SecretVerdictKind.BLOCK:
+        raise_secret_detected(validated_scan)
+
+    return PreparedMemoryWrite(
+        memory_type=validated_scan.memory_type,
+        scope=validated_scan.scope,
+        subject=validated_scan.subject,
+        payload=validated_scan.payload,
+        source=validated_scan.source,
+        reason=validated_scan.reason,
+        redaction_payload=redaction_event_payload(raw_scan, validated_scan),
     )
 
 

@@ -1,12 +1,12 @@
 # Minx MCP
 
-A local-first personal Life OS built as a set of Model Context Protocol servers. Minx turns everyday personal data — finance, meals, training, vault notes — into structured, auditable context that an MCP-capable harness can use for coaching, reflection, planning, and investigation.
+Minx is a local-first personal operating system built as a set of Model Context Protocol servers. It turns finance, meals, training, goals, memory, and Obsidian notes into structured context that an MCP-capable harness can use for coaching, planning, retrospectives, and investigations.
 
-The project is intentionally split between durable systems and conversational systems:
+The project is deliberately split between durable systems and conversational systems:
 
-- **Domain MCPs** own facts and deterministic domain operations.
-- **Minx Core** owns interpretation, memory, read models, detectors, and audit trails.
-- **Hermes (or any harness)** owns dialogue, scheduling, LLM prose, and agent loops.
+- **Domain MCPs** own facts and deterministic business logic.
+- **Minx Core** owns cross-domain interpretation, memory, read models, vault primitives, render contracts, and audit trails.
+- **Hermes or another harness** owns dialogue, scheduling, model calls, tool choice, and final prose.
 
 The database knows what happened. The harness decides how to talk about it.
 
@@ -15,6 +15,7 @@ The database knows what happened. The harness decides how to talk about it.
 | You are... | Read |
 |---|---|
 | Setting it up for the first time | [docs/RUNBOOK.md](docs/RUNBOOK.md) |
+| Understanding the architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | An agent (Claude / Codex / Hermes) about to work in this repo | [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) |
 | Looking up what's implemented | [STATUS.md](STATUS.md) |
 | Looking up env vars / paths / maintenance commands | [OPERATIONS.md](OPERATIONS.md) |
@@ -31,48 +32,50 @@ Minx ships four MCP servers:
 | `minx-training` | Training logs and progression state |
 | `minx-core` | Cross-domain interpretation, memory, snapshots, goals, vault sync, playbook + investigation audit |
 
-Plus a harness-side Hermes integration (live in the [minx-hermes](https://github.com/akminx/minx-hermes) repo) that drives Slice 9 agentic investigations through `hermes_loop/runtime.py` — a budget-enforced, tool-allowlisted loop that calls Nemotron-3-Super on OpenRouter and routes tool calls to the four MCP servers.
+The harness-side integration lives in [minx-hermes](https://github.com/akminx/minx-hermes). Its `hermes_loop/runtime.py` drives budgeted, tool-allowlisted investigations against these four MCP servers and records digest-only audit rows back into Core.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    F["Finance MCP"] --> E["Domain events"]
-    M["Meals MCP"] --> E
-    T["Training MCP"] --> E
-    E --> C["Minx Core"]
+    U["User interfaces"] --> H["Hermes or MCP harness"]
+    H --> F["Finance MCP"]
+    H --> M["Meals MCP"]
+    H --> T["Training MCP"]
+    H --> C["Minx Core"]
     C --> R["Read models and snapshots"]
     C --> G["Goals and trajectories"]
     C --> MEM["Durable memory and search"]
     C --> A["Playbook and investigation audit"]
     C --> V["Obsidian vault primitives"]
-    R --> H["Hermes loop / harness"]
-    G --> H
-    MEM --> H
-    A --> H
-    V --> H
-    H --> LLM["OpenRouter (Nemotron, no-logging providers)"]
+    F --> DB["SQLite"]
+    M --> DB
+    T --> DB
+    C --> DB
+    C --> VAULT["Obsidian vault"]
+    H --> LLM["Configured OpenAI-compatible model endpoint"]
 ```
 
-Core exposes structured facts, not final coaching prose. That makes the system inspectable, testable, and resilient when the LLM layer changes.
+Core exposes structured facts and render hints, not final coaching prose. That keeps the system inspectable, testable, and resilient when the model layer changes.
 
 ## 60-second quick start
 
 ```bash
-git clone https://github.com/akminx/minx ~/Documents/minx-mcp
-cd ~/Documents/minx-mcp
+git clone https://github.com/akminx/minx minx
+cd minx
 uv sync --all-extras
-uv run pytest tests/ -x -q                       # 1165 tests, ~70s
+uv run pytest tests/ -q
 
 export OPENROUTER_API_KEY=sk-or-v1-...
 export MINX_OPENROUTER_API_KEY=$OPENROUTER_API_KEY
-uv run scripts/configure-openrouter.py
+uv run scripts/configure-openrouter.py --model google/gemini-2.5-flash
 ./scripts/start_hermes_stack.sh                  # MCP servers on 8000-8003
 ```
 
 Then drive an investigation (from the [minx-hermes](https://github.com/akminx/minx-hermes) checkout):
 
 ```bash
+export MINX_INVESTIGATION_MODEL=google/gemini-2.5-flash
 uv run scripts/minx-investigate.py --kind investigate \
   --question "what merchants did I spend the most at last month?" \
   --max-tool-calls 6 --wall-clock-s 60
@@ -90,13 +93,16 @@ minx_mcp/
   training/    Workout and progression tools
   schema/      Packaged SQLite migrations (single source of truth)
 scripts/       Setup, maintenance, smoke helpers
-tests/         1165 tests covering domain services, migrations, MCP tools, transports, regressions
+tests/         Regression coverage for domain services, migrations, MCP tools, transports, and safety edges
 docs/
   RUNBOOK.md   How to run end to end
   AGENT_GUIDE.md How agents should think about this repo
-  superpowers/specs/   Per-slice specs (architecture decisions)
+  ARCHITECTURE.md Current architecture narrative
+  superpowers/specs/   Dated design records and implementation specs
   archive/     Historical handoffs
 ```
+
+Dated specs and plans are useful evidence of the build process, but current behavior is summarized in `README.md`, `docs/ARCHITECTURE.md`, `STATUS.md`, `OPERATIONS.md`, and `docs/RUNBOOK.md`.
 
 ## Engineering patterns worth borrowing
 

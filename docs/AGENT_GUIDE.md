@@ -8,10 +8,10 @@ Minx splits durable systems from conversational systems on a hard line.
 
 | Owns | Lives in | Examples |
 |---|---|---|
-| **Facts and deterministic logic** | minx-mcp | Finance import, money math, memory CRUD, FTS, vault sync, render templates, investigation storage |
-| **Conversation, tool choice, prose, scheduling** | Hermes harness + `hermes_loop/` | LLM calls, agent loops, slash commands, final answers |
+| **Facts and deterministic logic** | `minx` | Finance import, money math, memory CRUD, FTS, vault sync, render templates, investigation storage |
+| **Conversation, tool choice, prose, scheduling** | Hermes harness + `minx-hermes/hermes_loop/` | LLM calls, agent loops, slash commands, final answers |
 
-When the boundary is unclear, ask: *would a different harness need this same logic?* If yes, it belongs in minx-mcp. If it depends on dialogue context, it belongs in Hermes.
+When the boundary is unclear, ask: *would a different harness need this same logic?* If yes, it belongs in `minx`. If it depends on dialogue context, it belongs in Hermes.
 
 ## Three workflows
 
@@ -31,18 +31,18 @@ All four go through the same agentic loop in `hermes_loop/runtime.py`. They diff
 ```bash
 # Bring the system up
 ./scripts/start_hermes_stack.sh                 # MCP servers on 8000-8003
-uv run scripts/configure-openrouter.py          # one-shot LLM config
+uv run scripts/configure-openrouter.py --model google/gemini-2.5-flash
 
 # Verify
-uv run pytest tests/ -x -q                      # minx-mcp
-PYTHONPATH=. uv run pytest tests/ -x -q         # hermes worktree
+uv run pytest tests/ -q                         # minx
+PYTHONPATH=. uv run pytest tests/ -q            # minx-hermes
 
 # Drive an investigation (production runner)
 uv run scripts/minx-investigate.py --kind investigate \
   --question "..." --max-tool-calls 8 --wall-clock-s 90
 ```
 
-Anything else is non-canonical — call it out in your response if you reach for something else.
+`scripts/configure-openrouter.py` accepts `--model`; use `google/gemini-2.5-flash` as the recommended example unless deployment config says otherwise. Anything else is non-canonical — call it out in your response if you reach for something else.
 
 ## Where to look
 
@@ -51,7 +51,8 @@ Anything else is non-canonical — call it out in your response if you reach for
 | To get the system running | [RUNBOOK.md](RUNBOOK.md) |
 | Implementation status / what shipped | [../STATUS.md](../STATUS.md) |
 | Setup reference (env vars, paths) | [../OPERATIONS.md](../OPERATIONS.md) |
-| Architecture intent | `docs/superpowers/specs/2026-04-06-minx-life-os-architecture-design.md` |
+| Current architecture | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| Architecture history | `docs/superpowers/specs/2026-04-06-minx-life-os-architecture-design.md` |
 | Slice 9 contract | `docs/superpowers/specs/2026-04-19-slice9-agentic-investigations.md` |
 | Render template contract | `docs/superpowers/specs/2026-04-29-render-template-registry.md` |
 | Memory architecture | `docs/superpowers/specs/2026-04-15-slice6-durable-memory.md` |
@@ -77,11 +78,11 @@ Anything else is non-canonical — call it out in your response if you reach for
 
 ```
 Is the change about how tools are called, what the model says, or scheduling?
-  └─ Yes → goes in hermes_loop/ or skills/, NOT minx-mcp.
+  └─ Yes → goes in minx-hermes/hermes_loop/ or skills/, NOT minx.
 Is the change about durable storage, schema, or deterministic computation?
-  └─ Yes → goes in minx-mcp.
+  └─ Yes → goes in minx.
 Does it need both?
-  └─ Likely two PRs: a Core-side contract change in minx-mcp, then a harness change that consumes it.
+  └─ Likely two PRs: a Core-side contract change in minx, then a harness change that consumes it.
 ```
 
 ## When the user says "investigate" / "plan" / "retro"

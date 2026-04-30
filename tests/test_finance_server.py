@@ -196,6 +196,53 @@ def test_finance_import_tool_loads_saved_mapping_for_generic_csv(tmp_path):
     assert result["data"]["result"]["inserted"] == 1
 
 
+def test_finance_import_tool_accepts_inline_generic_csv_mapping(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path)
+    source = tmp_path / "transactions.csv"
+    source.write_text("posted,details,amount\n03/02/2026,Coffee,-12.50\n")
+    server = create_finance_server(service)
+    finance_import = get_tool(server, "finance_import").fn
+
+    result = finance_import(
+        str(source),
+        "DCU",
+        source_kind="generic_csv",
+        mapping={
+            "date_column": "posted",
+            "date_format": "%m/%d/%Y",
+            "description_column": "details",
+            "amount_column": "amount",
+        },
+    )
+
+    assert result["success"] is True
+    assert result["data"]["result"]["inserted"] == 1
+
+
+def test_finance_import_preview_tool_accepts_inline_generic_csv_mapping(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path)
+    source = tmp_path / "transactions.csv"
+    source.write_text("posted,details,amount\n03/02/2026,Coffee,-12.50\n")
+    server = create_finance_server(service)
+    finance_import_preview = get_tool(server, "finance_import_preview").fn
+
+    result = finance_import_preview(
+        str(source),
+        "DCU",
+        source_kind="generic_csv",
+        mapping={
+            "date_column": "posted",
+            "date_format": "%m/%d/%Y",
+            "description_column": "details",
+            "amount_column": "amount",
+        },
+    )
+
+    assert result["success"] is True
+    assert result["data"]["preview"]["result_type"] == "preview"
+    assert result["data"]["preview"]["sample_transactions"][0]["description"] == "Coffee"
+
+
 def test_finance_import_tool_loads_saved_mapping_by_account_import_profile(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path)
     source = tmp_path / "transactions.csv"

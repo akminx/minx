@@ -8,13 +8,8 @@ from dataclasses import asdict, dataclass
 from sqlite3 import Connection
 
 from minx_mcp.contracts import InvalidInputError
-from minx_mcp.core.memory_payloads import validate_memory_payload
-from minx_mcp.core.memory_secret_scanning import (
-    raise_secret_detected,
-    redaction_event_payload,
-    scan_memory_input,
-)
-from minx_mcp.core.secret_scanner import SecretVerdictKind, scan_for_secrets
+from minx_mcp.core.memory_secret_scanning import prepare_validated_memory_write
+from minx_mcp.core.secret_scanner import scan_for_secrets
 from minx_mcp.core.vault_memory_frontmatter import (
     MemoryIdentity,
     optional_str,
@@ -406,31 +401,17 @@ class VaultScanner:
         try:
             identity = parse_memory_identity(doc.frontmatter)
             payload = parse_memory_payload(doc.frontmatter, allow_implicit=True)
-            raw_scan = scan_memory_input(
+            prepared = prepare_validated_memory_write(
                 memory_type=identity.memory_type,
                 scope=identity.scope,
                 subject=identity.subject,
                 payload=payload,
                 source="vault_sync",
                 reason=f"vault sync from {doc.relative_path}",
-                scan_payload_values=False,
             )
-            if raw_scan.verdict is SecretVerdictKind.BLOCK:
-                raise_secret_detected(raw_scan)
-            payload = validate_memory_payload(raw_scan.memory_type, raw_scan.payload)
-            validated_scan = scan_memory_input(
-                memory_type=raw_scan.memory_type,
-                scope=raw_scan.scope,
-                subject=raw_scan.subject,
-                payload=payload,
-                source=raw_scan.source,
-                reason=raw_scan.reason,
-            )
-            if validated_scan.verdict is SecretVerdictKind.BLOCK:
-                raise_secret_detected(validated_scan)
-            payload = validated_scan.payload
-            reason = validated_scan.reason
-            redaction_payload = redaction_event_payload(raw_scan, validated_scan)
+            payload = prepared.payload
+            reason = prepared.reason
+            redaction_payload = prepared.redaction_payload
         except InvalidInputError as exc:
             warnings.append(f"{doc.relative_path}: invalid minx-memory frontmatter: {exc}")
             # Current file no longer satisfies the sync contract. Do not leave

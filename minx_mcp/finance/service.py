@@ -425,15 +425,21 @@ class FinanceService(BaseService):
     def _best_effort_category_id(self, category_hint: str | None) -> int | None:
         if not category_hint:
             return None
+        return self._category_lookup_by_normalized_name().get(_normalize_category_name(category_hint))
 
-        normalized_hint = _normalize_category_name(category_hint)
-        rows = self.conn.execute(
-            "SELECT id, name FROM finance_categories ORDER BY name ASC"
-        ).fetchall()
-        for row in rows:
-            if _normalize_category_name(str(row["name"])) == normalized_hint:
-                return int(row["id"])
-        return None
+    def _category_lookup_by_normalized_name(self) -> dict[str, int]:
+        cached = getattr(self._local, "category_lookup_by_normalized_name", None)
+        if cached is None:
+            rows = self.conn.execute(
+                "SELECT id, name FROM finance_categories ORDER BY name ASC"
+            ).fetchall()
+            cached = {}
+            for row in rows:
+                key = _normalize_category_name(str(row["name"]))
+                if key not in cached:
+                    cached[key] = int(row["id"])
+            self._local.category_lookup_by_normalized_name = cached
+        return cached
 
     def _uncategorized_id(self) -> int:
         cached = getattr(self._local, "uncategorized_category_id", None)

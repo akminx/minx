@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 
+import httpx
 import pytest
+from pydantic import BaseModel
 
 from minx_mcp.db import get_connection
 from minx_mcp.preferences import set_preference
@@ -60,6 +63,44 @@ def test_create_llm_returns_none_when_provider_setup_fails(caplog):
 
     assert created is None
     assert "provider init failed" in caplog.text
+
+
+def test_create_llm_reports_invalid_openai_compatible_config(caplog):
+    from minx_mcp.core.llm import create_llm
+
+    caplog.set_level(logging.WARNING, logger="minx_mcp.core.llm")
+    created = create_llm(
+        {
+            "provider": "openai_compatible",
+            "model": "gpt-4o-mini",
+            "api_key_env": "OPENAI_API_KEY",
+        }
+    )
+
+    assert created is None
+    assert "Invalid LLM config for openai_compatible" in caplog.text
+    assert "base_url" in caplog.text
+    assert "Field required" in caplog.text
+
+
+def test_create_llm_ignores_invalid_optional_openai_compatible_maps():
+    from minx_mcp.core.llm import create_llm
+    from minx_mcp.core.llm_openai import OpenAICompatibleLLM
+
+    created = create_llm(
+        {
+            "provider": "openai_compatible",
+            "base_url": "https://api.example.com/v1",
+            "model": "gpt-4o-mini",
+            "api_key_env": "OPENAI_API_KEY",
+            "provider_preferences": ["not", "a", "dict"],
+            "reasoning": "not a dict",
+        }
+    )
+
+    assert isinstance(created, OpenAICompatibleLLM)
+    assert created.provider_preferences is None
+    assert created.reasoning is None
 
 
 def test_create_llm_returns_none_for_unknown_provider(caplog):
@@ -173,6 +214,47 @@ async def test_openai_compatible_llm_posts_chat_completion_and_returns_content(
     }
 
 
+class _StructuredResult(BaseModel):
+    ok: bool
+    count: int
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_llm_posts_structured_prompt(monkeypatch):
+    from minx_mcp.core.llm_openai import OpenAICompatibleLLM
+
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"ok": true, "count": 2}'}}]},
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    llm = OpenAICompatibleLLM(
+        base_url="https://api.example.com/v1",
+        model="gpt-4o-mini",
+        api_key_env="OPENAI_API_KEY",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await llm.run_structured_prompt("Return structured JSON.", _StructuredResult)
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert result == {"ok": True, "count": 2}
+    assert body["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "_StructuredResult",
+            "schema": _StructuredResult.model_json_schema(),
+            "strict": True,
+        },
+    }
+
+
 @pytest.mark.asyncio
 async def test_openai_compatible_llm_includes_provider_preferences_when_configured(
     monkeypatch,
@@ -207,7 +289,7 @@ async def test_openai_compatible_llm_includes_provider_preferences_when_configur
 
     llm = OpenAICompatibleLLM(
         base_url="https://openrouter.ai/api/v1",
-        model="nvidia/nemotron-3-super-120b-a12b",
+        model="google/gemini-2.5-flash",
         api_key_env="OPENAI_API_KEY",
         provider_preferences={
             "only": ["deepinfra"],
@@ -242,6 +324,30 @@ async def test_openai_compatible_llm_raises_provider_error_on_missing_key(monkey
 
     with pytest.raises(LLMProviderError, match="Missing API key"):
         await llm.run_json_prompt("Return JSON.")
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_llm_includes_status_and_body_on_http_error(monkeypatch):
+    from minx_mcp.core.llm import LLMProviderError
+    from minx_mcp.core.llm_openai import OpenAICompatibleLLM
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text='{"error": "rate limit exceeded"}')
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    llm = OpenAICompatibleLLM(
+        base_url="https://api.example.com/v1",
+        model="gpt-4o-mini",
+        api_key_env="OPENAI_API_KEY",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(LLMProviderError) as exc_info:
+        await llm.run_json_prompt("Return JSON.")
+
+    message = str(exc_info.value)
+    assert "HTTP 429" in message
+    assert "rate limit exceeded" in message
 
 
 @pytest.mark.asyncio

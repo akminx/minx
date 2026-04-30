@@ -6,6 +6,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from minx_mcp.config import get_settings
 from minx_mcp.contracts import LLMError
 from minx_mcp.core.models import JSONLLMInterface
@@ -42,19 +44,55 @@ class JSONBackedLLM:
         return json.dumps(response)
 
 
+class OpenAICompatibleConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    base_url: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    api_key_env: str = Field(min_length=1)
+    timeout_seconds: float = Field(default=30.0, gt=0)
+    provider_preferences: dict[str, Any] | None = None
+    reasoning: dict[str, Any] | None = None
+
+
 def _build_openai_compatible(config: dict[str, Any]) -> JSONLLMInterface:
     from minx_mcp.core.llm_openai import OpenAICompatibleLLM
 
-    provider_preferences = config.get("provider_preferences")
-    reasoning = config.get("reasoning")
+    parsed = _parse_openai_compatible_config(config)
     return OpenAICompatibleLLM(
-        base_url=str(config["base_url"]),
-        model=str(config["model"]),
-        api_key_env=str(config["api_key_env"]),
-        timeout_seconds=float(config.get("timeout_seconds", 30.0)),
-        provider_preferences=provider_preferences if isinstance(provider_preferences, dict) else None,
-        reasoning=reasoning if isinstance(reasoning, dict) else None,
+        base_url=parsed.base_url,
+        model=parsed.model,
+        api_key_env=parsed.api_key_env,
+        timeout_seconds=parsed.timeout_seconds,
+        provider_preferences=parsed.provider_preferences,
+        reasoning=parsed.reasoning,
     )
+
+
+def _parse_openai_compatible_config(config: dict[str, Any]) -> OpenAICompatibleConfig:
+    try:
+        return OpenAICompatibleConfig.model_validate(_normalize_openai_compatible_config(config))
+    except ValidationError as exc:
+        raise LLMProviderError(
+            f"Invalid LLM config for openai_compatible: {_format_validation_errors(exc)}"
+        ) from exc
+
+
+def _normalize_openai_compatible_config(config: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(config)
+    for key in ("provider_preferences", "reasoning"):
+        if key in normalized and not isinstance(normalized[key], dict):
+            normalized.pop(key)
+    return normalized
+
+
+def _format_validation_errors(exc: ValidationError) -> str:
+    messages = sorted(
+        f"{'.'.join(str(part) for part in error['loc'])}: {error.get('msg', 'invalid value')}"
+        for error in exc.errors()
+        if error.get("loc")
+    )
+    return "; ".join(messages) if messages else "configuration did not match schema"
 
 
 _PROVIDER_BUILDERS: dict[str, Callable[[dict[str, Any]], JSONLLMInterface | None]] = {

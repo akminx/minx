@@ -52,6 +52,34 @@ def test_meal_log_tool(db_path, tmp_path) -> None:
     assert row["summary"] == "Chicken salad"
 
 
+def test_meal_log_tool_rejects_invalid_occurred_at_before_service_write(db_path, tmp_path) -> None:
+    server = create_meals_server(MealsService(db_path, vault_root=tmp_path))
+
+    result = _call(
+        server,
+        "meal_log",
+        {
+            "meal_kind": "lunch",
+            "occurred_at": "not-a-timestamp",
+            "summary": "Chicken salad",
+        },
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "occurred_at must be a valid ISO timestamp" in result["error"]
+
+
+def test_pantry_add_tool_rejects_blank_display_name(db_path, tmp_path) -> None:
+    server = create_meals_server(MealsService(db_path, vault_root=tmp_path))
+
+    result = _call(server, "pantry_add", {"display_name": "   "})
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "display_name must not be empty" in result["error"]
+
+
 def test_launcher_server_manifest_includes_meals() -> None:
     from minx_mcp.launcher import SERVERS
 

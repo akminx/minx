@@ -2,13 +2,13 @@
 """Configure Minx Core to use OpenRouter for chat + embeddings.
 
 Writes the `core/llm_config` preference (read by minx_mcp.core.llm.create_llm)
-and prints the env-var settings the user needs for embeddings. Defaults to
-Nemotron-3-Super-120B-A12B with no-logging routing and FP8/BF16 only — the
-combo that survives our review and matches the loop's tool-calling shape.
+and prints the env-var settings the user needs for embeddings. The chat model
+is deployment configuration; current runbooks pass `--model
+google/gemini-2.5-flash` explicitly.
 
 Usage:
-    OPENROUTER_API_KEY=sk-or-v1-... uv run scripts/configure-openrouter.py
-    OPENROUTER_API_KEY=... uv run scripts/configure-openrouter.py --model nvidia/llama-3.3-nemotron-super-49b-v1
+    OPENROUTER_API_KEY=sk-or-v1-... uv run scripts/configure-openrouter.py --model google/gemini-2.5-flash
+    OPENROUTER_API_KEY=... uv run scripts/configure-openrouter.py --model <openrouter-model-id>
     uv run scripts/configure-openrouter.py --print  # show what would be written, don't write
 
 Re-run any time you want to change the model or provider preferences. The
@@ -30,7 +30,7 @@ from minx_mcp.config import get_settings  # noqa: E402
 from minx_mcp.db import get_connection  # noqa: E402
 from minx_mcp.preferences import set_preference  # noqa: E402
 
-DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+DEFAULT_MODEL = "google/gemini-2.5-flash"
 DEFAULT_EMBEDDING_MODEL = "openai/text-embedding-3-small"
 
 
@@ -87,8 +87,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-require-parameters", action="store_true")
     parser.add_argument(
         "--quantizations",
-        default="fp8,bf16",
-        help="Comma-separated; pass empty string to disable.",
+        default="",
+        help="Comma-separated OpenRouter quantization hints; empty disables the hint.",
     )
     parser.add_argument(
         "--reasoning-effort",

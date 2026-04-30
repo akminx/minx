@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, datetime
 
 from minx_mcp.contracts import InvalidInputError
 
@@ -49,6 +49,14 @@ def validate_iso_date(value: str, *, field_name: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise InvalidInputError(f"{field_name} must be a valid ISO date") from exc
+
+
+def validate_iso_datetime(value: str, *, field_name: str) -> datetime:
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise InvalidInputError(f"{field_name} must be a valid ISO timestamp") from exc
 
 
 def validate_date_window(

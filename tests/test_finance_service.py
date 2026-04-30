@@ -217,6 +217,33 @@ def test_finance_import_uses_category_hint_to_match_existing_categories(tmp_path
     assert transaction["category_name"] == "Dining Out"
 
 
+def test_finance_import_category_hint_keeps_alphabetical_first_match_on_normalized_collision(
+    tmp_path,
+):
+    source = tmp_path / "transactions.csv"
+    source.write_text("posted,description,amount,category\n2026-03-02,Coffee,-12.50,Dining-Out\n")
+    service = FinanceService(tmp_path / "minx.db", tmp_path)
+    service.conn.execute("INSERT INTO finance_categories (name) VALUES ('Dining-Out')")
+    service.conn.commit()
+
+    service.finance_import(
+        str(source),
+        account_name="DCU",
+        source_kind="generic_csv",
+        mapping={
+            "date_column": "posted",
+            "amount_column": "amount",
+            "description_column": "description",
+            "date_format": "%Y-%m-%d",
+            "category_hint_column": "category",
+        },
+    )
+
+    transaction = service.sensitive_finance_query(limit=1)["transactions"][0]
+
+    assert transaction["category_name"] == "Dining Out"
+
+
 def test_changed_file_at_same_path_creates_new_import(tmp_path):
     db_path = tmp_path / "minx.db"
     source = tmp_path / "robinhood_transactions.csv"

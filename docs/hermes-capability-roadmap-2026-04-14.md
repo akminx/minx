@@ -1,5 +1,7 @@
 # Hermes Capability Augmentation Roadmap (Minx)
 
+> Historical roadmap: this document predates the current `minx-hermes` investigation runner and should not be used as the authoritative architecture or operations guide. Use `../README.md`, `ARCHITECTURE.md`, `RUNBOOK.md`, and the current `minx-hermes` README for shipped behavior.
+
 Date: 2026-04-14
 
 ## Current Baseline

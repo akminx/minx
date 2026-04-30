@@ -22,4 +22,4 @@ jobs:
       - name: Mypy
         run: uv run mypy minx_mcp
       - name: Tests
-        run: uv run pytest tests/ -x -q
+        run: uv run pytest tests/ -q

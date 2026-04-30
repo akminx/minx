@@ -66,22 +66,15 @@ def _autoclose_leaked_resources(monkeypatch: pytest.MonkeyPatch):
             if not loop.is_closed():
                 loop.close()
 
-    # Belt-and-braces sweep for event loops that bypassed our ``new_event_loop``
-    # hook (e.g. created via ``EventLoopPolicy.new_event_loop()`` directly, or
-    # constructed before this fixture started patching — common with anyio /
-    # mcp stdio_client transports). Without this, the loops are only collected
-    # when the GC feels like it and surface as a session-level
-    # ``PytestUnraisableExceptionWarning`` attributed to an unrelated test.
+    # Some library code creates loops through lower-level policy hooks that do
+    # not pass through the patched constructors above. Close only idle loops so
+    # we keep teardown deterministic without touching any still-running loop.
     gc.collect()
     for obj in gc.get_objects():
         if isinstance(obj, asyncio.AbstractEventLoop):
             with contextlib.suppress(Exception):
-                if not obj.is_closed():
+                if not obj.is_running() and not obj.is_closed():
                     obj.close()
-    # Force a collection inside the teardown boundary so any late GC of tracked
-    # resources (missed connections, orphaned event loops) is *attributed to the
-    # originating test* rather than surfacing later as a session-teardown
-    # PytestUnraisableExceptionWarning against an unrelated test.
     gc.collect()
 
 

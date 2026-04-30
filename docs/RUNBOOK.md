@@ -9,14 +9,14 @@ The single source of truth for bringing Minx + Hermes up end to end and running 
 │  /minx-investigate  /minx-plan  /minx-retro  /minx-onboard-entity│
 │  └─> scripts/minx-investigate.py (in minx-hermes)                │
 │       └─> hermes_loop:  Policy + Dispatcher + CoreClient + loop  │
-│            ├──> OpenRouter (Nemotron-3-Super, no-logging)        │
+│            ├──> Configured OpenAI-compatible model endpoint      │
 │            └──> MCP servers ─┬─ minx-core    :8001               │
 │                              ├─ minx-finance :8000               │
 │                              ├─ minx-meals   :8002               │
 │                              └─ minx-training:8003               │
 │                                                                  │
 │  Durable storage:  ~/.minx/data/minx.db   (SQLite)               │
-│                    ~/Documents/minx-vault (Obsidian-style)       │
+│                    $MINX_VAULT_PATH       (Obsidian-style)       │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -24,19 +24,19 @@ Two repos, separate concerns:
 
 | Repo | Path | Owns |
 |---|---|---|
-| `minx-mcp` | `~/Documents/minx-mcp` | The four MCP servers, durable storage, schema, all deterministic data and business logic |
-| `minx-hermes` | `~/Documents/minx-hermes` (worktree at `~/.config/superpowers/worktrees/minx-hermes/codex-hermes-investigation-loop` for in-progress work) | Hermes overlay: skills, scripts, the agentic loop, the production runner |
+| `minx` | your `minx` checkout | The four MCP servers, durable storage, schema, all deterministic data and business logic |
+| `minx-hermes` | your `minx-hermes` checkout | Hermes overlay: skills, scripts, the agentic loop, the production runner |
 
 Hermes itself (the harness binary + config) lives at `~/.hermes/` and is upstream-managed.
 
 ## First-time setup (15 minutes)
 
-### 1. Install minx-mcp
+### 1. Install minx
 
 ```bash
-cd ~/Documents/minx-mcp
+cd /path/to/minx
 uv sync --all-extras
-uv run pytest tests/ -x -q     # 1165 tests should pass
+uv run pytest tests/ -q
 ```
 
 If pytest fails before you've changed anything, stop and fix that — every other step depends on a clean baseline.
@@ -51,8 +51,8 @@ uv run python -c "from minx_mcp.config import get_settings; from minx_mcp.db imp
 The first connection applies all migrations. Verify:
 
 ```bash
-sqlite3 ~/.minx/data/minx.db "SELECT name FROM _migrations ORDER BY name LIMIT 5;"
-# Expect 001_platform.sql ... 027_investigations.sql at the head.
+sqlite3 ~/.minx/data/minx.db "SELECT name FROM _migrations ORDER BY name DESC LIMIT 5;"
+# Expect 027_investigations.sql at or near the top.
 ```
 
 If you don't have a vault yet:
@@ -67,16 +67,16 @@ mkdir -p ~/Documents/minx-vault/{Memory,Recipes,Investigations}
 export OPENROUTER_API_KEY=sk-or-v1-...
 export MINX_OPENROUTER_API_KEY=$OPENROUTER_API_KEY
 export MINX_EMBEDDING_DIMENSIONS=512
-uv run scripts/configure-openrouter.py
+uv run scripts/configure-openrouter.py --model google/gemini-2.5-flash
 ```
 
-That writes the `core/llm_config` preference (default: `nvidia/nemotron-3-super-120b-a12b`, `data_collection: deny` so only no-logging providers serve you, fp8/bf16 only, reasoning effort medium). Re-run with `--print` to see the resolved config without writing.
+That writes the `core/llm_config` preference. `google/gemini-2.5-flash` is the recommended OpenRouter example for current smokes, but the model id is deployment configuration. Re-run with `--print` to see the resolved config without writing.
 
 To change providers, models, or routing later, re-run with flags:
 
 ```bash
-uv run scripts/configure-openrouter.py --model nvidia/llama-3.3-nemotron-super-49b-v1 \
-  --quantizations bf16 --reasoning-effort high
+uv run scripts/configure-openrouter.py --model <openrouter-model-id> \
+  --reasoning-effort medium
 ```
 
 ### 4. Start the four MCP servers
@@ -96,7 +96,8 @@ curl -s http://127.0.0.1:8001/mcp -o /dev/null -w "%{http_code}\n"   # 405 or 40
 Before loading any real data, prove the LLM + MCP path works:
 
 ```bash
-cd ~/.config/superpowers/worktrees/minx-hermes/codex-hermes-investigation-loop
+cd /path/to/minx-hermes
+export MINX_INVESTIGATION_MODEL=google/gemini-2.5-flash
 uv run scripts/minx-investigate.py \
   --kind investigate \
   --question "smoke: just say hello and stop" \
@@ -127,7 +128,10 @@ async def go():
             await s.initialize()
             result = await s.call_tool(
                 "finance_import_preview",
-                {"path": "/Users/akmini/.minx/staging/some-statement.csv"},
+                {
+                    "source_ref": "~/.minx/staging/some-statement.csv",
+                    "account_name": "DCU",
+                },
             )
             print(json.dumps(result.structuredContent, indent=2))
 
@@ -145,14 +149,14 @@ uv run scripts/minx-investigate.py --kind investigate \
 
 What to check in the JSON output:
 
-- `tool_call_count > 0` — Nemotron actually picked tools.
+- `tool_call_count > 0` — the configured model actually picked tools.
 - `citation_refs` non-empty — the answer is grounded.
 - `status: succeeded` and `tool_call_count` well below the cap.
 - `answer_md` cites concrete merchants/categories, not generic prose.
 
 ### Meals — once finance is clean
 
-Sync your vault recipes first (the meals MCP exposes `vault_scan` / `vault_reconcile` tools), then:
+Sync your vault recipes first with `recipe_scan` / `recipes_reconcile` on the meals MCP, then:
 
 ```bash
 uv run scripts/minx-investigate.py --kind plan \
@@ -219,23 +223,23 @@ uv run scripts/minx-investigate.py --kind investigate --question "..." 2>&1 \
 | Same `args_digest` appears on consecutive steps | Model is calling a tool repeatedly with the same args | Question is too broad; restrict context or add specificity |
 | `Connection refused` on `127.0.0.1:8001` | MCP server isn't running | `./scripts/start_hermes_stack.sh` |
 | `no MCP route configured for tool: X` | Model called a tool not in the allowlist | Either add it to `hermes_loop/runtime.py:DEFAULT_TOOL_ALLOWLIST` and `mcp_clients.py:_TOOL_ROUTING`, or tighten the system prompt |
-| Investigation row stays `running` after the runner exits | Bug in the loop — should never happen | File it. `scripts/smoke-investigations.sh` will catch this in CI eventually |
-| Memory embeddings not rerun after backfill | The enrichment queue worker isn't sweeping | Run `uv run python -m scripts.rebuild_memory_fts` (FTS) and ensure the embedding sweep handler is wired in your deployment |
+| Investigation row stays `running` after the runner exits | Bug in the loop — should never happen | File it. The investigation smoke helpers live in the `minx-hermes` checkout. |
+| Memory embeddings not rerun after backfill | Historical rows need FTS/fingerprint backfill before embedding, or the enrichment queue worker is not sweeping | Run `uv run python -m scripts.backfill_memory_fingerprints` and `uv run python -m scripts.rebuild_memory_fts`, then confirm the embedding/enrichment sweep is wired in your deployment |
 
 When in doubt about a step or step shape, the canonical contract lives in `docs/superpowers/specs/2026-04-19-slice9-agentic-investigations.md` and `docs/superpowers/specs/2026-04-29-render-template-registry.md`.
 
 ## Verification before merging or handing off
 
 ```bash
-# minx-mcp
-cd ~/Documents/minx-mcp
+# minx
+cd /path/to/minx
 uv run ruff check minx_mcp tests scripts
 uv run mypy minx_mcp
-uv run pytest tests/ -x -q     # 1165 tests
+uv run pytest tests/ -q
 
-# minx-hermes (worktree path; substitute your own checkout)
-cd ~/.config/superpowers/worktrees/minx-hermes/codex-hermes-investigation-loop
-PYTHONPATH=$PWD uv run pytest tests/ -x -q     # 30 tests
+# minx-hermes
+cd /path/to/minx-hermes
+PYTHONPATH=$PWD uv run pytest tests/ -q
 ```
 
 ## What's next after smoke is boring

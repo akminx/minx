@@ -1,6 +1,7 @@
 """Tests for OpenAICompatibleLLM tool-calling and OpenRouter integration.
 
-Covers the surface the Hermes investigation loop drives Nemotron through:
+Covers the surface the Hermes investigation loop drives through an
+OpenAI-compatible provider:
 - request shape (tools, tool_choice, provider, reasoning, OpenRouter headers)
 - response parsing (tool_calls with JSON-string arguments, reasoning_details
   carried through verbatim, content-only final answer path)
@@ -29,7 +30,7 @@ def _make_llm(
     monkeypatch.setenv("FAKE_OPENROUTER_KEY", "sk-or-v1-test")
     return OpenAICompatibleLLM(
         base_url="https://openrouter.ai/api/v1",
-        model="nvidia/nemotron-3-super-120b-a12b",
+        model="google/gemini-2.5-flash",
         api_key_env="FAKE_OPENROUTER_KEY",
         provider_preferences=provider_preferences,
         reasoning=reasoning,
@@ -117,7 +118,7 @@ async def test_tool_calling_turn_parses_tool_calls(monkeypatch: pytest.MonkeyPat
     assert captured["headers"]["authorization"] == "Bearer sk-or-v1-test"
     assert captured["headers"]["http-referer"] == "https://github.com/akminx/minx-mcp"
     assert captured["headers"]["x-title"] == "Minx MCP"
-    assert captured["body"]["model"] == "nvidia/nemotron-3-super-120b-a12b"
+    assert captured["body"]["model"] == "google/gemini-2.5-flash"
     assert captured["body"]["tool_choice"] == "auto"
     assert captured["body"]["tools"][0]["function"]["name"] == "memory_search"
     assert captured["body"]["provider"] == {
@@ -125,6 +126,43 @@ async def test_tool_calling_turn_parses_tool_calls(monkeypatch: pytest.MonkeyPat
         "require_parameters": True,
     }
     assert captured["body"]["reasoning"] == {"effort": "medium"}
+
+
+@pytest.mark.asyncio
+async def test_tool_calling_turn_accepts_dict_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call_dict",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "memory_search",
+                                        "arguments": {"query": "dining drift", "limit": 5},
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    llm = _make_llm(handler, monkeypatch=monkeypatch)
+
+    turn = await llm.run_tool_calling_turn(
+        messages=[{"role": "user", "content": "why did dining go up?"}],
+        tools=[],
+    )
+
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].arguments == {"query": "dining drift", "limit": 5}
 
 
 @pytest.mark.asyncio
@@ -185,6 +223,42 @@ async def test_tool_calling_turn_rejects_malformed_arguments(
 
     llm = _make_llm(handler, monkeypatch=monkeypatch)
     with pytest.raises(LLMProviderError, match="not valid JSON"):
+        await llm.run_tool_calling_turn(
+            messages=[{"role": "user", "content": "x"}], tools=[]
+        )
+
+
+@pytest.mark.asyncio
+async def test_tool_calling_turn_rejects_non_object_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call_bad",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "memory_search",
+                                        "arguments": json.dumps(["not", "an", "object"]),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    llm = _make_llm(handler, monkeypatch=monkeypatch)
+
+    with pytest.raises(LLMProviderError, match="arguments must be a JSON object"):
         await llm.run_tool_calling_turn(
             messages=[{"role": "user", "content": "x"}], tools=[]
         )
@@ -266,7 +340,7 @@ async def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
     llm = OpenAICompatibleLLM(
         base_url="https://openrouter.ai/api/v1",
-        model="nvidia/nemotron-3-super-120b-a12b",
+        model="google/gemini-2.5-flash",
         api_key_env="FAKE_OPENROUTER_KEY",
         transport=httpx.MockTransport(handler),
     )

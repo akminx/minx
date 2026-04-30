@@ -29,11 +29,10 @@ from minx_mcp.core.memory_search import search_memories as _search_memories
 from minx_mcp.core.memory_secret_scanning import (
     MemorySecretScanResult,
     merge_event_payload,
+    prepare_validated_memory_write,
     raise_secret_detected,
-    redaction_event_payload,
     sanitize_existing_subject,
     scan_event_reason,
-    scan_memory_input,
     scan_payload_only,
 )
 from minx_mcp.core.secret_scanner import SecretVerdictKind
@@ -185,50 +184,36 @@ class MemoryService(BaseService):
         src = require_non_empty("source", source)
         _validate_confidence(confidence)
         _validate_actor(actor)
-        raw_scan = scan_memory_input(
+        prepared = prepare_validated_memory_write(
             memory_type=mt,
             scope=sc,
             subject=sj,
             payload=dict(payload),
             source=src,
             reason=reason,
-            scan_payload_values=False,
         )
-        if raw_scan.verdict is SecretVerdictKind.BLOCK:
-            raise_secret_detected(raw_scan)
-        payload = validate_memory_payload(mt, raw_scan.payload)
-        validated_scan = scan_memory_input(
-            memory_type=raw_scan.memory_type,
-            scope=raw_scan.scope,
-            subject=raw_scan.subject,
-            payload=payload,
-            source=raw_scan.source,
-            reason=raw_scan.reason,
-        )
-        if validated_scan.verdict is SecretVerdictKind.BLOCK:
-            raise_secret_detected(validated_scan)
         status: str = "active" if confidence >= ACTIVE_CONFIDENCE_THRESHOLD else "candidate"
         fp = content_fingerprint(
             *_memory_fingerprint_input(
-                validated_scan.memory_type,
-                validated_scan.payload,
-                scope=validated_scan.scope,
-                subject=validated_scan.subject,
+                prepared.memory_type,
+                prepared.payload,
+                scope=prepared.scope,
+                subject=prepared.subject,
             )
         )
         return self._insert_memory_and_events(
-            memory_type=validated_scan.memory_type,
-            scope=validated_scan.scope,
-            subject=validated_scan.subject,
+            memory_type=prepared.memory_type,
+            scope=prepared.scope,
+            subject=prepared.subject,
             confidence=confidence,
             status=status,
-            payload=validated_scan.payload,
-            source=validated_scan.source,
-            reason=validated_scan.reason,
+            payload=prepared.payload,
+            source=prepared.source,
+            reason=prepared.reason,
             actor=actor,
             emit_promoted=status == "active",
             fingerprint=fp,
-            created_event_payload=redaction_event_payload(raw_scan, validated_scan),
+            created_event_payload=prepared.redaction_payload,
         )
 
     def list_memories(

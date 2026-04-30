@@ -21,6 +21,10 @@ Reference material for running and maintaining Minx. For end-to-end setup and sm
 | `MINX_STAGING_PATH` | Allowed import staging root |
 | `MINX_HTTP_HOST` | Default HTTP host (default `127.0.0.1`) |
 | `MINX_HTTP_PORT` | Default HTTP port |
+| `MINX_FINANCE_PORT` | Finance HTTP port used by the launcher (default `8000`) |
+| `MINX_CORE_PORT` | Core HTTP port used by the launcher (default `8001`) |
+| `MINX_MEALS_PORT` | Meals HTTP port used by the launcher (default `8002`) |
+| `MINX_TRAINING_PORT` | Training HTTP port used by the launcher (default `8003`) |
 | `MINX_DEFAULT_TRANSPORT` | `stdio` or `http` |
 | `MINX_OPENROUTER_API_KEY` | Enables memory embedding jobs |
 | `MINX_EMBEDDING_MODEL` | Embedding model (default `openai/text-embedding-3-small`) |
@@ -29,6 +33,8 @@ Reference material for running and maintaining Minx. For end-to-end setup and sm
 | `MINX_EMBEDDING_MAX_COST_MICROUSD` | Per-sweep embedding cost ceiling |
 | `MINX_MAX_TOOL_CALLS_PER_INVESTIGATION` | Soft Core-side cap on investigation steps (default 1000) |
 | `OPENROUTER_API_KEY` | Used by the LLM tool-calling adapter (set whatever `api_key_env` the preference points to) |
+| `MINX_INVESTIGATION_MODEL` | minx-hermes runner model override (documented here for stack setup; read by minx-hermes) |
+| `MINX_INVESTIGATION_BASE_URL` | minx-hermes runner OpenAI-compatible base URL (documented here for stack setup; read by minx-hermes) |
 
 ## Default HTTP ports
 
@@ -64,26 +70,25 @@ Or all four at once:
 
 ## LLM preference shape
 
-Stored in the `core/llm_config` preference. API keys must stay in environment variables; only the env-var *name* lives in the preference.
+Stored in the `core/llm_config` preference. API keys must stay in environment variables; only the env-var *name* lives in the preference. The model id is operational configuration, not architecture. Current setup examples use Gemini 2.5 Flash on OpenRouter:
 
 ```json
 {
   "provider": "openai_compatible",
   "base_url": "https://openrouter.ai/api/v1",
-  "model": "nvidia/nemotron-3-super-120b-a12b",
+  "model": "google/gemini-2.5-flash",
   "api_key_env": "OPENROUTER_API_KEY",
   "timeout_seconds": 90.0,
   "provider_preferences": {
     "data_collection": "deny",
     "require_parameters": true,
-    "allow_fallbacks": true,
-    "quantizations": ["fp8", "bf16"]
+    "allow_fallbacks": true
   },
   "reasoning": {"effort": "medium"}
 }
 ```
 
-Write this with `uv run scripts/configure-openrouter.py` (idempotent; re-run any time to change the model or routing).
+Write this with `uv run scripts/configure-openrouter.py --model google/gemini-2.5-flash` (idempotent; re-run any time to change the model or routing). The minx-hermes runner can also be pointed at the same model with `MINX_INVESTIGATION_MODEL=google/gemini-2.5-flash`.
 
 ## Maintenance commands
 
@@ -91,10 +96,10 @@ Run these once for databases that predate the relevant migrations or behavior ch
 
 | Command | Purpose |
 |---|---|
-| `python -m scripts.rebuild_finance_dedupe` | Rebuilds finance transaction fingerprints after dedupe algorithm changes |
-| `python -m scripts.backfill_memory_fingerprints` | Populates `content_fingerprint` for older memory rows |
-| `python -m scripts.rebuild_memory_fts` | Rebuilds FTS5 memory search for historical rows |
-| `python scripts/scan_memory_for_secrets.py` | Reports historical memory rows containing secret-shaped values |
+| `uv run python -m scripts.rebuild_finance_dedupe` | Rebuilds finance transaction fingerprints after dedupe algorithm changes |
+| `uv run python -m scripts.backfill_memory_fingerprints` | Populates `content_fingerprint` for older memory rows |
+| `uv run python -m scripts.rebuild_memory_fts` | Rebuilds FTS5 memory search for historical rows |
+| `uv run python scripts/scan_memory_for_secrets.py` | Reports historical memory rows containing secret-shaped values |
 
 ## Smoke flow (cross-domain helper)
 
