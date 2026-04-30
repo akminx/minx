@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 
 from minx_mcp.contracts import InvalidInputError
+from minx_mcp.core import vault_scanner as vault_scanner_module
 from minx_mcp.core.memory_service import MemoryService
 from minx_mcp.core.vault_scanner import VaultScanner
 from minx_mcp.db import get_connection
@@ -217,6 +218,61 @@ def test_vault_scanner_syncs_memory_notes_and_orphans_deleted_index_rows(tmp_pat
     assert orphaned.orphaned == 1
     assert conn.execute("SELECT COUNT(*) FROM vault_index").fetchone()[0] == 0
     assert conn.execute("SELECT status FROM memories WHERE id = ?", (memory["id"],)).fetchone()[0] == "active"
+
+
+def test_vault_scanner_warns_and_skips_memory_note_on_live_fingerprint_collision(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    conn, scanner = _scanner(tmp_path)
+    service = MemoryService(tmp_path / "minx.db", conn=conn)
+    existing = service.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="timezone",
+        confidence=1.0,
+        payload={"category": "timezone", "value": "UTC"},
+        source="user",
+        actor="user",
+    )
+    conn.execute(
+        "UPDATE memories SET content_fingerprint = ? WHERE id = ?",
+        ("forced-collision", existing.id),
+    )
+    conn.commit()
+    monkeypatch.setattr(
+        vault_scanner_module,
+        "memory_content_fingerprint",
+        lambda *args, **kwargs: "forced-collision",
+    )
+    note = tmp_path / "vault" / "Minx" / "Memory" / "alias.md"
+    _write(
+        note,
+        (
+            "---\n"
+            "type: minx-memory\n"
+            "scope: core\n"
+            "memory_key: core.preference.alias\n"
+            "memory_type: preference\n"
+            "subject: alias\n"
+            "category: timezone\n"
+            "value: UTC\n"
+            "---\n"
+        ),
+    )
+
+    report = scanner.scan()
+
+    assert report.scanned == 1
+    assert report.memory_syncs == 0
+    assert report.indexed == 1
+    assert len(report.warnings) == 1
+    assert "content_fingerprint" in report.warnings[0]
+    assert f"memory_id={existing.id}" in report.warnings[0]
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
+    row = conn.execute("SELECT memory_id FROM vault_index WHERE vault_path = ?", ("Minx/Memory/alias.md",)).fetchone()
+    assert row is not None
+    assert row["memory_id"] is None
 
 
 def test_vault_scanner_prefers_scope_over_domain_when_both_are_present(tmp_path: Path) -> None:

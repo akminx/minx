@@ -47,8 +47,12 @@ def test_finance_server_registers_expected_tool_names(tmp_path):
 def test_finance_server_registers_phase2_safe_tool_names(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)
-    tool_names = sorted(tool.name for tool in _call_tool_sync(server.list_tools))
+    tools = _call_tool_sync(server.list_tools)
+    tool_names = sorted(tool.name for tool in tools)
     assert tool_names == sorted(SAFE_TOOLS + SENSITIVE_TOOLS)
+    schemas = {tool.name: tool.inputSchema for tool in tools}
+    assert schemas["sensitive_finance_query"]["properties"]["limit"]["type"] == "integer"
+    assert schemas["finance_query"]["properties"]["limit"]["type"] == "integer"
 
 
 def test_streamable_http_app_is_available(tmp_path):

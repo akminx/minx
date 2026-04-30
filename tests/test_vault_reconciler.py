@@ -5,6 +5,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from minx_mcp.core import vault_reconciler as vault_reconciler_module
 from minx_mcp.core.memory_service import MemoryService
 from minx_mcp.core.server import create_core_server
 from minx_mcp.core.vault_memory_frontmatter import MemoryIdentity as _MemoryIdentity
@@ -111,6 +112,61 @@ def test_vault_reconcile_creates_memory_and_refreshes_frontmatter(tmp_path: Path
     assert 'payload_json: \'{"category": "timezone", "value": "America/Chicago"}\'' in text
     assert "Keep this exact prose." in text
     assert _event_types(db_path, int(row["id"])) == ["created", "promoted", "vault_synced"]
+
+
+def test_vault_reconcile_warns_and_skips_on_live_fingerprint_collision(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path, vault, server = _server(tmp_path)
+    conn = get_connection(db_path)
+    svc = MemoryService(db_path, conn=conn)
+    existing = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="timezone",
+        confidence=1.0,
+        payload={"category": "timezone", "value": "UTC"},
+        source="user",
+        actor="user",
+    )
+    conn.execute(
+        "UPDATE memories SET content_fingerprint = ? WHERE id = ?",
+        ("forced-collision", existing.id),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(
+        vault_reconciler_module,
+        "memory_content_fingerprint",
+        lambda *args, **kwargs: "forced-collision",
+    )
+    note = vault / "Minx" / "Memory" / "alias.md"
+    original_note = (
+        "---\n"
+        "type: minx-memory\n"
+        "scope: core\n"
+        "memory_key: core.preference.alias\n"
+        "memory_type: preference\n"
+        "subject: alias\n"
+        'payload_json: \'{"category": "timezone", "value": "UTC"}\'\n'
+        "---\n"
+        "# Alias\n"
+    )
+    _write(note, original_note)
+
+    result = get_tool(server, "vault_reconcile_memories").fn(False)
+
+    assert result["success"] is True
+    report = result["data"]["report"]
+    assert report["applied"] == 0
+    assert report["skipped"] == 1
+    assert report["conflicts"] == 1
+    assert report["warnings"][0]["kind"] == "conflict"
+    assert "content_fingerprint" in report["warnings"][0]["message"]
+    assert report["warnings"][0]["memory_id"] == existing.id
+    assert _count_rows(db_path, "memories") == 1
+    assert note.read_text(encoding="utf-8") == original_note
 
 
 def test_vault_reconcile_detects_active_memory_version_conflict(tmp_path: Path) -> None:

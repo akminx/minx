@@ -5,11 +5,13 @@ import asyncio
 from minx_mcp.training.server import create_training_server
 from minx_mcp.training.service import TrainingService
 from tests.helpers import call_server as _call
+from tests.helpers import get_tool
 
 
 def test_training_server_registers_expected_tools(db_path) -> None:
     server = create_training_server(TrainingService(db_path))
-    tool_names = [tool.name for tool in asyncio.run(server.list_tools())]
+    tools = asyncio.run(server.list_tools())
+    tool_names = [tool.name for tool in tools]
 
     assert "training_exercise_upsert" in tool_names
     assert "training_exercise_list" in tool_names
@@ -19,6 +21,8 @@ def test_training_server_registers_expected_tools(db_path) -> None:
     assert "training_session_log" in tool_names
     assert "training_session_list" in tool_names
     assert "training_progress_summary" in tool_names
+    schemas = {tool.name: tool.inputSchema for tool in tools}
+    assert schemas["training_progress_summary"]["properties"]["lookback_days"]["type"] == "integer"
 
 
 def test_training_tool_roundtrip_for_program_and_session(db_path) -> None:
@@ -134,13 +138,10 @@ def test_training_progress_summary_rejects_invalid_lookback_days(db_path) -> Non
 
 def test_training_progress_summary_rejects_non_integer_lookback_days(db_path) -> None:
     server = create_training_server(TrainingService(db_path))
+    progress_summary = get_tool(server, "training_progress_summary").fn
 
     for lookback_days in (True, 1.5):
-        result = _call(
-            server,
-            "training_progress_summary",
-            {"lookback_days": lookback_days},
-        )
+        result = progress_summary(lookback_days=lookback_days)
 
         assert result["success"] is False
         assert result["error_code"] == "INVALID_INPUT"

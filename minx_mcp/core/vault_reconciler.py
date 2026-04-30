@@ -23,7 +23,7 @@ import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from sqlite3 import Connection, Row
+from sqlite3 import Connection, IntegrityError, Row
 from typing import cast
 
 from minx_mcp.contracts import InvalidInputError
@@ -467,14 +467,24 @@ class VaultReconciler:
             scope=identity.scope,
             subject=identity.subject,
         )
-        cur = self._conn.execute(
-            """
-            UPDATE memories
-            SET payload_json = ?, content_fingerprint = ?, updated_at = datetime('now')
-            WHERE id = ? AND status = 'active'
-            """,
-            (_canonical_payload_json(payload), fingerprint, memory_id),
-        )
+        try:
+            cur = self._conn.execute(
+                """
+                UPDATE memories
+                SET payload_json = ?, content_fingerprint = ?, updated_at = datetime('now')
+                WHERE id = ? AND status = 'active'
+                """,
+                (_canonical_payload_json(payload), fingerprint, memory_id),
+            )
+        except IntegrityError as exc:
+            _raise_content_fingerprint_conflict(
+                self._conn,
+                identity,
+                doc.relative_path,
+                fingerprint,
+                exclude_memory_id=memory_id,
+                exc=exc,
+            )
         if cur.rowcount != 1:
             raise _SkipNoteError(
                 VaultReconcileWarning(
@@ -625,23 +635,36 @@ class VaultReconciler:
             scope=identity.scope,
             subject=identity.subject,
         )
-        cur = self._conn.execute(
-            """
-            INSERT INTO memories (
-                memory_type, scope, subject, confidence, status,
-                payload_json, source, reason, content_fingerprint,
-                created_at, updated_at, last_confirmed_at
-            ) VALUES (?, ?, ?, 1.0, 'active', ?, 'vault_sync', ?, ?, datetime('now'), datetime('now'), datetime('now'))
-            """,
-            (
-                identity.memory_type,
-                identity.scope,
-                identity.subject,
-                _canonical_payload_json(payload),
-                reason,
+        try:
+            cur = self._conn.execute(
+                """
+                INSERT INTO memories (
+                    memory_type, scope, subject, confidence, status,
+                    payload_json, source, reason, content_fingerprint,
+                    created_at, updated_at, last_confirmed_at
+                ) VALUES (
+                    ?, ?, ?, 1.0, 'active', ?, 'vault_sync', ?, ?,
+                    datetime('now'), datetime('now'), datetime('now')
+                )
+                """,
+                (
+                    identity.memory_type,
+                    identity.scope,
+                    identity.subject,
+                    _canonical_payload_json(payload),
+                    reason,
+                    fingerprint,
+                ),
+            )
+        except IntegrityError as exc:
+            _raise_content_fingerprint_conflict(
+                self._conn,
+                identity,
+                doc.relative_path,
                 fingerprint,
-            ),
-        )
+                exclude_memory_id=None,
+                exc=exc,
+            )
         if cur.lastrowid is None:
             raise _SkipNoteError(
                 VaultReconcileWarning(
@@ -686,19 +709,29 @@ class VaultReconciler:
             scope=identity.scope,
             subject=identity.subject,
         )
-        cur = self._conn.execute(
-            """
-            UPDATE memories
-            SET status = 'active',
-                confidence = 1.0,
-                payload_json = ?,
-                content_fingerprint = ?,
-                updated_at = datetime('now'),
-                last_confirmed_at = datetime('now')
-            WHERE id = ? AND status = 'candidate'
-            """,
-            (_canonical_payload_json(payload), fingerprint, memory_id),
-        )
+        try:
+            cur = self._conn.execute(
+                """
+                UPDATE memories
+                SET status = 'active',
+                    confidence = 1.0,
+                    payload_json = ?,
+                    content_fingerprint = ?,
+                    updated_at = datetime('now'),
+                    last_confirmed_at = datetime('now')
+                WHERE id = ? AND status = 'candidate'
+                """,
+                (_canonical_payload_json(payload), fingerprint, memory_id),
+            )
+        except IntegrityError as exc:
+            _raise_content_fingerprint_conflict(
+                self._conn,
+                identity,
+                doc.relative_path,
+                fingerprint,
+                exclude_memory_id=memory_id,
+                exc=exc,
+            )
         if cur.rowcount != 1:
             raise _SkipNoteError(
                 VaultReconcileWarning(
@@ -859,6 +892,41 @@ def _conflict_warning(row: Row, identity: MemoryIdentity, vault_path: str) -> Va
         db_updated_at=str(row["updated_at"]),
         sync_base_updated_at=identity.sync_base_updated_at,
     )
+
+
+def _raise_content_fingerprint_conflict(
+    conn: Connection,
+    identity: MemoryIdentity,
+    vault_path: str,
+    fingerprint: str,
+    *,
+    exclude_memory_id: int | None,
+    exc: IntegrityError,
+) -> None:
+    row = conn.execute(
+        """
+        SELECT id
+        FROM memories
+        WHERE content_fingerprint = ?
+          AND status IN ('candidate', 'active')
+          AND (? IS NULL OR id != ?)
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (fingerprint, exclude_memory_id, exclude_memory_id),
+    ).fetchone()
+    if row is None:
+        raise exc
+    memory_id = int(row["id"])
+    raise _SkipNoteError(
+        VaultReconcileWarning(
+            kind="conflict",
+            vault_path=vault_path,
+            message=f"content_fingerprint conflicts with live memory_id={memory_id}",
+            memory_id=memory_id,
+            memory_key=identity.memory_key,
+        )
+    ) from exc
 
 
 def _parse_payload_json(raw: str, *, source_id: int | None = None) -> dict[str, object]:

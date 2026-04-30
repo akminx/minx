@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictInt
 
 from minx_mcp.contracts import ToolResponse, wrap_tool_call
 from minx_mcp.training.service import MAX_PROGRESS_LOOKBACK_DAYS, TrainingService
@@ -114,7 +115,7 @@ def create_training_server(service: TrainingService) -> FastMCP:
     @mcp.tool(name="training_progress_summary")
     def training_progress_summary(
         as_of: str | None = None,
-        lookback_days: object = 7,
+        lookback_days: StrictInt = 7,
     ) -> ToolResponse:
         return wrap_tool_call(
             lambda: _training_progress_summary(

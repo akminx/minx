@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Protocol, Self
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictInt
 
 from minx_mcp.contracts import (
     InvalidInputError,
@@ -257,7 +258,7 @@ def create_finance_server(
 
     @mcp.tool(name="sensitive_finance_query")
     def sensitive_finance_query(
-        limit: object = 50,
+        limit: StrictInt = 50,
         session_ref: str | None = None,
         *,
         start_date: str | None = None,
@@ -291,7 +292,7 @@ def create_finance_server(
         message: str | None = None,
         review_date: str | None = None,
         session_ref: str | None = None,
-        limit: object = 50,
+        limit: StrictInt = 50,
         *,
         intent: str | None = None,
         filters: dict[str, object] | None = None,
