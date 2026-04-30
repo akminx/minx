@@ -45,6 +45,12 @@ include = ["minx_mcp*"]
 python_version = "3.12"
 packages = ["minx_mcp"]
 strict = true
+explicit_package_bases = true
+exclude = [
+  "^build/",
+  "^scripts/",
+  "^tests/",
+]
 
 [[tool.mypy.overrides]]
 module = ["mcp.*"]

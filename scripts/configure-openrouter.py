@@ -40,12 +40,14 @@ def build_llm_config(
     api_key_env: str,
     timeout_seconds: float,
     data_collection: str,
+    zdr: bool,
     require_parameters: bool,
     quantizations: list[str] | None,
     reasoning_effort: str | None,
 ) -> dict[str, object]:
     provider_preferences: dict[str, object] = {
         "data_collection": data_collection,
+        "zdr": zdr,
         "require_parameters": require_parameters,
         "allow_fallbacks": True,
     }
@@ -77,6 +79,11 @@ def parse_args() -> argparse.Namespace:
         default="deny",
         help="OpenRouter provider routing: deny = only no-logging providers.",
     )
+    parser.add_argument(
+        "--no-zdr",
+        action="store_true",
+        help="Disable OpenRouter Zero Data Retention endpoint enforcement.",
+    )
     parser.add_argument("--no-require-parameters", action="store_true")
     parser.add_argument(
         "--quantizations",
@@ -106,6 +113,7 @@ def main() -> int:
         api_key_env=args.api_key_env,
         timeout_seconds=args.timeout_seconds,
         data_collection=args.data_collection,
+        zdr=not args.no_zdr,
         require_parameters=not args.no_require_parameters,
         quantizations=quantizations,
         reasoning_effort=reasoning_effort,
