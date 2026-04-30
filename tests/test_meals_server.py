@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any, cast
 
+import pytest
+from mcp.server.fastmcp.exceptions import ToolError
+
 from minx_mcp.db import get_connection
 from minx_mcp.meals.server import create_meals_server
 from minx_mcp.meals.service import MealsService
@@ -11,7 +14,8 @@ from tests.helpers import call_server as _call
 
 def test_meals_server_registers_expected_tools(db_path, tmp_path) -> None:
     server = create_meals_server(MealsService(db_path, vault_root=tmp_path))
-    tool_names = [tool.name for tool in asyncio.run(server.list_tools())]
+    tools = asyncio.run(server.list_tools())
+    tool_names = [tool.name for tool in tools]
 
     assert "meal_log" in tool_names
     assert "pantry_add" in tool_names
@@ -21,6 +25,33 @@ def test_meals_server_registers_expected_tools(db_path, tmp_path) -> None:
     assert "nutrition_profile_get" in tool_names
     assert "recipe_template" in tool_names
     assert "recipes_reconcile" in tool_names
+    schemas = {tool.name: tool.inputSchema for tool in tools}
+    assert schemas["meal_log"]["properties"]["calories"]["anyOf"][0]["type"] == "integer"
+    assert schemas["pantry_update"]["properties"]["item_id"]["type"] == "integer"
+    assert schemas["pantry_remove"]["properties"]["item_id"]["type"] == "integer"
+    assert schemas["nutrition_profile_set"]["properties"]["age_years"]["type"] == "integer"
+    assert schemas["nutrition_profile_set"]["properties"]["calorie_deficit_kcal"]["type"] == "integer"
+
+
+def test_meals_integer_tool_params_reject_bool_and_float_via_mcp(db_path, tmp_path) -> None:
+    server = create_meals_server(MealsService(db_path, vault_root=tmp_path))
+
+    for tool_name, args in (
+        ("pantry_remove", {"item_id": True}),
+        ("pantry_update", {"item_id": 1.5}),
+        (
+            "nutrition_profile_set",
+            {
+                "sex": "male",
+                "age_years": True,
+                "height_cm": 180.0,
+                "weight_kg": 80.0,
+                "activity_level": "moderately_active",
+            },
+        ),
+    ):
+        with pytest.raises(ToolError):
+            asyncio.run(server.call_tool(tool_name, args))
 
 
 def test_meal_log_tool(db_path, tmp_path) -> None:

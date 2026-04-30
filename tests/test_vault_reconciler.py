@@ -114,6 +114,78 @@ def test_vault_reconcile_creates_memory_and_refreshes_frontmatter(tmp_path: Path
     assert _event_types(db_path, int(row["id"])) == ["created", "promoted", "vault_synced"]
 
 
+def test_vault_reconcile_skips_secret_bearing_body_without_memory_write(tmp_path: Path) -> None:
+    db_path, vault, server = _server(tmp_path)
+    secret = _fake_github_token()
+    note = vault / "Minx" / "Memory" / "secret-body.md"
+    original_note = (
+        "---\n"
+        "type: minx-memory\n"
+        "scope: core\n"
+        "memory_key: core.preference.secret_body\n"
+        "memory_type: preference\n"
+        "subject: secret_body\n"
+        'payload_json: \'{"value": "safe"}\'\n'
+        "---\n"
+        f"Debug token: {secret}\n"
+    )
+    _write(note, original_note)
+
+    result = get_tool(server, "vault_reconcile_memories").fn(False)
+
+    assert result["success"] is True
+    report = result["data"]["report"]
+    assert report["applied"] == 0
+    assert report["skipped"] == 1
+    assert report["warnings"][0]["kind"] == "invalid_note"
+    assert "secret detected in vault body" in report["warnings"][0]["message"].lower()
+    assert secret not in report["warnings"][0]["message"]
+    assert _count_rows(db_path, "memories") == 0
+    assert note.read_text(encoding="utf-8") == original_note
+
+
+def test_vault_reconcile_integrity_conflict_classifies_live_structural_conflict(tmp_path: Path) -> None:
+    db_path, _vault, _server_instance = _server(tmp_path)
+    conn = get_connection(db_path)
+    svc = MemoryService(db_path, conn=conn)
+    existing = svc.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="timezone",
+        confidence=1.0,
+        payload={"value": "UTC"},
+        source="user",
+        actor="user",
+    )
+    identity = _MemoryIdentity(
+        scope="core",
+        memory_type="preference",
+        subject="timezone",
+        memory_key="core.preference.timezone",
+        memory_id=None,
+        sync_base_updated_at=None,
+    )
+
+    try:
+        vault_reconciler_module._raise_memory_integrity_conflict(
+            conn,
+            identity,
+            "Minx/Memory/timezone.md",
+            fingerprint="unmatched-fingerprint",
+            exclude_memory_id=None,
+            exc=sqlite3.IntegrityError(
+                "UNIQUE constraint failed: memories.memory_type, memories.scope, memories.subject"
+            ),
+        )
+    except _SkipNoteError as exc:
+        assert exc.warning.kind == "conflict"
+        assert exc.warning.memory_id == existing.id
+        assert exc.warning.memory_key == "core.preference.timezone"
+        assert "structural_triple" in exc.warning.message
+    else:
+        raise AssertionError("expected structural conflict warning")
+
+
 def test_vault_reconcile_warns_and_skips_on_live_fingerprint_collision(
     tmp_path: Path,
     monkeypatch,

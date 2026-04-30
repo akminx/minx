@@ -39,7 +39,12 @@ from minx_mcp.core.vault_memory_frontmatter import (
 )
 from minx_mcp.validation import parse_payload_json
 from minx_mcp.vault_reader import VaultDocument, VaultReader
-from minx_mcp.vault_writer import StagedVaultWrite, VaultWriter, scan_frontmatter_for_secrets
+from minx_mcp.vault_writer import (
+    StagedVaultWrite,
+    VaultWriter,
+    scan_body_for_secrets,
+    scan_frontmatter_for_secrets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +195,7 @@ class VaultReconciler:
     ) -> None:
         try:
             scan_frontmatter_for_secrets(doc.frontmatter)
+            scan_body_for_secrets(doc.body)
             identity = parse_memory_identity(doc.frontmatter)
             payload = parse_memory_payload(
                 doc.frontmatter,
@@ -477,7 +483,7 @@ class VaultReconciler:
                 (_canonical_payload_json(payload), fingerprint, memory_id),
             )
         except IntegrityError as exc:
-            _raise_content_fingerprint_conflict(
+            _raise_memory_integrity_conflict(
                 self._conn,
                 identity,
                 doc.relative_path,
@@ -657,7 +663,7 @@ class VaultReconciler:
                 ),
             )
         except IntegrityError as exc:
-            _raise_content_fingerprint_conflict(
+            _raise_memory_integrity_conflict(
                 self._conn,
                 identity,
                 doc.relative_path,
@@ -724,7 +730,7 @@ class VaultReconciler:
                 (_canonical_payload_json(payload), fingerprint, memory_id),
             )
         except IntegrityError as exc:
-            _raise_content_fingerprint_conflict(
+            _raise_memory_integrity_conflict(
                 self._conn,
                 identity,
                 doc.relative_path,
@@ -894,7 +900,7 @@ def _conflict_warning(row: Row, identity: MemoryIdentity, vault_path: str) -> Va
     )
 
 
-def _raise_content_fingerprint_conflict(
+def _raise_memory_integrity_conflict(
     conn: Connection,
     identity: MemoryIdentity,
     vault_path: str,
@@ -903,6 +909,38 @@ def _raise_content_fingerprint_conflict(
     exclude_memory_id: int | None,
     exc: IntegrityError,
 ) -> None:
+    row = conn.execute(
+        """
+        SELECT id
+        FROM memories
+        WHERE memory_type = ?
+          AND scope = ?
+          AND subject = ?
+          AND status IN ('candidate', 'active')
+          AND (? IS NULL OR id != ?)
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (
+            identity.memory_type,
+            identity.scope,
+            identity.subject,
+            exclude_memory_id,
+            exclude_memory_id,
+        ),
+    ).fetchone()
+    if row is not None:
+        memory_id = int(row["id"])
+        raise _SkipNoteError(
+            VaultReconcileWarning(
+                kind="conflict",
+                vault_path=vault_path,
+                message=f"structural_triple conflicts with live memory_id={memory_id}",
+                memory_id=memory_id,
+                memory_key=identity.memory_key,
+            )
+        ) from exc
+
     row = conn.execute(
         """
         SELECT id

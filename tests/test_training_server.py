@@ -22,6 +22,10 @@ def test_training_server_registers_expected_tools(db_path) -> None:
     assert "training_session_list" in tool_names
     assert "training_progress_summary" in tool_names
     schemas = {tool.name: tool.inputSchema for tool in tools}
+    assert schemas["training_program_activate"]["properties"]["program_id"]["type"] == "integer"
+    assert schemas["training_program_get"]["properties"]["program_id"]["type"] == "integer"
+    assert schemas["training_session_log"]["properties"]["program_id"]["anyOf"][0]["type"] == "integer"
+    assert schemas["training_session_list"]["properties"]["limit"]["type"] == "integer"
     assert schemas["training_progress_summary"]["properties"]["lookback_days"]["type"] == "integer"
 
 

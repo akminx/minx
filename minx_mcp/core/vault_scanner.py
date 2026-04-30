@@ -20,7 +20,7 @@ from minx_mcp.core.vault_memory_frontmatter import (
 )
 from minx_mcp.time_utils import utc_now_isoformat
 from minx_mcp.vault_reader import VaultDocument, VaultReader
-from minx_mcp.vault_writer import scan_frontmatter_for_secrets
+from minx_mcp.vault_writer import scan_body_for_secrets, scan_frontmatter_for_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +233,11 @@ class VaultScanner:
                 scan_frontmatter_for_secrets(doc.frontmatter)
             except InvalidInputError:
                 warnings.append(f"{doc.relative_path}: secret detected in vault frontmatter; skipped")
+                continue
+            try:
+                scan_body_for_secrets(doc.body)
+            except InvalidInputError:
+                warnings.append(f"{doc.relative_path}: secret detected in vault body; skipped")
                 continue
             prior = prior_by_path.get(doc.relative_path)
             note_type = optional_str(doc.frontmatter.get("type"))
@@ -471,11 +476,14 @@ class VaultScanner:
                     (json.dumps(payload, sort_keys=True), fingerprint, memory_id),
                 )
             except IntegrityError as exc:
-                _append_content_fingerprint_warning(
+                _append_memory_integrity_warning(
                     self._conn,
                     warnings,
                     doc.relative_path,
-                    fingerprint,
+                    memory_type=identity.memory_type,
+                    scope=identity.scope,
+                    subject=identity.subject,
+                    fingerprint=fingerprint,
                     exclude_memory_id=memory_id,
                     exc=exc,
                 )
@@ -512,11 +520,14 @@ class VaultScanner:
                 (json.dumps(payload, sort_keys=True), fingerprint, memory_id),
             )
         except IntegrityError as exc:
-            _append_content_fingerprint_warning(
+            _append_memory_integrity_warning(
                 self._conn,
                 warnings,
                 doc.relative_path,
-                fingerprint,
+                memory_type=identity.memory_type,
+                scope=identity.scope,
+                subject=identity.subject,
+                fingerprint=fingerprint,
                 exclude_memory_id=memory_id,
                 exc=exc,
             )
@@ -568,11 +579,14 @@ class VaultScanner:
                 ),
             )
         except IntegrityError as exc:
-            _append_content_fingerprint_warning(
+            _append_memory_integrity_warning(
                 self._conn,
                 warnings,
                 doc.relative_path,
-                fingerprint,
+                memory_type=identity.memory_type,
+                scope=identity.scope,
+                subject=identity.subject,
+                fingerprint=fingerprint,
                 exclude_memory_id=None,
                 exc=exc,
             )
@@ -610,15 +624,37 @@ def _terminal_memory_status(conn: Connection, memory_id: int) -> str | None:
     return None
 
 
-def _append_content_fingerprint_warning(
+def _append_memory_integrity_warning(
     conn: Connection,
     warnings: list[str],
     relative_path: str,
-    fingerprint: str,
     *,
+    memory_type: str,
+    scope: str,
+    subject: str,
+    fingerprint: str,
     exclude_memory_id: int | None,
     exc: IntegrityError,
 ) -> None:
+    row = conn.execute(
+        """
+        SELECT id
+        FROM memories
+        WHERE memory_type = ?
+          AND scope = ?
+          AND subject = ?
+          AND status IN ('candidate', 'active')
+          AND (? IS NULL OR id != ?)
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (memory_type, scope, subject, exclude_memory_id, exclude_memory_id),
+    ).fetchone()
+    if row is not None:
+        warnings.append(
+            f"{relative_path}: structural_triple conflicts with live memory_id={int(row['id'])}; skipped"
+        )
+        return
     row = conn.execute(
         """
         SELECT id

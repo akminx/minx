@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
+from sqlite3 import IntegrityError
 
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.core import vault_scanner as vault_scanner_module
@@ -58,6 +59,37 @@ def test_vault_scanner_skips_secret_bearing_frontmatter_without_index_or_memory_
     assert report.memory_syncs == 0
     assert len(report.warnings) == 1
     assert "secret detected in vault frontmatter" in report.warnings[0].lower()
+    assert secret not in report.warnings[0]
+    assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM vault_index").fetchone()[0] == 0
+
+
+def test_vault_scanner_skips_secret_bearing_body_without_index_or_memory_write(tmp_path: Path) -> None:
+    conn, scanner = _scanner(tmp_path)
+    secret = _fake_github_token()
+    note = tmp_path / "vault" / "Minx" / "Memory" / "secret-body.md"
+    _write(
+        note,
+        (
+            "---\n"
+            "type: minx-memory\n"
+            "scope: core\n"
+            "memory_key: core.preference.secret_body\n"
+            "memory_type: preference\n"
+            "subject: secret_body\n"
+            "value: safe\n"
+            "---\n"
+            f"Debug token: {secret}\n"
+        ),
+    )
+
+    report = scanner.scan()
+
+    assert report.scanned == 1
+    assert report.indexed == 0
+    assert report.memory_syncs == 0
+    assert len(report.warnings) == 1
+    assert "secret detected in vault body" in report.warnings[0].lower()
     assert secret not in report.warnings[0]
     assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM vault_index").fetchone()[0] == 0
@@ -218,6 +250,37 @@ def test_vault_scanner_syncs_memory_notes_and_orphans_deleted_index_rows(tmp_pat
     assert orphaned.orphaned == 1
     assert conn.execute("SELECT COUNT(*) FROM vault_index").fetchone()[0] == 0
     assert conn.execute("SELECT status FROM memories WHERE id = ?", (memory["id"],)).fetchone()[0] == "active"
+
+
+def test_vault_scanner_integrity_warning_classifies_live_structural_conflict(tmp_path: Path) -> None:
+    conn, _scanner_instance = _scanner(tmp_path)
+    service = MemoryService(tmp_path / "minx.db", conn=conn)
+    existing = service.create_memory(
+        memory_type="preference",
+        scope="core",
+        subject="timezone",
+        confidence=1.0,
+        payload={"value": "UTC"},
+        source="user",
+        actor="user",
+    )
+    warnings: list[str] = []
+
+    vault_scanner_module._append_memory_integrity_warning(
+        conn,
+        warnings,
+        "Minx/Memory/timezone.md",
+        memory_type="preference",
+        scope="core",
+        subject="timezone",
+        fingerprint="unmatched-fingerprint",
+        exclude_memory_id=None,
+        exc=IntegrityError("UNIQUE constraint failed: memories.memory_type, memories.scope, memories.subject"),
+    )
+
+    assert warnings == [
+        f"Minx/Memory/timezone.md: structural_triple conflicts with live memory_id={existing.id}; skipped"
+    ]
 
 
 def test_vault_scanner_warns_and_skips_memory_note_on_live_fingerprint_collision(

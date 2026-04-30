@@ -65,14 +65,14 @@ def create_training_server(service: TrainingService) -> FastMCP:
         )
 
     @mcp.tool(name="training_program_activate")
-    def training_program_activate(program_id: int) -> ToolResponse:
+    def training_program_activate(program_id: StrictInt) -> ToolResponse:
         return wrap_tool_call(
             lambda: {"program": asdict(service.activate_program(program_id))},
             tool_name="training_program_activate",
         )
 
     @mcp.tool(name="training_program_get")
-    def training_program_get(program_id: int) -> ToolResponse:
+    def training_program_get(program_id: StrictInt) -> ToolResponse:
         return wrap_tool_call(
             lambda: {"program": asdict(service.get_program(program_id))},
             tool_name="training_program_get",
@@ -82,7 +82,7 @@ def create_training_server(service: TrainingService) -> FastMCP:
     def training_session_log(
         occurred_at: str,
         sets: list[dict[str, object]],
-        program_id: int | None = None,
+        program_id: StrictInt | None = None,
         notes: str | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
@@ -100,7 +100,7 @@ def create_training_server(service: TrainingService) -> FastMCP:
     def training_session_list(
         start_date: str | None = None,
         end_date: str | None = None,
-        limit: int = 50,
+        limit: StrictInt = 50,
     ) -> ToolResponse:
         return wrap_tool_call(
             lambda: _training_session_list(

@@ -377,6 +377,10 @@ def scan_frontmatter_for_secrets(frontmatter: dict[str, object]) -> None:
         )
 
 
+def scan_body_for_secrets(body: str) -> None:
+    _scan_text_for_vault_body_secrets(body, field="body")
+
+
 def _scan_markdown_frontmatter_for_secrets(content: str) -> None:
     lines = content.splitlines(keepends=True)
     if not lines or lines[0].lstrip("\ufeff").strip() != "---":

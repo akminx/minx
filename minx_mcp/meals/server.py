@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import StrictInt
 
 from minx_mcp.contracts import ToolResponse, wrap_tool_call
 from minx_mcp.meals.recommendations import recommend_recipes as recommend
@@ -22,7 +23,7 @@ def create_meals_server(service: MealsService) -> FastMCP:
         summary: str | None = None,
         food_items: list[dict[str, object]] | None = None,
         protein_grams: float | None = None,
-        calories: int | None = None,
+        calories: StrictInt | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
             lambda: _meal_log(
@@ -59,7 +60,7 @@ def create_meals_server(service: MealsService) -> FastMCP:
 
     @mcp.tool(name="pantry_update")
     def pantry_update(
-        item_id: int,
+        item_id: StrictInt,
         quantity: float | None = None,
         unit: str | None = None,
         expiration_date: str | None = None,
@@ -78,7 +79,7 @@ def create_meals_server(service: MealsService) -> FastMCP:
         )
 
     @mcp.tool(name="pantry_remove")
-    def pantry_remove(item_id: int) -> ToolResponse:
+    def pantry_remove(item_id: StrictInt) -> ToolResponse:
         return wrap_tool_call(
             lambda: _remove_pantry_item(service, item_id),
             tool_name="pantry_remove",
@@ -150,12 +151,12 @@ def create_meals_server(service: MealsService) -> FastMCP:
     @mcp.tool(name="nutrition_profile_set")
     def nutrition_profile_set(
         sex: str,
-        age_years: int,
+        age_years: StrictInt,
         height_cm: float,
         weight_kg: float,
         activity_level: str,
         goal: str = "maintenance",
-        calorie_deficit_kcal: int = 400,
+        calorie_deficit_kcal: StrictInt = 400,
         protein_g_per_kg: float = 2.0,
         fat_g_per_kg: float = 0.77,
     ) -> ToolResponse:
