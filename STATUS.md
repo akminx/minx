@@ -1,8 +1,10 @@
 # Project Status
 
-Last updated: 2026-04-29
+Last updated: 2026-04-30
 
-Minx MCP is implemented through Slice 9 investigation storage/read/re-query surfaces. The system has four active MCP servers: Finance, Core, Meals, and Training.
+For setup and end-to-end smokes, see [docs/RUNBOOK.md](docs/RUNBOOK.md). For agent-oriented orientation, see [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md).
+
+Minx MCP is implemented through Slice 9 investigation storage / read / re-query surfaces. The system has four active MCP servers: Finance, Core, Meals, and Training, plus a harness-side production runner in [minx-hermes](https://github.com/akminx/minx-hermes) that drives the agentic investigation loop end to end.
 
 ## Implemented
 

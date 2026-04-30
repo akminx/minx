@@ -1,83 +1,70 @@
 # Operations
 
-This guide covers local setup, verification, server startup, configuration, and one-time database maintenance for Minx MCP.
+Reference material for running and maintaining Minx. For end-to-end setup and smokes, see [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
-## Setup
+## Default paths
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-```
+| Purpose | Default | Override |
+|---|---|---|
+| Database | `~/.minx/data/minx.db` | `MINX_DB_PATH` |
+| Vault root | `~/Documents/minx-vault` | `MINX_VAULT_PATH` |
+| Import staging root | `~/.minx/staging` | `MINX_STAGING_PATH` |
+| Data dir (parent) | `~/.minx/data` | `MINX_DATA_DIR` |
 
-The project also works with `uv`:
+## Environment variables
 
-```bash
-uv sync --all-extras
-```
+| Variable | Purpose |
+|---|---|
+| `MINX_DATA_DIR` | Base local data directory |
+| `MINX_DB_PATH` | SQLite database path |
+| `MINX_VAULT_PATH` | Obsidian-style vault root |
+| `MINX_STAGING_PATH` | Allowed import staging root |
+| `MINX_HTTP_HOST` | Default HTTP host (default `127.0.0.1`) |
+| `MINX_HTTP_PORT` | Default HTTP port |
+| `MINX_DEFAULT_TRANSPORT` | `stdio` or `http` |
+| `MINX_OPENROUTER_API_KEY` | Enables memory embedding jobs |
+| `MINX_EMBEDDING_MODEL` | Embedding model (default `openai/text-embedding-3-small`) |
+| `MINX_EMBEDDING_DIMENSIONS` | Optional embedding dimensions truncation |
+| `MINX_EMBEDDING_REQUEST_TIMEOUT_S` | Embedding request timeout |
+| `MINX_EMBEDDING_MAX_COST_MICROUSD` | Per-sweep embedding cost ceiling |
+| `MINX_MAX_TOOL_CALLS_PER_INVESTIGATION` | Soft Core-side cap on investigation steps (default 1000) |
+| `OPENROUTER_API_KEY` | Used by the LLM tool-calling adapter (set whatever `api_key_env` the preference points to) |
 
-## Verify
+## Default HTTP ports
 
-Run these before merging, handing off, or publishing a branch:
+| Server | Port |
+|---|---|
+| Finance | 8000 |
+| Core | 8001 |
+| Meals | 8002 |
+| Training | 8003 |
 
-```bash
-uv run ruff check minx_mcp tests scripts
-uv run mypy minx_mcp
-uv run pytest tests/ -x -q
-```
+## Running servers
 
-## Run Servers
-
-Run Core over stdio:
+Stdio (single server, typical for local LLM clients):
 
 ```bash
 uv run python -m minx_mcp.core --transport stdio
 ```
 
-Run individual servers over HTTP:
+HTTP (typical for Hermes):
 
 ```bash
-uv run python -m minx_mcp.finance --transport http --host 127.0.0.1 --port 8000
-uv run python -m minx_mcp.core --transport http --host 127.0.0.1 --port 8001
-uv run python -m minx_mcp.meals --transport http --host 127.0.0.1 --port 8002
+uv run python -m minx_mcp.finance  --transport http --host 127.0.0.1 --port 8000
+uv run python -m minx_mcp.core     --transport http --host 127.0.0.1 --port 8001
+uv run python -m minx_mcp.meals    --transport http --host 127.0.0.1 --port 8002
 uv run python -m minx_mcp.training --transport http --host 127.0.0.1 --port 8003
 ```
 
-Start the full local stack:
+Or all four at once:
 
 ```bash
 ./scripts/start_hermes_stack.sh
 ```
 
-## Default Paths
+## LLM preference shape
 
-| Purpose | Default |
-| --- | --- |
-| Database | `~/.minx/data/minx.db` |
-| Vault root | `~/Documents/minx-vault` |
-| Import staging root | `~/.minx/staging` |
-
-## Configuration
-
-Environment overrides:
-
-| Variable | Purpose |
-| --- | --- |
-| `MINX_DATA_DIR` | Base local data directory |
-| `MINX_DB_PATH` | SQLite database path |
-| `MINX_VAULT_PATH` | Obsidian-style vault root |
-| `MINX_STAGING_PATH` | Allowed import staging root |
-| `MINX_HTTP_HOST` | Default HTTP host |
-| `MINX_HTTP_PORT` | Default HTTP port |
-| `MINX_DEFAULT_TRANSPORT` | `stdio` or `http` |
-| `MINX_OPENROUTER_API_KEY` | Enables optional memory embedding jobs |
-| `MINX_EMBEDDING_MODEL` | Embedding model override |
-| `MINX_EMBEDDING_DIMENSIONS` | Optional embedding dimensions |
-| `MINX_EMBEDDING_REQUEST_TIMEOUT_S` | Embedding request timeout |
-| `MINX_EMBEDDING_MAX_COST_MICROUSD` | Per-sweep embedding cost ceiling |
-
-## LLM Preference Example
-
-Store provider config in the `core/llm_config` preference. API keys must stay in environment variables.
+Stored in the `core/llm_config` preference. API keys must stay in environment variables; only the env-var *name* lives in the preference.
 
 ```json
 {
@@ -85,50 +72,55 @@ Store provider config in the `core/llm_config` preference. API keys must stay in
   "base_url": "https://openrouter.ai/api/v1",
   "model": "nvidia/nemotron-3-super-120b-a12b",
   "api_key_env": "OPENROUTER_API_KEY",
+  "timeout_seconds": 90.0,
   "provider_preferences": {
-    "only": ["deepinfra"],
-    "quantizations": ["bf16"],
-    "allow_fallbacks": false,
-    "require_parameters": true
-  }
+    "data_collection": "deny",
+    "require_parameters": true,
+    "allow_fallbacks": true,
+    "quantizations": ["fp8", "bf16"]
+  },
+  "reasoning": {"effort": "medium"}
 }
 ```
 
-## Maintenance Commands
+Write this with `uv run scripts/configure-openrouter.py` (idempotent; re-run any time to change the model or routing).
 
-Run these once for databases that predate the relevant migrations or behavior changes:
+## Maintenance commands
 
-```bash
-python -m scripts.rebuild_finance_dedupe
-python -m scripts.backfill_memory_fingerprints
-python -m scripts.rebuild_memory_fts
-python scripts/scan_memory_for_secrets.py
-```
-
-What they do:
+Run these once for databases that predate the relevant migrations or behavior changes.
 
 | Command | Purpose |
-| --- | --- |
-| `rebuild_finance_dedupe` | Rebuilds finance transaction fingerprints after dedupe algorithm changes |
-| `backfill_memory_fingerprints` | Populates `content_fingerprint` for older memory rows |
-| `rebuild_memory_fts` | Rebuilds FTS5 memory search for historical rows |
-| `scan_memory_for_secrets.py` | Reports historical memory rows containing secret-shaped values |
+|---|---|
+| `python -m scripts.rebuild_finance_dedupe` | Rebuilds finance transaction fingerprints after dedupe algorithm changes |
+| `python -m scripts.backfill_memory_fingerprints` | Populates `content_fingerprint` for older memory rows |
+| `python -m scripts.rebuild_memory_fts` | Rebuilds FTS5 memory search for historical rows |
+| `python scripts/scan_memory_for_secrets.py` | Reports historical memory rows containing secret-shaped values |
 
-## Smoke Flow
-
-Run the Slice 4 cross-domain smoke helper:
+## Smoke flow (cross-domain helper)
 
 ```bash
-uv run python scripts/hermes_slice4_smoke.py --db-path ~/.minx/data/minx.db --review-date 2026-04-13
+uv run python scripts/hermes_slice4_smoke.py \
+  --db-path ~/.minx/data/minx.db --review-date 2026-04-13
 ```
 
-By default, the script operates on a temporary database copy. Add `--in-place` only when intentionally writing seed data to the provided database.
+By default the script operates on a temporary database copy. Add `--in-place` only when intentionally writing seed data to the provided database.
 
-## Operational Invariants
+## Verification before merging or handing off
 
-- Finance imports must stay inside the configured staging root.
+```bash
+uv run ruff check minx_mcp tests scripts
+uv run mypy minx_mcp
+uv run pytest tests/ -x -q
+```
+
+Strict mypy on source; broad pytest coverage across domain services, migrations, MCP tools, transport smoke, and historical regressions.
+
+## Operational invariants
+
+- Finance imports stay inside the configured staging root.
 - Money is stored as integer cents.
-- Memory capture defaults to candidate status and requires confirmation before becoming active.
-- Memory embeddings should only exist for active, unexpired memories.
-- Investigation steps stored by Core must be digest-only and must not contain raw tool output.
-- Secret-shaped values must be blocked or redacted before memory, vault, or embedding persistence.
+- Memory capture defaults to candidate status; requires `memory_confirm` before becoming active.
+- Memory embeddings exist only for active, unexpired memories.
+- Investigation steps are digest-only; raw tool output is never persisted in Core.
+- Secret-shaped values are blocked or redacted before any memory / vault / embedding write.
+- Render template IDs are append-only contracts — change semantics by minting a new ID, never by changing an existing one.
