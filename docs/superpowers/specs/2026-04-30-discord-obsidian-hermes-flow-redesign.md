@@ -51,6 +51,54 @@ Trade-off: smooth when it works, but too risky for personal data. It increases a
 
 ## Design
 
+### Recommended Final Shape
+
+Discord should use action lanes:
+
+| Channel | Role |
+|---|---|
+| `#ask-minx` | Broad questions, investigations, plans, retrospectives, and entity lookups. |
+| `#capture` | Memories, goals, preferences, constraints, and quick reflective intake. |
+| `#finance` | Statement uploads, finance import previews/imports, and finance questions. |
+| `#meals` | Meal logs, pantry, nutrition, recipes, and meal planning. |
+| `#training` | Workouts, adherence, progression, and training goals. |
+| `#reports` | Scheduled summaries, anomaly alerts, and generated report links. |
+| `#minx-ops` | Private/admin lane for stack status, smoke tests, config drift, failed playbooks, and operational alerts. |
+
+The current server can be mapped to this shape by renaming `#home` to `#ask-minx`, `#journal` to `#capture`, `#health` to `#training`, and `#finances` to `#finance`, then adding `#minx-ops`.
+
+Obsidian should use projection lanes:
+
+```text
+Home.md
+Minx/
+  Dashboard.md
+  Inbox.md
+  Reviews/
+    Daily/
+    Weekly/
+    Monthly/
+  Reports/
+    Finance/
+    Training/
+    Meals/
+    Cross-Domain/
+  Wiki/
+    Entities/
+    Patterns/
+    Goals/
+    Projects/
+  Memory/
+    Confirmed/
+    Candidates/
+  Ops/
+    Runbooks/
+    Setup/
+    Smoke Tests/
+```
+
+The old `Minx/Daily`, `Minx/Finance`, `Minx/Training`, `Minx/Meals`, `Minx/Goals`, and `Minx/Insights` folders should be retired or folded into those projection lanes. `Setup/` should live under `Minx/Ops/Setup` so the vault has one Minx front door.
+
 ### Discord Flow
 
 Discord gets three classes of behavior.
