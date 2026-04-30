@@ -677,6 +677,94 @@ def test_memory_list_with_no_status_prunes_expired_rejected_rows(tmp_path: Path)
     assert mid not in ids, "Expired rejected memory must be pruned when memory_list(status=None) is called"
 
 
+def test_memory_list_can_include_cited_investigations(tmp_path: Path) -> None:
+    db_path = tmp_path / "list_citations.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+
+    created = get_tool(server, "memory_create").fn(
+        "preference",
+        "core",
+        "dining_budget_context",
+        0.9,
+        {"category": "budget", "value": "dining spend is watched closely"},
+        "user",
+        "",
+    )
+    assert created["success"] is True
+    memory_id = int(created["data"]["memory"]["id"])
+
+    logged = get_tool(server, "log_investigation").fn(
+        "investigate",
+        "Why did dining increase?",
+        {},
+        "hermes",
+        [],
+        "succeeded",
+        "Dining increased because restaurant spend rose.",
+        [{"type": "memory", "id": memory_id}],
+        1,
+        None,
+        None,
+        None,
+        None,
+    )
+    assert logged["success"] is True
+    investigation_id = int(logged["data"]["investigation_id"])
+
+    listed = get_tool(server, "memory_list").fn(None, None, None, 10, True)
+
+    assert listed["success"] is True
+    memory = next(item for item in listed["data"]["memories"] if item["id"] == memory_id)
+    assert memory["cited_investigations"] == [
+        {
+            "investigation_id": investigation_id,
+            "kind": "investigate",
+            "status": "succeeded",
+            "question": "Why did dining increase?",
+        }
+    ]
+
+
+def test_memory_list_caps_cited_investigations_per_memory(tmp_path: Path) -> None:
+    db_path = tmp_path / "cap_citations.db"
+    get_connection(db_path).close()
+    server = create_core_server(MinxTestConfig(db_path, tmp_path / "vault"))
+
+    created = get_tool(server, "memory_create").fn(
+        "preference",
+        "core",
+        "watched_signal",
+        0.9,
+        {"category": "budget", "value": "watched"},
+        "user",
+        "",
+    )
+    memory_id = int(created["data"]["memory"]["id"])
+
+    log = get_tool(server, "log_investigation").fn
+    for _ in range(25):
+        log(
+            "investigate",
+            "Why?",
+            {},
+            "hermes",
+            [],
+            "succeeded",
+            "ans",
+            [{"type": "memory", "id": memory_id}],
+            1,
+            None,
+            None,
+            None,
+            None,
+        )
+
+    listed = get_tool(server, "memory_list").fn(None, None, None, 10, True)
+    memory = next(item for item in listed["data"]["memories"] if item["id"] == memory_id)
+    assert len(memory["cited_investigations"]) == 20
+
+
 def test_memory_create_mcp_returns_invalid_input_for_bad_payload(tmp_path: Path) -> None:
     db_path = tmp_path / "bad_payload.db"
     get_connection(db_path).close()

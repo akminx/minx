@@ -5,25 +5,42 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from datetime import UTC, datetime, timedelta
 from sqlite3 import Connection, Row
 from typing import Any
 
 from minx_mcp.contracts import ConflictError, InvalidInputError, NotFoundError
+from minx_mcp.core.render_templates import (
+    INVESTIGATION_BUDGET_EXHAUSTED,
+    INVESTIGATION_CANCELLED,
+    INVESTIGATION_COMPLETED,
+    INVESTIGATION_FAILED,
+    INVESTIGATION_NEEDS_CONFIRMATION,
+    INVESTIGATION_STARTED,
+    INVESTIGATION_STEP_LOGGED,
+)
 from minx_mcp.core.secret_scanner import SecretVerdictKind, redact_secrets
 from minx_mcp.time_utils import utc_now_isoformat
 
 KIND_VALUES = frozenset({"investigate", "plan", "retro", "onboard", "other"})
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "budget_exhausted"})
 ALL_STATUSES = TERMINAL_STATUSES | {"running"}
-STEP_EVENT_TEMPLATES = frozenset({"investigation.step_logged", "investigation.needs_confirmation"})
+STEP_EVENT_TEMPLATES = frozenset({INVESTIGATION_STEP_LOGGED, INVESTIGATION_NEEDS_CONFIRMATION})
 TERMINAL_RESPONSE_TEMPLATES = {
-    "succeeded": "investigation.completed",
-    "failed": "investigation.failed",
-    "cancelled": "investigation.cancelled",
-    "budget_exhausted": "investigation.budget_exhausted",
+    "succeeded": INVESTIGATION_COMPLETED,
+    "failed": INVESTIGATION_FAILED,
+    "cancelled": INVESTIGATION_CANCELLED,
+    "budget_exhausted": INVESTIGATION_BUDGET_EXHAUSTED,
 }
+
+# Soft Core-side defense in depth. Hermes (or any harness) is the source of
+# truth for hard budget enforcement; Core just refuses obviously-bad numbers
+# that indicate a buggy or runaway harness. Configurable via env var.
+MAX_TOOL_CALLS_PER_INVESTIGATION = int(
+    os.environ.get("MINX_MAX_TOOL_CALLS_PER_INVESTIGATION", "1000")
+)
 MAX_HISTORY_LIMIT = 1000
 MAX_JSON_DEPTH = 4
 MAX_TOP_LEVEL_KEYS = 32
@@ -105,7 +122,7 @@ def start_investigation(
         )
         result = {
             "investigation_id": investigation_id,
-            "response_template": "investigation.started",
+            "response_template": INVESTIGATION_STARTED,
             "response_slots": response_slots,
         }
         conn.commit()
@@ -139,6 +156,16 @@ def append_investigation_step(
                 data={"investigation_id": normalized_id, "status": str(row["status"])},
             )
         trajectory = _json_loads_list(row["trajectory_json"], "trajectory_json")
+        if len(trajectory) >= MAX_TOOL_CALLS_PER_INVESTIGATION:
+            raise ConflictError(
+                f"investigation {normalized_id} exceeds soft tool-call cap "
+                f"({MAX_TOOL_CALLS_PER_INVESTIGATION}); harness must enforce its own budget",
+                data={
+                    "investigation_id": normalized_id,
+                    "trajectory_length": len(trajectory),
+                    "cap": MAX_TOOL_CALLS_PER_INVESTIGATION,
+                },
+            )
         trajectory.append(normalized_step)
         response_template = str(normalized_step["event_template"])
         response_slots: dict[str, object] = dict(normalized_step["event_slots"])

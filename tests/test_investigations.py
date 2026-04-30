@@ -250,6 +250,37 @@ def test_log_investigation_convenience_wrapper_persists_terminal_row(tmp_path: P
     assert run["citation_refs"] == [{"type": "investigation", "id": 7}]
 
 
+def test_log_step_rejects_runaway_trajectory(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MINX_MAX_TOOL_CALLS_PER_INVESTIGATION", "3")
+    # Reload module-level constant by importing fresh.
+    import importlib
+
+    import minx_mcp.core.investigations as inv_module
+
+    importlib.reload(inv_module)
+    from minx_mcp.core.server import create_core_server as _csrv
+
+    server = _csrv(MinxTestConfig(tmp_path / "minx.db", tmp_path / "vault"))
+    start = get_tool(server, "start_investigation").fn
+    log_step = get_tool(server, "append_investigation_step").fn
+    investigation_id = call_tool_sync(start, "investigate", "Soft-cap probe", {}, "hermes")[
+        "data"
+    ]["investigation_id"]
+
+    for i in range(1, 4):
+        ok = call_tool_sync(log_step, investigation_id, _step(step=i))
+        assert ok["success"] is True
+
+    overflow = call_tool_sync(log_step, investigation_id, _step(step=4))
+    assert overflow["success"] is False
+    assert overflow["error_code"] == CONFLICT
+    assert "soft tool-call cap" in overflow["error"]
+
+    # Reset for the rest of the suite.
+    monkeypatch.delenv("MINX_MAX_TOOL_CALLS_PER_INVESTIGATION", raising=False)
+    importlib.reload(inv_module)
+
+
 @pytest.mark.asyncio
 async def test_investigation_resources_expose_recent_and_by_id(tmp_path: Path) -> None:
     server = _server(tmp_path)

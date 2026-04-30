@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
+from sqlite3 import Connection
 
 from mcp.server.fastmcp import FastMCP
 
@@ -29,6 +31,7 @@ from minx_mcp.core.memory_service import (
     memory_edge_as_dict,
     memory_record_as_dict,
 )
+from minx_mcp.core.render_templates import MEMORY_CAPTURE_CREATED_CANDIDATE
 from minx_mcp.core.tools._shared import CoreServiceConfig, coerce_limit
 from minx_mcp.db import scoped_connection
 from minx_mcp.validation import require_non_empty, require_payload_object
@@ -43,9 +46,10 @@ def register_memory_tools(mcp: FastMCP, config: CoreServiceConfig) -> None:
         memory_type: str | None = None,
         scope: str | None = None,
         limit: int = 100,
+        include_cited_investigations: bool = False,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: _memory_list(config, status, memory_type, scope, limit),
+            lambda: _memory_list(config, status, memory_type, scope, limit, include_cited_investigations),
             tool_name="memory_list",
         )
 
@@ -237,6 +241,7 @@ def _memory_list(
     memory_type: str | None,
     scope: str | None,
     limit: int,
+    include_cited_investigations: bool = False,
 ) -> dict[str, object]:
     effective_status = _normalize_optional_filter(status)
     effective_type = _normalize_optional_filter(memory_type)
@@ -259,7 +264,66 @@ def _memory_list(
                 scope=effective_scope,
                 limit=lim,
             )
-        return {"memories": [memory_record_as_dict(r) for r in rows]}
+        memories = [memory_record_as_dict(r) for r in rows]
+        if include_cited_investigations:
+            _attach_cited_investigations(conn, memories)
+        return {"memories": memories}
+
+
+_CITED_INVESTIGATIONS_ROW_LIMIT = 200
+_CITED_INVESTIGATIONS_PER_MEMORY = 20
+
+
+def _attach_cited_investigations(
+    conn: Connection, memories: list[dict[str, object]]
+) -> None:
+    memory_ids = {int(memory["id"]) for memory in memories}  # type: ignore[call-overload]
+    for memory in memories:
+        memory["cited_investigations"] = []
+    if not memory_ids:
+        return
+
+    by_memory_id: dict[int, list[dict[str, object]]] = {memory_id: [] for memory_id in memory_ids}
+    rows = conn.execute(
+        """
+        SELECT id, kind, status, question, citation_refs_json
+        FROM investigations
+        WHERE citation_refs_json IS NOT NULL
+        ORDER BY started_at DESC, id DESC
+        LIMIT ?
+        """,
+        (_CITED_INVESTIGATIONS_ROW_LIMIT,),
+    ).fetchall()
+    for row in rows:
+        try:
+            citation_refs = json.loads(row["citation_refs_json"] or "[]")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(citation_refs, list):
+            continue
+        cited_ids = {
+            int(ref["id"])
+            for ref in citation_refs
+            if isinstance(ref, dict)
+            and ref.get("type") == "memory"
+            and isinstance(ref.get("id"), int)
+            and int(ref["id"]) in memory_ids
+        }
+        for memory_id in cited_ids:
+            bucket = by_memory_id[memory_id]
+            if len(bucket) >= _CITED_INVESTIGATIONS_PER_MEMORY:
+                continue
+            bucket.append(
+                {
+                    "investigation_id": int(row["id"]),
+                    "kind": row["kind"],
+                    "status": row["status"],
+                    "question": row["question"],
+                }
+            )
+
+    for memory in memories:
+        memory["cited_investigations"] = by_memory_id[int(memory["id"])]  # type: ignore[call-overload]
 
 
 def _memory_get(config: CoreServiceConfig, memory_id: int) -> dict[str, object]:
@@ -348,7 +412,7 @@ def _memory_capture(
         )
         return {
             "memory": memory_record_as_dict(record),
-            "response_template": "memory_capture.created_candidate",
+            "response_template": MEMORY_CAPTURE_CREATED_CANDIDATE,
             "response_slots": build_capture_response_slots(
                 record=record,
                 capture_type=capture_type_normalized,

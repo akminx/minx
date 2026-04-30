@@ -2,7 +2,7 @@
 
 Last updated: 2026-04-29
 
-Minx MCP is implemented through the Core-side Slice 9 investigation storage/read surface. The system has four active MCP servers: Finance, Core, Meals, and Training.
+Minx MCP is implemented through Slice 9 investigation storage/read/re-query surfaces. The system has four active MCP servers: Finance, Core, Meals, and Training.
 
 ## Implemented
 
@@ -37,7 +37,11 @@ Minx MCP is implemented through the Core-side Slice 9 investigation storage/read
 - Vault scan/reconcile/write primitives for Obsidian-style notes.
 - Enrichment queue for background memory work.
 - Playbook audit/history tools.
-- Investigation lifecycle/history storage with digest-only steps.
+- Investigation lifecycle/history storage with digest-only steps, structured citations, and prior-investigation references from `memory_list(include_cited_investigations=true)`.
+- Render template registry (`minx_mcp/core/render_templates.py`) — 18 IDs covering finance_query, goal_parse, memory_capture, and investigation surfaces. Fulfills the MCP render contract and template-registry specs.
+- Soft tool-call cap in `append_investigation_step` (`MINX_MAX_TOOL_CALLS_PER_INVESTIGATION`, default 1000) as defense in depth against runaway harnesses.
+- Bounded `memory_list(include_cited_investigations=true)` (last 200 investigations, max 20 citations per memory).
+- Live Hermes overlay skills for `/minx-investigate`, `/minx-plan`, `/minx-retro`, `/minx-onboard-entity`, plus a budget-enforcing reference runtime loop in the minx-hermes repo (`hermes_loop/runtime.py`) with hard `max_tool_calls` / wall-clock caps, a read-only tool allowlist, and terminal-status guarantee.
 
 ## Current Architecture Boundary
 
@@ -52,11 +56,10 @@ Do not move harness responsibilities into Core unless the architecture is intent
 
 ## Next Work
 
-1. Implement the real Hermes-side `minx_investigate` loop.
-2. Build a safe read-first tool catalog for investigations.
-3. Enforce investigation budgets for tool calls, wall clock, and large outputs.
-4. Add repeatable smoke/eval scenarios for dining spend, goal drift, memory context, and budget exhaustion.
-5. Add lightweight health views for stuck or failed playbooks and investigations.
+1. Add repeatable smoke/eval scenarios for dining spend, goal drift, memory context, and budget exhaustion.
+2. Add lightweight health views for stuck or failed playbooks and investigations.
+3. Build richer dashboard/inspection surfaces for goals, memories, playbooks, and investigations.
+4. Continue toward Slice 7 Ideas/Journal once investigation observability is understandable.
 
 ## Known Limitations
 

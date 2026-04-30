@@ -270,12 +270,18 @@ class GoalCaptureResult:
 
 
 def _response_template_for(result: GoalCaptureResult) -> str:
+    from minx_mcp.core.render_templates import (
+        GOAL_PARSE_CREATE_READY,
+        GOAL_PARSE_NO_MATCH_UNSUPPORTED,
+        GOAL_PARSE_UPDATE_READY,
+    )
+
     if result.result_type == "create":
-        return "goal_parse.create.ready"
+        return GOAL_PARSE_CREATE_READY
     if result.result_type == "update":
-        return "goal_parse.update.ready"
+        return GOAL_PARSE_UPDATE_READY
     if result.result_type == "no_match":
-        return "goal_parse.no_match.unsupported"
+        return GOAL_PARSE_NO_MATCH_UNSUPPORTED
     raise ValueError("response_template is invalid for clarify results")
 
 
