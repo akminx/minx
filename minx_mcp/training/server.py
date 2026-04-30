@@ -9,7 +9,9 @@ from minx_mcp.training.service import TrainingService
 from minx_mcp.transport import health_payload
 from minx_mcp.validation import (
     require_non_empty,
+    validate_iso_date,
     validate_iso_datetime,
+    validate_limit,
     validate_optional_date_range,
 )
 
@@ -115,14 +117,11 @@ def create_training_server(service: TrainingService) -> FastMCP:
         lookback_days: int = 7,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: {
-                "summary": asdict(
-                    service.get_progress_summary(
-                        as_of=as_of,
-                        lookback_days=lookback_days,
-                    )
-                )
-            },
+            lambda: _training_progress_summary(
+                service,
+                as_of=as_of,
+                lookback_days=lookback_days,
+            ),
             tool_name="training_progress_summary",
         )
 
@@ -183,6 +182,7 @@ def _training_session_list(
     limit: int,
 ) -> dict[str, object]:
     validate_optional_date_range(start_date, end_date)
+    validate_limit(limit)
     return {
         "sessions": [
             asdict(session)
@@ -193,3 +193,14 @@ def _training_session_list(
             )
         ]
     }
+
+
+def _training_progress_summary(
+    service: TrainingService,
+    *,
+    as_of: str | None,
+    lookback_days: int,
+) -> dict[str, object]:
+    if as_of is not None:
+        validate_iso_date(as_of, field_name="as_of")
+    return {"summary": asdict(service.get_progress_summary(as_of=as_of, lookback_days=lookback_days))}

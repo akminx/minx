@@ -9,6 +9,7 @@ has been updated in the test suite).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import date
@@ -26,7 +27,7 @@ from minx_mcp.contracts import (
 from minx_mcp.core.goal_parse import parse_goal_input
 from minx_mcp.core.goal_progress import build_progress_for_goal
 from minx_mcp.core.goals import GoalService
-from minx_mcp.core.llm import create_llm
+from minx_mcp.core.llm import LLMProviderError, create_llm
 from minx_mcp.core.models import (
     FinanceReadInterface,
     GoalCaptureOption,
@@ -51,6 +52,7 @@ from minx_mcp.finance.read_models import (
 
 __all__ = ["parse_goal_input", "register_goal_tools"]
 
+logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
@@ -429,4 +431,8 @@ def _goal_capture_option_to_dict(option: GoalCaptureOption) -> dict[str, object]
 
 
 def _resolve_goal_capture_llm(config: CoreServiceConfig) -> JSONLLMInterface | None:
-    return create_llm(db_path=config.db_path)
+    try:
+        return create_llm(db_path=config.db_path)
+    except LLMProviderError:
+        logger.warning("Goal parsing LLM unavailable; using deterministic parser")
+        return None

@@ -8,12 +8,17 @@ from minx_mcp.core.memory_secret_scanning import (
     raise_secret_detected,
     redaction_event_payload,
     scan_memory_input,
+    scan_payload_only,
 )
 from minx_mcp.core.secret_scanner import SecretVerdictKind
 
 
 def _fake_github_token() -> str:
     return "".join(("gh", "p_", "a" * 36))
+
+
+def _fake_github_token_with(char: str) -> str:
+    return "".join(("gh", "p_", char * 36))
 
 
 def test_public_memory_secret_scanner_redacts_payload_values_without_raw_secret() -> None:
@@ -39,6 +44,39 @@ def test_public_memory_secret_scanner_redacts_payload_values_without_raw_secret(
     }
     assert secret not in str(result)
     assert secret not in str(event_payload)
+
+
+def test_payload_secret_key_redaction_preserves_colliding_entries() -> None:
+    first_key = _fake_github_token_with("a")
+    second_key = _fake_github_token_with("b")
+
+    result = scan_payload_only({first_key: "first", second_key: "second"})
+
+    assert result.verdict is SecretVerdictKind.BLOCK
+    assert result.payload == {
+        "[REDACTED_KEY]": "first",
+        "[REDACTED_KEY_2]": "second",
+    }
+    assert [loc.field for loc in result.error_locations] == [
+        "payload.[REDACTED_KEY]",
+        "payload.[REDACTED_KEY_2]",
+    ]
+    assert first_key not in str(result)
+    assert second_key not in str(result)
+
+
+def test_payload_secret_key_redaction_preserves_literal_placeholder_keys() -> None:
+    secret_key = _fake_github_token_with("c")
+
+    result = scan_payload_only({secret_key: "secret-keyed", "[REDACTED_KEY]": "literal"})
+
+    assert result.verdict is SecretVerdictKind.BLOCK
+    assert result.payload == {
+        "[REDACTED_KEY]": "secret-keyed",
+        "[REDACTED_KEY_2]": "literal",
+    }
+    assert [loc.field for loc in result.error_locations] == ["payload.[REDACTED_KEY]"]
+    assert secret_key not in str(result)
 
 
 def test_public_memory_secret_scanner_blocks_identity_fields_without_raw_secret() -> None:

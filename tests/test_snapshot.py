@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import time
+import threading
 
 import pytest
 
@@ -401,23 +401,29 @@ async def test_build_daily_snapshot_does_not_block_event_loop_under_gather(tmp_p
     get_connection(db_path).close()
 
     original = snapshot_module._build_snapshot_models
+    loop_thread_id = threading.get_ident()
+    worker_entered = threading.Event()
+    release_worker = threading.Event()
+    worker_thread_ids: list[int] = []
 
     def slow_build(*args, **kwargs):
-        time.sleep(0.25)
+        worker_thread_ids.append(threading.get_ident())
+        worker_entered.set()
+        release_worker.wait(timeout=1)
         return original(*args, **kwargs)
 
     monkeypatch.setattr(snapshot_module, "_build_snapshot_models", slow_build)
 
-    t0 = time.perf_counter()
-    await asyncio.gather(
-        build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path)),
-        asyncio.sleep(0.2),
-    )
-    elapsed = time.perf_counter() - t0
+    task = asyncio.create_task(build_daily_snapshot("2026-03-15", SnapshotContext(db_path=db_path)))
+    assert await asyncio.wait_for(asyncio.to_thread(worker_entered.wait), timeout=2)
 
-    # If sync SQLite work blocked the event loop, this would be ~0.45s (0.25 + 0.2).
-    assert elapsed < 0.42
-    assert elapsed >= 0.19
+    assert len(worker_thread_ids) == 1
+    assert worker_thread_ids[0] != loop_thread_id, (
+        "_build_snapshot_models ran on the event loop thread; "
+        "snapshot work must stay in asyncio.to_thread"
+    )
+    release_worker.set()
+    await task
 
 
 @pytest.mark.asyncio

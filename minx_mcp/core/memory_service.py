@@ -13,17 +13,17 @@ from typing import Any
 
 from minx_mcp.base_service import BaseService
 from minx_mcp.contracts import ConflictError, InvalidInputError, NotFoundError
-from minx_mcp.core.fingerprint import content_fingerprint
 from minx_mcp.core.memory_edges import MemoryEdge
 from minx_mcp.core.memory_edges import create_memory_edge as _create_memory_edge
 from minx_mcp.core.memory_edges import delete_memory_edge as _delete_memory_edge
 from minx_mcp.core.memory_edges import get_memory_edge as _get_memory_edge
 from minx_mcp.core.memory_edges import list_memory_edges as _list_memory_edges
+from minx_mcp.core.memory_fingerprints import memory_content_fingerprint, memory_fingerprint_input
 from minx_mcp.core.memory_ingest import IngestProposalsReport, MemoryProposalFailure, MemoryProposalSuppression
 from minx_mcp.core.memory_ingest import content_equivalence_merge as _content_equivalence_merge
 from minx_mcp.core.memory_ingest import ingest_proposals as _ingest_proposals
 from minx_mcp.core.memory_models import MemoryProposal, MemoryRecord
-from minx_mcp.core.memory_payloads import PAYLOAD_MODELS, validate_memory_payload
+from minx_mcp.core.memory_payloads import validate_memory_payload
 from minx_mcp.core.memory_search import MemorySearchResult
 from minx_mcp.core.memory_search import search_memories as _search_memories
 from minx_mcp.core.memory_secret_scanning import (
@@ -49,6 +49,7 @@ __all__ = [
     "MemoryProposalSuppression",
     "MemorySearchResult",
     "MemoryService",
+    "memory_content_fingerprint",
     "memory_edge_as_dict",
     "memory_record_as_dict",
 ]
@@ -61,6 +62,8 @@ _ALLOWED_STATUS = frozenset({"candidate", "active", "rejected", "expired"})
 ACTIVE_CONFIDENCE_THRESHOLD = 0.8
 
 REJECTED_MEMORY_TTL_DAYS = 30
+
+_memory_fingerprint_input = memory_fingerprint_input
 
 
 def _utc_reference_iso(now: datetime | None = None) -> str:
@@ -75,78 +78,6 @@ def _raise_memory_status_conflict(memory_id: int, expected_status: str) -> None:
         f"memory {memory_id} status changed; expected {expected_status}, row was modified concurrently",
         data={"memory_id": memory_id, "expected_status": expected_status},
     )
-
-
-def _canonical_aliases(aliases: object) -> str:
-    """Canonical JSON form of an aliases list for fingerprinting.
-
-    Normalize each alias first, then sort, so Unicode form drift cannot
-    reorder the list between two rows with the "same" aliases. Non-string
-    entries are stringified via ``str()`` — in practice
-    ``coerce_prior_payload_to_schema`` would have dropped them, but this
-    is belt-and-suspenders against arbitrary stored content.
-    """
-    from minx_mcp.core.fingerprint import normalize_for_fingerprint
-
-    if not aliases:
-        return ""
-    if not isinstance(aliases, list | tuple):
-        return ""
-    normalized = sorted(normalize_for_fingerprint(str(a)) for a in aliases)
-    return json.dumps(normalized, ensure_ascii=False)
-
-
-def _memory_fingerprint_input(
-    memory_type: str,
-    payload: dict[str, object],
-    *,
-    scope: str,
-    subject: str,
-) -> tuple[str, str, str, str, str]:
-    """Return the 5-tuple (memory_type, scope, subject, note, value_part).
-
-    ``scope`` and ``subject`` are required kwargs: none of the Pydantic
-    payload models carry them — they are row/proposal attributes, not
-    payload fields. Every caller has them in hand and passes them
-    explicitly.
-
-    For known types (those registered in ``PAYLOAD_MODELS``) the
-    ``value_part`` slot is per-type — see the §5.2 table in the
-    Slice 6g spec for the per-type mapping.
-
-    For unknown types the fallback is ``(memory_type, scope, subject,
-    "", json.dumps(payload, sort_keys=True, ensure_ascii=False))`` —
-    the whole payload as canonical JSON. This is safe-but-degraded:
-    dedup still works on identical duplicates, but detector refinement
-    keys like ``category`` participate in the fingerprint (see §5.2
-    "Degraded dedup for unknown memory types").
-    """
-    note = str(payload.get("note") or "")
-
-    if memory_type == "preference":
-        value_part = str(payload.get("value") or "")
-    elif memory_type == "pattern":
-        value_part = str(payload.get("signal") or "")
-    elif memory_type == "entity_fact":
-        value_part = _canonical_aliases(payload.get("aliases"))
-    elif memory_type == "constraint":
-        value_part = str(payload.get("limit_value") or "")
-    elif memory_type in PAYLOAD_MODELS:
-        # Known type that has a Pydantic model but no entry above. This
-        # means a new type was added to PAYLOAD_MODELS without updating
-        # this function. Per §11 rule 7, refuse to silently degrade to
-        # the unknown-type JSON fallback — that would ship two
-        # fingerprint variants for the same logical content.
-        raise RuntimeError(
-            f"_memory_fingerprint_input missing per-type mapping for "
-            f"registered memory_type={memory_type!r}; update the "
-            f"function to add it (see Slice 6g spec §5.2)"
-        )
-    else:
-        note = ""
-        value_part = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-
-    return (memory_type, scope, subject, note, value_part)
 
 
 class MemoryService(BaseService):
@@ -193,13 +124,11 @@ class MemoryService(BaseService):
             reason=reason,
         )
         status: str = "active" if confidence >= ACTIVE_CONFIDENCE_THRESHOLD else "candidate"
-        fp = content_fingerprint(
-            *_memory_fingerprint_input(
-                prepared.memory_type,
-                prepared.payload,
-                scope=prepared.scope,
-                subject=prepared.subject,
-            )
+        fp = memory_content_fingerprint(
+            prepared.memory_type,
+            prepared.payload,
+            scope=prepared.scope,
+            subject=prepared.subject,
         )
         return self._insert_memory_and_events(
             memory_type=prepared.memory_type,
@@ -511,13 +440,11 @@ class MemoryService(BaseService):
         # Slice 6g: recompute fingerprint over the new payload. The row's
         # (memory_type, scope, subject) do not change on update_payload,
         # so they pass through from the existing row.
-        fp = content_fingerprint(
-            *_memory_fingerprint_input(
-                memory_type,
-                validated_scan.payload,
-                scope=str(row["scope"]),
-                subject=str(row["subject"]),
-            )
+        fp = memory_content_fingerprint(
+            memory_type,
+            validated_scan.payload,
+            scope=str(row["scope"]),
+            subject=str(row["subject"]),
         )
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -709,7 +636,7 @@ class MemoryService(BaseService):
             actor=actor,
             validate_actor=_validate_actor,
             validate_confidence=_validate_confidence,
-            memory_fingerprint_input=_memory_fingerprint_input,
+            memory_fingerprint_input=memory_fingerprint_input,
             insert_event=_insert_event,
             raise_memory_status_conflict=_raise_memory_status_conflict,
             parse_payload_json=_parse_payload_json,
@@ -756,7 +683,7 @@ class MemoryService(BaseService):
             actor=actor,
             stored_fingerprint=stored_fingerprint,
             secret_scan_results=secret_scan_results,
-            memory_fingerprint_input=_memory_fingerprint_input,
+            memory_fingerprint_input=memory_fingerprint_input,
             insert_event=_insert_event,
             raise_memory_status_conflict=_raise_memory_status_conflict,
             parse_payload_json=_parse_payload_json,

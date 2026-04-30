@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 
 import httpx
 import pytest
@@ -48,8 +47,9 @@ def test_create_llm_reads_preference_config_when_explicit_config_is_absent(
     assert instance.config == {"provider": "fake", "model": "reviewer-v1"}
 
 
-def test_create_llm_returns_none_when_provider_setup_fails(caplog):
+def test_create_llm_raises_when_provider_setup_fails():
     import minx_mcp.core.llm as llm
+    from minx_mcp.core.llm import LLMProviderError
 
     def explode(_config):
         raise RuntimeError("provider init failed")
@@ -57,30 +57,26 @@ def test_create_llm_returns_none_when_provider_setup_fails(caplog):
     original = llm._PROVIDER_BUILDERS
     try:
         llm._PROVIDER_BUILDERS = {"broken": explode}
-        created = llm.create_llm({"provider": "broken"})
+        with pytest.raises(LLMProviderError, match="provider init failed"):
+            llm.create_llm({"provider": "broken"})
     finally:
         llm._PROVIDER_BUILDERS = original
 
-    assert created is None
-    assert "provider init failed" in caplog.text
 
+def test_create_llm_raises_for_invalid_openai_compatible_config():
+    from minx_mcp.core.llm import LLMProviderError, create_llm
 
-def test_create_llm_reports_invalid_openai_compatible_config(caplog):
-    from minx_mcp.core.llm import create_llm
-
-    caplog.set_level(logging.WARNING, logger="minx_mcp.core.llm")
-    created = create_llm(
-        {
-            "provider": "openai_compatible",
-            "model": "gpt-4o-mini",
-            "api_key_env": "OPENAI_API_KEY",
-        }
-    )
-
-    assert created is None
-    assert "Invalid LLM config for openai_compatible" in caplog.text
-    assert "base_url" in caplog.text
-    assert "Field required" in caplog.text
+    with pytest.raises(LLMProviderError) as exc_info:
+        create_llm(
+            {
+                "provider": "openai_compatible",
+                "model": "gpt-4o-mini",
+                "api_key_env": "OPENAI_API_KEY",
+            }
+        )
+    assert "Invalid LLM config for openai_compatible" in str(exc_info.value)
+    assert "base_url" in str(exc_info.value)
+    assert "Field required" in str(exc_info.value)
 
 
 def test_create_llm_ignores_invalid_optional_openai_compatible_maps():
@@ -103,13 +99,11 @@ def test_create_llm_ignores_invalid_optional_openai_compatible_maps():
     assert created.reasoning is None
 
 
-def test_create_llm_returns_none_for_unknown_provider(caplog):
-    from minx_mcp.core.llm import create_llm
+def test_create_llm_raises_for_unknown_provider():
+    from minx_mcp.core.llm import LLMProviderError, create_llm
 
-    created = create_llm({"provider": "missing"})
-
-    assert created is None
-    assert "Unknown LLM provider" in caplog.text
+    with pytest.raises(LLMProviderError, match="Unknown LLM provider"):
+        create_llm({"provider": "missing"})
 
 
 @pytest.mark.asyncio
@@ -327,7 +321,7 @@ async def test_openai_compatible_llm_raises_provider_error_on_missing_key(monkey
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_llm_includes_status_and_body_on_http_error(monkeypatch):
+async def test_openai_compatible_llm_redacts_body_on_http_error(monkeypatch):
     from minx_mcp.core.llm import LLMProviderError
     from minx_mcp.core.llm_openai import OpenAICompatibleLLM
 
@@ -347,7 +341,8 @@ async def test_openai_compatible_llm_includes_status_and_body_on_http_error(monk
 
     message = str(exc_info.value)
     assert "HTTP 429" in message
-    assert "rate limit exceeded" in message
+    assert "response body redacted" in message
+    assert "rate limit exceeded" not in message
 
 
 @pytest.mark.asyncio

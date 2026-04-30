@@ -5,6 +5,8 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+.coverage
+htmlcov/
 .worktrees/
 .claude/
 .DS_Store

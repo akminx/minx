@@ -102,6 +102,36 @@ def test_training_session_list_rejects_invalid_date_window(db_path) -> None:
     assert "start_date must be on or before end_date" in result["error"]
 
 
+def test_training_session_list_rejects_invalid_limit(db_path) -> None:
+    server = create_training_server(TrainingService(db_path))
+
+    result = _call(server, "training_session_list", {"limit": 0})
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "limit must be between 1 and 500" in result["error"]
+
+
+def test_training_progress_summary_rejects_invalid_as_of(db_path) -> None:
+    server = create_training_server(TrainingService(db_path))
+
+    result = _call(server, "training_progress_summary", {"as_of": "not-a-date"})
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "as_of must be a valid ISO date" in result["error"]
+
+
+def test_training_progress_summary_rejects_invalid_lookback_days(db_path) -> None:
+    server = create_training_server(TrainingService(db_path))
+
+    result = _call(server, "training_progress_summary", {"lookback_days": 366})
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "lookback_days must be between 1 and 365" in result["error"]
+
+
 def test_training_session_log_rejects_invalid_occurred_at(db_path) -> None:
     server = create_training_server(TrainingService(db_path))
 

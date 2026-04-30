@@ -10,7 +10,7 @@ from pathlib import Path
 from minx_mcp.core import playbooks as playbook_api
 from minx_mcp.core.server import create_core_server
 from minx_mcp.db import get_connection
-from tests.helpers import MinxTestConfig, get_tool
+from tests.helpers import MinxTestConfig, get_tool, read_resource_text
 
 
 def _seed_running_row(
@@ -85,11 +85,6 @@ def _seed_terminal_row(
     conn.commit()
     assert cur.lastrowid is not None
     return int(cur.lastrowid)
-
-
-async def _read_resource(server, uri: str) -> str:
-    resource = await server._resource_manager.get_resource(uri)
-    return await resource.read()
 
 
 def test_start_and_complete_playbook_run_roundtrip(tmp_path: Path) -> None:
@@ -493,7 +488,7 @@ def _assert_structured_playbook_log(record: LogRecord) -> None:
 
 def test_playbook_registry_resource_is_json_manifest(tmp_path: Path) -> None:
     server = create_core_server(MinxTestConfig(tmp_path / "m.db", tmp_path / "vault"))
-    payload = json.loads(asyncio.run(_read_resource(server, "playbook://registry")))
+    payload = json.loads(asyncio.run(read_resource_text(server, "playbook://registry")))
     assert isinstance(payload, dict)
     assert "playbooks" in payload
 

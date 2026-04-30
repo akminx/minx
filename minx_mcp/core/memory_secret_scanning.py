@@ -230,10 +230,13 @@ def _scan_payload_value(
             safe_key = key_text
             key_verdict = scan_for_secrets(key_text)
             if key_verdict.findings:
-                safe_key = "[REDACTED_KEY]"
-                key_field = f"{field}.[REDACTED_KEY]"
+                safe_key = _unique_redacted_key(scanned)
+                key_field = f"{field}.{safe_key}"
                 for finding in key_verdict.findings:
                     acc.add_error(field=key_field, start=finding.start, end=finding.end, kind=finding.kind)
+            elif safe_key in scanned:
+                safe_key = _unique_payload_key(scanned, safe_key)
+                key_field = f"{field}.{safe_key}"
             scanned[safe_key] = _scan_payload_value(item, key_field, acc, scan_values=scan_values)
         return scanned
     if isinstance(value, list):
@@ -244,6 +247,27 @@ def _scan_payload_value(
     if isinstance(value, str) and scan_values:
         return _scan_redactable_field(field, value, acc)
     return value
+
+
+def _unique_redacted_key(scanned: dict[str, object]) -> str:
+    return _unique_payload_key(scanned, "[REDACTED_KEY]")
+
+
+def _unique_payload_key(scanned: dict[str, object], base: str) -> str:
+    if base not in scanned:
+        return base
+    suffix = 2
+    candidate = _suffixed_payload_key(base, suffix)
+    while candidate in scanned:
+        suffix += 1
+        candidate = _suffixed_payload_key(base, suffix)
+    return candidate
+
+
+def _suffixed_payload_key(base: str, suffix: int) -> str:
+    if base.endswith("]"):
+        return f"{base[:-1]}_{suffix}]"
+    return f"{base}_{suffix}"
 
 
 def raise_secret_detected(result: MemorySecretScanResult, *, surface: str = "memory") -> None:

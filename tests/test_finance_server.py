@@ -10,6 +10,7 @@ from minx_mcp.finance import __main__ as finance_main
 from minx_mcp.finance import server as finance_server_module
 from minx_mcp.finance.server import SAFE_TOOLS, SENSITIVE_TOOLS, create_finance_server
 from minx_mcp.finance.service import FinanceService
+from minx_mcp.preferences import set_preference
 from tests.helpers import call_tool_sync as _call_tool_sync
 from tests.helpers import get_tool
 
@@ -538,9 +539,85 @@ def test_finance_query_structured_path_rejects_unknown_canonical_filter_values(t
         assert result["error_code"] == "INVALID_INPUT"
 
 
+def test_finance_query_natural_path_rejects_unknown_canonical_filter_values(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    groceries_id = service.conn.execute(
+        "SELECT id FROM finance_categories WHERE name = 'Groceries'"
+    ).fetchone()["id"]
+    account_id = service.conn.execute(
+        "SELECT id FROM finance_accounts WHERE name = 'DCU'"
+    ).fetchone()["id"]
+    service.conn.execute(
+        """
+        INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint)
+        VALUES (1, ?, 'csv', 'seed.csv', 'fp')
+        """,
+        (account_id,),
+    )
+    service.conn.execute(
+        """
+        INSERT INTO finance_transactions (
+            account_id, batch_id, posted_at, description, merchant, amount_cents, category_id, category_source
+        ) VALUES (?, 1, '2026-03-12', 'Whole Foods Market', 'Whole Foods', -4520, ?, 'manual')
+        """,
+        (account_id, groceries_id),
+    )
+    service.conn.commit()
+    async def fake_interpret_finance_query(*args: object, **kwargs: object) -> FinanceQueryPlan:
+        return FinanceQueryPlan(
+            intent="list_transactions",
+            filters=FinanceQueryFilters(
+                start_date="2026-03-01",
+                end_date="2026-03-31",
+                merchant="Whole Fuds",
+            ),
+            confidence=0.94,
+            needs_clarification=False,
+        )
+
+    monkeypatch.setattr(
+        finance_server_module,
+        "interpret_finance_query",
+        fake_interpret_finance_query,
+    )
+    server = create_finance_server(service, llm=_StubFinanceQueryLLM("{}"))
+    finance_query = get_tool(server, "finance_query").fn
+
+    result = _call_tool_sync(
+        finance_query,
+        "show me everything at Whole Foods last month",
+        "2026-03-31",
+    )
+
+    assert result["success"] is False
+    assert result["data"] is None
+    assert result["error"] == "merchant must be a known canonical merchant name"
+    assert result["error_code"] == "INVALID_INPUT"
+
+
 def test_finance_query_rejects_injected_non_json_capable_llm(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service, llm=object())
+    finance_query = get_tool(server, "finance_query").fn
+
+    result = _call_tool_sync(finance_query, "show me transactions", "2026-03-31")
+
+    assert result["success"] is False
+    assert result["data"] is None
+    assert result["error"] == "finance_query requires a configured JSON-capable LLM"
+    assert result["error_code"] == "INVALID_INPUT"
+    assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_finance_query_bad_stored_llm_config_uses_configured_llm_error_contract(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    conn = get_connection(service.db_path)
+    set_preference(conn, "core", "llm_config", {"provider": "missing"})
+    conn.close()
+    server = create_finance_server(service)
     finance_query = get_tool(server, "finance_query").fn
 
     result = _call_tool_sync(finance_query, "show me transactions", "2026-03-31")

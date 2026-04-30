@@ -13,7 +13,7 @@ from minx_mcp.contracts import (
     wrap_tool_call,
 )
 from minx_mcp.core.interpretation.finance_query import interpret_finance_query
-from minx_mcp.core.llm import create_llm
+from minx_mcp.core.llm import LLMProviderError, create_llm
 from minx_mcp.core.models import JSONLLMInterface
 from minx_mcp.db import scoped_connection
 from minx_mcp.finance.importers import SUPPORTED_SOURCE_KINDS
@@ -548,6 +548,7 @@ async def _finance_query(
         description_contains=validated_filters.get("description_contains"),
     )
     with service:
+        _validate_structured_filter_canonical_values(service, validated_filters)
         return _execute_finance_query_plan(
             service,
             intent=plan.intent,
@@ -670,7 +671,10 @@ def _resolve_finance_query_llm(
             raise InvalidInputError("finance_query requires a configured JSON-capable LLM")
         return llm
 
-    configured = create_llm(db_path=service.db_path)
+    try:
+        configured = create_llm(db_path=service.db_path)
+    except LLMProviderError as exc:
+        raise InvalidInputError("finance_query requires a configured JSON-capable LLM") from exc
     if configured is None:
         raise InvalidInputError("finance_query requires a configured JSON-capable LLM")
     return configured

@@ -20,6 +20,7 @@ dev = [
   "mypy>=1.11.0",
   "pytest>=8.3.0",
   "pytest-asyncio>=0.24.0",
+  "pytest-cov>=7.1.0",
   "ruff>=0.4.0",
   "setuptools>=69",
   "wheel",
@@ -86,3 +87,11 @@ markers = [
 # and closes both sqlite connections and asyncio event loops per-test to keep
 # this clean; new leaks will fail fast rather than silently regress.
 filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["minx_mcp"]
+
+[tool.coverage.report]
+skip_empty = true
+show_missing = true

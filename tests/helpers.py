@@ -19,6 +19,17 @@ def get_tool(server, name: str):
     return server._tool_manager.get_tool(name)
 
 
+def list_tool_names(server) -> set[str]:
+    """Encapsulate private tool-manager enumeration for contract-style tests."""
+    return {tool.name for tool in server._tool_manager.list_tools()}
+
+
+async def read_resource_text(server, uri: str) -> str:
+    """Encapsulate private resource-manager access in one place."""
+    resource = await server._resource_manager.get_resource(uri)
+    return await resource.read()
+
+
 def call_tool_sync(fn, *args, **kwargs):
     """Call a sync or async tool function, blocking until complete."""
     result = fn(*args, **kwargs)

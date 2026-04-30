@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from minx_mcp.core.models import GoalCaptureResult
 from minx_mcp.core.server import create_core_server
 from minx_mcp.db import get_connection
+from minx_mcp.preferences import set_preference
 from tests.helpers import MinxTestConfig, get_tool
 from tests.helpers import call_tool_sync as _call_tool_sync
 
@@ -90,6 +93,24 @@ def test_goal_parse_tool_rejects_noncanonical_structured_create_input(tmp_path) 
 
     assert result["success"] is False
     assert result["error_code"] == "INVALID_INPUT"
+
+
+def test_goal_parse_tool_falls_back_when_stored_llm_config_is_invalid(tmp_path, caplog) -> None:
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    set_preference(conn, "core", "llm_config", {"provider": "missing"})
+    conn.close()
+    server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+    goal_parse = get_tool(server, "goal_parse").fn
+
+    with caplog.at_level(logging.WARNING, logger="minx_mcp.core.tools.goals"):
+        result = _call_tool_sync(goal_parse, message="what's for lunch?", review_date="2026-03-15")
+
+    assert result["success"] is True
+    assert result["data"]["result_type"] == "no_match"
+    assert result["data"]["response_template"] == "goal_parse.no_match.unsupported"
+    assert "using deterministic parser" in caplog.text
+    assert "missing" not in caplog.text
 
 
 def test_goal_parse_tool_supports_structured_update_input(tmp_path) -> None:

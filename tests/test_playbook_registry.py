@@ -5,21 +5,16 @@ import json
 from pathlib import Path
 
 from minx_mcp.core.server import create_core_server
-from tests.helpers import MinxTestConfig
-
-
-async def _read_resource(server, uri: str) -> str:
-    resource = await server._resource_manager.get_resource(uri)
-    return await resource.read()
+from tests.helpers import MinxTestConfig, list_tool_names, read_resource_text
 
 
 def test_playbook_registry_uses_namespaced_required_tools_and_allows_cross_server(
     tmp_path: Path,
 ) -> None:
     server = create_core_server(MinxTestConfig(tmp_path / "m.db", tmp_path / "vault"))
-    payload = json.loads(asyncio.run(_read_resource(server, "playbook://registry")))
+    payload = json.loads(asyncio.run(read_resource_text(server, "playbook://registry")))
 
-    core_tool_names = {tool.name for tool in server._tool_manager.list_tools()}
+    core_tool_names = list_tool_names(server)
     assert isinstance(payload, dict)
     assert "playbooks" in payload
     assert isinstance(payload["playbooks"], list)

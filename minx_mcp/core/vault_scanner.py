@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from sqlite3 import Connection
 
 from minx_mcp.contracts import InvalidInputError
+from minx_mcp.core.memory_fingerprints import memory_content_fingerprint
 from minx_mcp.core.memory_secret_scanning import prepare_validated_memory_write
 from minx_mcp.core.secret_scanner import scan_for_secrets
 from minx_mcp.core.vault_memory_frontmatter import (
@@ -446,18 +447,25 @@ class VaultScanner:
             # Terminal: clear the stale memory_id pointer in vault_index.
             return _MemorySyncResult(memory_id=None, clear_memory_id=True)
         if status == "candidate":
+            fingerprint = memory_content_fingerprint(
+                identity.memory_type,
+                payload,
+                scope=identity.scope,
+                subject=identity.subject,
+            )
             cur = self._conn.execute(
                 """
                 UPDATE memories
                 SET status = 'active',
                     confidence = 1.0,
                     payload_json = ?,
+                    content_fingerprint = ?,
                     source = 'vault_sync',
                     updated_at = datetime('now'),
                     last_confirmed_at = datetime('now')
                 WHERE id = ? AND status = 'candidate'
                 """,
-                (json.dumps(payload, sort_keys=True), memory_id),
+                (json.dumps(payload, sort_keys=True), fingerprint, memory_id),
             )
             if cur.rowcount == 0:
                 warnings.append(
@@ -478,15 +486,22 @@ class VaultScanner:
             )
             return _MemorySyncResult(memory_id=memory_id)
 
+        fingerprint = memory_content_fingerprint(
+            identity.memory_type,
+            payload,
+            scope=identity.scope,
+            subject=identity.subject,
+        )
         cur = self._conn.execute(
             """
             UPDATE memories
             SET payload_json = ?,
+                content_fingerprint = ?,
                 source = CASE WHEN source = '' THEN 'vault_sync' ELSE source END,
                 updated_at = datetime('now')
             WHERE id = ? AND status = 'active'
             """,
-            (json.dumps(payload, sort_keys=True), memory_id),
+            (json.dumps(payload, sort_keys=True), fingerprint, memory_id),
         )
         if cur.rowcount == 0:
             warnings.append(
@@ -511,12 +526,19 @@ class VaultScanner:
         reason: str,
         redaction_payload: dict[str, object] | None,
     ) -> int:
+        fingerprint = memory_content_fingerprint(
+            identity.memory_type,
+            payload,
+            scope=identity.scope,
+            subject=identity.subject,
+        )
         cur = self._conn.execute(
             """
             INSERT INTO memories (
                 memory_type, scope, subject, confidence, status,
-                payload_json, source, reason, created_at, updated_at, last_confirmed_at
-            ) VALUES (?, ?, ?, 1.0, 'active', ?, 'vault_sync', ?, datetime('now'), datetime('now'), datetime('now'))
+                payload_json, source, reason, content_fingerprint,
+                created_at, updated_at, last_confirmed_at
+            ) VALUES (?, ?, ?, 1.0, 'active', ?, 'vault_sync', ?, ?, datetime('now'), datetime('now'), datetime('now'))
             """,
             (
                 identity.memory_type,
@@ -524,6 +546,7 @@ class VaultScanner:
                 identity.subject,
                 json.dumps(payload, sort_keys=True),
                 reason,
+                fingerprint,
             ),
         )
         if cur.lastrowid is None:

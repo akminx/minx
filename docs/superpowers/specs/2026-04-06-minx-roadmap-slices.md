@@ -1,7 +1,7 @@
 # Minx Life OS Roadmap — Implementation Slices
 
 **Date:** 2026-04-06
-**Status:** Active (updated 2026-04-27 after Slice 6 completion fixes + Slice 8 Core-side autonomy)
+**Status:** Active roadmap, refreshed 2026-04-30 after Slice 9 investigation storage and Hermes runner integration.
 **Parent:** [Minx Life OS Architecture Design](2026-04-06-minx-life-os-architecture-design.md)
 
 Each slice gets its own spec, plan, and implementation cycle. The roadmap is ordered by dependency and by trust: Minx should first become useful, then cross-domain, then harness-aware, then durable, and only after that more autonomous.
@@ -17,11 +17,11 @@ The roadmap now follows four arcs:
 
 From the current repo baseline, the next recommended execution order is:
 
-1. Slice 9d: the real Hermes `minx_investigate` loop, built on the merged Core investigation APIs
-2. Slice 9e-9g: planning/retro/onboarding investigation surfaces and prior-investigation retrieval
-3. Observability/evals: traces or structured run logs, repeatable investigation/playbook smoke scenarios, and health summaries
-4. Dashboard + Richer Surfaces, as a separate presentation layer for inspecting state and audit trails
-5. Slice 7: Ideas/Journal MCP, when the journal domain becomes the next product priority
+1. Real-data smokes: import statements, sync vault recipes, log workouts, and run Hermes investigations against actual questions.
+2. Observability/evals: repeatable investigation/playbook scenarios, budget exhaustion checks, and health summaries for model/provider swaps.
+3. Dashboard + richer read-only surfaces for inspecting goals, memories, playbooks, and investigation audit trails.
+4. Slice 7: Ideas/Journal MCP, when the journal domain becomes the next product priority.
+5. Cross-repo contract hygiene with `minx-hermes`: keep tool routing, allowlists, and render-template expectations explicit as both repos evolve.
 
 Slice 5 (Harness Adaptation) has been removed. The MCP protocol itself provides portability. Harness-specific behavior lives in the harness (e.g. Hermes skill files), not in Core. See the MCP / Harness Responsibility Split section in the architecture design.
 
@@ -30,7 +30,7 @@ This ordering preserves the architecture doc's north star:
 - Minx Core stays the owner of interpretation
 - domains stay the owner of facts
 - harness-specific instance setup stays outside Core and arrives later than the reusable Core contracts
-- autonomy waits until memory, trust, and review durability are mature enough; agentic investigations should wait for memory search/graph/enrichment to be usable
+- autonomy remains bounded by memory, trust, and review durability; shipped Hermes investigations must continue to rely on Core's structured storage, budgets, and audit trails rather than ad hoc harness state
 
 ---
 
@@ -345,9 +345,9 @@ Slice 1 (Events + Review)
               |
               +---> Dashboard + Richer Surfaces
 
-Slice 5 (Harness Adaptation) removed — portability is provided by MCP protocol.
+Slice 5 (Harness Adaptation) removed; portability is provided by MCP protocol.
 Slice 2.5 should be done before Slice 3 to establish the harness-ready tool surface.
-Agentic Investigations depend on the remaining Slice 6 retrieval/enrichment work.
+Agentic Investigations now build on the implemented Slice 6 memory/search/enrichment base.
 Dashboard work also depends on Slice 2 and benefits strongly from Slices 3-6.
 ```
 

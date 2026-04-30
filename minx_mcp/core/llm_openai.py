@@ -221,17 +221,10 @@ def _require_tool_argument_object(name: str, parsed_args: Any) -> dict[str, Any]
 
 def _format_http_status_error(exc: httpx.HTTPStatusError) -> str:
     status = exc.response.status_code
-    body = exc.response.text.strip()
-    if not body:
-        return f"LLM provider HTTP {status}: {exc.request.method} {exc.request.url}"
     return (
-        f"LLM provider HTTP {status}: {exc.request.method} {exc.request.url}: "
-        f"{_preview_response_body(body)}"
+        f"LLM provider HTTP {status}: {exc.request.method} {exc.request.url} "
+        "(response body redacted)"
     )
-
-
-def _preview_response_body(body: str, limit: int = 512) -> str:
-    return body if len(body) <= limit else f"{body[:limit]}..."
 
 
 def _extract_assistant_message(payload: dict[str, Any]) -> dict[str, Any]:

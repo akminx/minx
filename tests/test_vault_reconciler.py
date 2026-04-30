@@ -104,6 +104,7 @@ def test_vault_reconcile_creates_memory_and_refreshes_frontmatter(tmp_path: Path
         "category": "timezone",
         "value": "America/Chicago",
     }
+    assert row["content_fingerprint"] is not None
     text = note.read_text(encoding="utf-8")
     assert f"memory_id: {row['id']}" in text
     assert f'sync_base_updated_at: "{row["updated_at"]}"' in text
@@ -615,6 +616,10 @@ def test_vault_reconcile_updates_non_vault_memory_when_sync_base_matches(
         source="user",
         actor="user",
     )
+    original_fingerprint = conn.execute(
+        "SELECT content_fingerprint FROM memories WHERE id = ?",
+        (memory.id,),
+    ).fetchone()["content_fingerprint"]
     conn.close()
     note = vault / "Minx" / "Memory" / "timezone.md"
     _write(
@@ -635,7 +640,10 @@ def test_vault_reconcile_updates_non_vault_memory_when_sync_base_matches(
 
     assert result["success"] is True
     assert result["data"]["report"]["updated"] == 1
-    assert json.loads(_memory_row(db_path, "timezone")["payload_json"])["value"] == ("America/Chicago")
+    updated = _memory_row(db_path, "timezone")
+    assert json.loads(updated["payload_json"])["value"] == ("America/Chicago")
+    assert updated["content_fingerprint"] is not None
+    assert updated["content_fingerprint"] != original_fingerprint
 
 
 def test_vault_reconcile_conflicts_on_memory_id_without_sync_base_for_active(

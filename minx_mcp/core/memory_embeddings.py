@@ -20,14 +20,10 @@ import httpx
 from minx_mcp.contracts import ConflictError, InvalidInputError, LLMError, NotFoundError
 from minx_mcp.core.enrichment_queue import EnrichmentHandler, EnrichmentJob, enqueue_enrichment_job
 from minx_mcp.core.fingerprint import content_fingerprint
+from minx_mcp.core.memory_fingerprints import memory_fingerprint_input
 from minx_mcp.core.memory_models import MemoryRecord
 from minx_mcp.core.memory_payloads import coerce_prior_payload_to_schema
-from minx_mcp.core.memory_service import (
-    MemorySearchResult,
-    MemoryService,
-    _memory_fingerprint_input,
-    memory_record_as_dict,
-)
+from minx_mcp.core.memory_service import MemorySearchResult, MemoryService, memory_record_as_dict
 from minx_mcp.core.secret_scanner import scan_for_secrets
 from minx_mcp.validation import parse_payload_json, require_non_empty
 
@@ -425,7 +421,7 @@ def _compute_memory_content_fingerprint(
     except Exception:
         payload = {}
     try:
-        parts = _memory_fingerprint_input(memory_type, payload, scope=scope, subject=subject)
+        parts = memory_fingerprint_input(memory_type, payload, scope=scope, subject=subject)
     except Exception:
         parts = (memory_type, scope, subject, "", "")
     return content_fingerprint(*parts)

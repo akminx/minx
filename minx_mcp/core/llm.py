@@ -111,26 +111,18 @@ def create_llm(
 
     provider_name = resolved.get("provider")
     if not isinstance(provider_name, str) or not provider_name:
-        logger.warning("LLM config missing provider; falling back to template review")
-        return None
+        raise LLMProviderError("LLM config missing provider")
 
     builder = _PROVIDER_BUILDERS.get(provider_name)
     if builder is None:
-        logger.warning(
-            "Unknown LLM provider %s; falling back to template review",
-            provider_name,
-        )
-        return None
+        raise LLMProviderError(f"Unknown LLM provider: {provider_name}")
 
     try:
         return builder(resolved)
+    except LLMProviderError:
+        raise
     except Exception as exc:
-        logger.warning(
-            "LLM provider setup failed for %s: %s",
-            provider_name,
-            exc,
-        )
-        return None
+        raise LLMProviderError(f"LLM provider setup failed for {provider_name}: {exc}") from exc
 
 
 def extract_openai_message_content(payload: Any) -> str:

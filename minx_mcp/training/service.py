@@ -20,6 +20,7 @@ from minx_mcp.training.models import (
 from minx_mcp.training.progression import adherence_signal_for_window
 
 EVENT_SOURCE = "training.service"
+MAX_PROGRESS_LOOKBACK_DAYS = 365
 
 
 class TrainingService(BaseService):
@@ -498,8 +499,8 @@ class TrainingService(BaseService):
         as_of: str | None = None,
         lookback_days: int = 7,
     ) -> TrainingProgressSummary:
-        if lookback_days <= 0:
-            raise InvalidInputError("lookback_days must be positive")
+        if lookback_days < 1 or lookback_days > MAX_PROGRESS_LOOKBACK_DAYS:
+            raise InvalidInputError(f"lookback_days must be between 1 and {MAX_PROGRESS_LOOKBACK_DAYS}")
         review_date = as_of or date.today().isoformat()
         timezone_name = resolve_timezone_name(self.conn)
         end_utc = local_day_utc_bounds(review_date, timezone_name)[1]

@@ -27,6 +27,7 @@ from sqlite3 import Connection, Row
 from typing import cast
 
 from minx_mcp.contracts import InvalidInputError
+from minx_mcp.core.memory_fingerprints import memory_content_fingerprint
 from minx_mcp.core.memory_secret_scanning import prepare_validated_memory_write
 from minx_mcp.core.secret_scanner import scan_for_secrets
 from minx_mcp.core.vault_memory_frontmatter import (
@@ -454,13 +455,19 @@ class VaultReconciler:
                 updated_at=str(row["updated_at"]),
                 payload=prior_payload,
             )
+        fingerprint = memory_content_fingerprint(
+            identity.memory_type,
+            payload,
+            scope=identity.scope,
+            subject=identity.subject,
+        )
         cur = self._conn.execute(
             """
             UPDATE memories
-            SET payload_json = ?, updated_at = datetime('now')
+            SET payload_json = ?, content_fingerprint = ?, updated_at = datetime('now')
             WHERE id = ? AND status = 'active'
             """,
-            (_canonical_payload_json(payload), memory_id),
+            (_canonical_payload_json(payload), fingerprint, memory_id),
         )
         if cur.rowcount != 1:
             raise _SkipNoteError(
@@ -601,12 +608,19 @@ class VaultReconciler:
         reason: str = "vault reconcile",
         redaction_payload: dict[str, object] | None = None,
     ) -> _ApplyResult:
+        fingerprint = memory_content_fingerprint(
+            identity.memory_type,
+            payload,
+            scope=identity.scope,
+            subject=identity.subject,
+        )
         cur = self._conn.execute(
             """
             INSERT INTO memories (
                 memory_type, scope, subject, confidence, status,
-                payload_json, source, reason, created_at, updated_at, last_confirmed_at
-            ) VALUES (?, ?, ?, 1.0, 'active', ?, 'vault_sync', ?, datetime('now'), datetime('now'), datetime('now'))
+                payload_json, source, reason, content_fingerprint,
+                created_at, updated_at, last_confirmed_at
+            ) VALUES (?, ?, ?, 1.0, 'active', ?, 'vault_sync', ?, ?, datetime('now'), datetime('now'), datetime('now'))
             """,
             (
                 identity.memory_type,
@@ -614,6 +628,7 @@ class VaultReconciler:
                 identity.subject,
                 _canonical_payload_json(payload),
                 reason,
+                fingerprint,
             ),
         )
         if cur.lastrowid is None:
@@ -654,17 +669,24 @@ class VaultReconciler:
             identity.sync_base_updated_at is None
             and _row_updated_after_note_mtime(row, note_mtime_utc)
         )
+        fingerprint = memory_content_fingerprint(
+            identity.memory_type,
+            payload,
+            scope=identity.scope,
+            subject=identity.subject,
+        )
         cur = self._conn.execute(
             """
             UPDATE memories
             SET status = 'active',
                 confidence = 1.0,
                 payload_json = ?,
+                content_fingerprint = ?,
                 updated_at = datetime('now'),
                 last_confirmed_at = datetime('now')
             WHERE id = ? AND status = 'candidate'
             """,
-            (_canonical_payload_json(payload), memory_id),
+            (_canonical_payload_json(payload), fingerprint, memory_id),
         )
         if cur.rowcount != 1:
             raise _SkipNoteError(

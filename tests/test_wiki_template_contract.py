@@ -4,18 +4,13 @@ import asyncio
 from pathlib import Path
 
 from minx_mcp.core.server import create_core_server
-from tests.helpers import MinxTestConfig, get_tool
-
-
-async def _read_resource(server, uri: str) -> str:
-    resource = await server._resource_manager.get_resource(uri)
-    return await resource.read()
+from tests.helpers import MinxTestConfig, get_tool, read_resource_text
 
 
 def test_non_memory_wiki_templates_keep_minx_wiki_frontmatter(tmp_path: Path) -> None:
     server = create_core_server(MinxTestConfig(tmp_path / "m.db", tmp_path / "vault"))
     for name in ("entity", "pattern", "review", "goal"):
-        template = asyncio.run(_read_resource(server, f"wiki-templates://{name}"))
+        template = asyncio.run(read_resource_text(server, f"wiki-templates://{name}"))
         assert "type: minx-wiki" in template
         assert "type: minx-memory" not in template
 

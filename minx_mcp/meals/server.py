@@ -66,17 +66,14 @@ def create_meals_server(service: MealsService) -> FastMCP:
         low_stock_threshold: float | None = None,
     ) -> ToolResponse:
         return wrap_tool_call(
-            lambda: {
-                "item": asdict(
-                    service.update_pantry_item(
-                        item_id,
-                        quantity=quantity,
-                        unit=unit,
-                        expiration_date=expiration_date,
-                        low_stock_threshold=low_stock_threshold,
-                    )
-                )
-            },
+            lambda: _pantry_update(
+                service,
+                item_id=item_id,
+                quantity=quantity,
+                unit=unit,
+                expiration_date=expiration_date,
+                low_stock_threshold=low_stock_threshold,
+            ),
             tool_name="pantry_update",
         )
 
@@ -243,6 +240,30 @@ def _pantry_add(
         "item": asdict(
             service.add_pantry_item(
                 display_name=name,
+                quantity=quantity,
+                unit=unit,
+                expiration_date=expiration_date,
+                low_stock_threshold=low_stock_threshold,
+            )
+        )
+    }
+
+
+def _pantry_update(
+    service: MealsService,
+    *,
+    item_id: int,
+    quantity: float | None,
+    unit: str | None,
+    expiration_date: str | None,
+    low_stock_threshold: float | None,
+) -> dict[str, object]:
+    if expiration_date is not None:
+        validate_iso_date(expiration_date, field_name="expiration_date")
+    return {
+        "item": asdict(
+            service.update_pantry_item(
+                item_id,
                 quantity=quantity,
                 unit=unit,
                 expiration_date=expiration_date,

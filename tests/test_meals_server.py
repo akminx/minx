@@ -80,6 +80,26 @@ def test_pantry_add_tool_rejects_blank_display_name(db_path, tmp_path) -> None:
     assert "display_name must not be empty" in result["error"]
 
 
+def test_pantry_update_rejects_invalid_expiration_date(db_path, tmp_path) -> None:
+    server = create_meals_server(MealsService(db_path, vault_root=tmp_path))
+    added = _call(
+        server,
+        "pantry_add",
+        {"display_name": "Milk", "expiration_date": "2026-05-01"},
+    )
+    assert added["success"] is True
+
+    result = _call(
+        server,
+        "pantry_update",
+        {"item_id": added["data"]["item"]["id"], "expiration_date": "not-a-date"},
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "expiration_date must be a valid ISO date" in result["error"]
+
+
 def test_launcher_server_manifest_includes_meals() -> None:
     from minx_mcp.launcher import SERVERS
 

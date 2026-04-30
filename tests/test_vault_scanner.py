@@ -173,6 +173,8 @@ def test_vault_scanner_syncs_memory_notes_and_orphans_deleted_index_rows(tmp_pat
     assert memory["status"] == "active"
     assert memory["source"] == "vault_sync"
     assert json.loads(memory["payload_json"]) == {"category": "timezone", "value": "UTC"}
+    created_fingerprint = memory["content_fingerprint"]
+    assert created_fingerprint is not None
     assert conn.execute("SELECT memory_id FROM vault_index").fetchone()["memory_id"] == memory["id"]
     assert (
         conn.execute(
@@ -200,8 +202,14 @@ def test_vault_scanner_syncs_memory_notes_and_orphans_deleted_index_rows(tmp_pat
 
     assert updated.updated == 1
     assert updated.memory_syncs == 1
-    payload = json.loads(conn.execute("SELECT payload_json FROM memories WHERE id = ?", (memory["id"],)).fetchone()[0])
+    refreshed = conn.execute(
+        "SELECT payload_json, content_fingerprint FROM memories WHERE id = ?",
+        (memory["id"],),
+    ).fetchone()
+    payload = json.loads(refreshed["payload_json"])
     assert payload == {"category": "timezone", "value": "America/Chicago"}
+    assert refreshed["content_fingerprint"] is not None
+    assert refreshed["content_fingerprint"] != created_fingerprint
 
     note.unlink()
     orphaned = scanner.scan()
