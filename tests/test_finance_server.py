@@ -933,6 +933,38 @@ def test_sensitive_query_tool_rejects_large_limit(tmp_path):
     }
 
 
+def test_sensitive_finance_query_rejects_non_integer_limit(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    sensitive = get_tool(server, "sensitive_finance_query").fn
+
+    for limit in (True, 1.5):
+        result = sensitive(limit=limit)
+
+        assert result == {
+            "success": False,
+            "data": None,
+            "error": "limit must be an integer",
+            "error_code": "INVALID_INPUT",
+        }
+
+
+def test_finance_query_rejects_non_integer_limit(tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
+    server = create_finance_server(service)
+    finance_query = get_tool(server, "finance_query").fn
+
+    for limit in (True, 1.5):
+        result = _call_tool_sync(finance_query, intent="sum_spending", limit=limit)
+
+        assert result == {
+            "success": False,
+            "data": None,
+            "error": "limit must be an integer",
+            "error_code": "INVALID_INPUT",
+        }
+
+
 def test_tool_calls_close_thread_local_connection_after_use(tmp_path):
     service = FinanceService(tmp_path / "minx.db", tmp_path / "vault")
     server = create_finance_server(service)

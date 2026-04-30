@@ -26,6 +26,7 @@ from minx_mcp.validation import (
     require_payload_object,
     require_str,
     resolve_date_or_today,
+    validate_limit,
 )
 from minx_mcp.validation import (
     validate_date_window as _validate_date_window,
@@ -256,7 +257,7 @@ def create_finance_server(
 
     @mcp.tool(name="sensitive_finance_query")
     def sensitive_finance_query(
-        limit: int = 50,
+        limit: object = 50,
         session_ref: str | None = None,
         *,
         start_date: str | None = None,
@@ -290,7 +291,7 @@ def create_finance_server(
         message: str | None = None,
         review_date: str | None = None,
         session_ref: str | None = None,
-        limit: int = 50,
+        limit: object = 50,
         *,
         intent: str | None = None,
         filters: dict[str, object] | None = None,
@@ -445,7 +446,7 @@ def _finance_generate_monthly_report(
 
 def _sensitive_finance_query(
     service: FinanceServiceLike,
-    limit: int,
+    limit: object,
     session_ref: str | None,
     start_date: str | None,
     end_date: str | None,
@@ -454,8 +455,7 @@ def _sensitive_finance_query(
     account_name: str | None,
     description_contains: str | None,
 ) -> dict[str, object]:
-    if limit < 1 or limit > MAX_SENSITIVE_QUERY_LIMIT:
-        raise InvalidInputError(f"limit must be between 1 and {MAX_SENSITIVE_QUERY_LIMIT}")
+    validated_limit = validate_limit(limit, maximum=MAX_SENSITIVE_QUERY_LIMIT)
     _validate_date_range(start_date, end_date)
     _validate_optional_text_filters(
         category_name=category_name,
@@ -465,7 +465,7 @@ def _sensitive_finance_query(
     )
     with service:
         return service.sensitive_finance_query(
-            limit=limit,
+            limit=validated_limit,
             session_ref=session_ref,
             audit_tool_name="sensitive_finance_query",
             start_date=start_date,
@@ -486,11 +486,10 @@ async def _finance_query(
     message: str | None,
     review_date: str | None,
     session_ref: str | None,
-    limit: int,
+    limit: object,
     llm: JSONLLMInterface | None,
 ) -> dict[str, object]:
-    if limit < 1 or limit > MAX_SENSITIVE_QUERY_LIMIT:
-        raise InvalidInputError(f"limit must be between 1 and {MAX_SENSITIVE_QUERY_LIMIT}")
+    validated_limit = validate_limit(limit, maximum=MAX_SENSITIVE_QUERY_LIMIT)
 
     if natural_query is not None and message is not None:
         raise InvalidInputError("message and natural_query may not both be provided")
@@ -510,7 +509,7 @@ async def _finance_query(
                 filters=validated_filters,
                 confidence=1.0,
                 session_ref=session_ref,
-                limit=limit,
+                limit=validated_limit,
             )
 
     if effective_message is None:
@@ -555,7 +554,7 @@ async def _finance_query(
             filters=validated_filters,
             confidence=plan.confidence,
             session_ref=session_ref,
-            limit=limit,
+            limit=validated_limit,
         )
 
 

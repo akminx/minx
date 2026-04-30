@@ -70,6 +70,23 @@ def test_meal_log_tool_rejects_invalid_occurred_at_before_service_write(db_path,
     assert "occurred_at must be a valid ISO timestamp" in result["error"]
 
 
+def test_meal_log_tool_rejects_blank_meal_kind(db_path, tmp_path) -> None:
+    server = create_meals_server(MealsService(db_path, vault_root=tmp_path))
+
+    result = _call(
+        server,
+        "meal_log",
+        {
+            "meal_kind": "   ",
+            "occurred_at": "2026-04-12T12:00:00Z",
+        },
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert "meal_kind must not be empty" in result["error"]
+
+
 def test_pantry_add_tool_rejects_blank_display_name(db_path, tmp_path) -> None:
     server = create_meals_server(MealsService(db_path, vault_root=tmp_path))
 

@@ -132,6 +132,21 @@ def test_training_progress_summary_rejects_invalid_lookback_days(db_path) -> Non
     assert "lookback_days must be between 1 and 365" in result["error"]
 
 
+def test_training_progress_summary_rejects_non_integer_lookback_days(db_path) -> None:
+    server = create_training_server(TrainingService(db_path))
+
+    for lookback_days in (True, 1.5):
+        result = _call(
+            server,
+            "training_progress_summary",
+            {"lookback_days": lookback_days},
+        )
+
+        assert result["success"] is False
+        assert result["error_code"] == "INVALID_INPUT"
+        assert "lookback_days must be an integer" in result["error"]
+
+
 def test_training_session_log_rejects_invalid_occurred_at(db_path) -> None:
     server = create_training_server(TrainingService(db_path))
 

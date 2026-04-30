@@ -5,7 +5,7 @@ from dataclasses import asdict
 from mcp.server.fastmcp import FastMCP
 
 from minx_mcp.contracts import ToolResponse, wrap_tool_call
-from minx_mcp.training.service import TrainingService
+from minx_mcp.training.service import MAX_PROGRESS_LOOKBACK_DAYS, TrainingService
 from minx_mcp.transport import health_payload
 from minx_mcp.validation import (
     require_non_empty,
@@ -114,7 +114,7 @@ def create_training_server(service: TrainingService) -> FastMCP:
     @mcp.tool(name="training_progress_summary")
     def training_progress_summary(
         as_of: str | None = None,
-        lookback_days: int = 7,
+        lookback_days: object = 7,
     ) -> ToolResponse:
         return wrap_tool_call(
             lambda: _training_progress_summary(
@@ -199,8 +199,17 @@ def _training_progress_summary(
     service: TrainingService,
     *,
     as_of: str | None,
-    lookback_days: int,
+    lookback_days: object,
 ) -> dict[str, object]:
     if as_of is not None:
         validate_iso_date(as_of, field_name="as_of")
-    return {"summary": asdict(service.get_progress_summary(as_of=as_of, lookback_days=lookback_days))}
+    validated_lookback_days = validate_limit(
+        lookback_days,
+        maximum=MAX_PROGRESS_LOOKBACK_DAYS,
+        field_name="lookback_days",
+    )
+    return {
+        "summary": asdict(
+            service.get_progress_summary(as_of=as_of, lookback_days=validated_lookback_days)
+        )
+    }

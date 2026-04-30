@@ -7,6 +7,14 @@ import json
 from minx_mcp.core.fingerprint import content_fingerprint, normalize_for_fingerprint
 from minx_mcp.core.memory_payloads import PAYLOAD_MODELS
 
+_FINGERPRINTED_MEMORY_TYPES = frozenset({"preference", "pattern", "entity_fact", "constraint"})
+
+
+def fingerprinted_memory_types() -> frozenset[str]:
+    """Return registered payload types with explicit content-fingerprint mappings."""
+
+    return _FINGERPRINTED_MEMORY_TYPES
+
 
 def _canonical_aliases(aliases: object) -> str:
     """Canonical JSON form of an aliases list for fingerprinting."""

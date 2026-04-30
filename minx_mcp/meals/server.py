@@ -209,11 +209,12 @@ def _meal_log(
     protein_grams: float | None,
     calories: int | None,
 ) -> dict[str, object]:
+    kind = require_non_empty("meal_kind", meal_kind).strip()
     validate_iso_datetime(occurred_at, field_name="occurred_at")
     return {
         "meal": asdict(
             service.log_meal(
-                meal_kind=meal_kind,
+                meal_kind=kind,
                 occurred_at=occurred_at,
                 summary=summary,
                 food_items=food_items,

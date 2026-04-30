@@ -303,7 +303,7 @@ def redaction_event_payload(*results: MemorySecretScanResult) -> dict[str, objec
             for location in result.audit_locations
         }
     )
-    if not kinds or not fields:
+    if not kinds:
         return None
     return {"secret_redacted": {"detected_kinds": kinds, "fields": fields}}
 

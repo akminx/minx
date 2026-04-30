@@ -59,7 +59,7 @@ def validate_iso_datetime(value: str, *, field_name: str) -> datetime:
         raise InvalidInputError(f"{field_name} must be a valid ISO timestamp") from exc
 
 
-def validate_limit(value: int, *, maximum: int = 500, field_name: str = "limit") -> int:
+def validate_limit(value: object, *, maximum: int = 500, field_name: str = "limit") -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise InvalidInputError(f"{field_name} must be an integer")
     if value < 1 or value > maximum:

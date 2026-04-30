@@ -446,8 +446,14 @@ class VaultReconciler:
                 redaction_payload=redaction_payload,
             )
 
-        self._check_active_conflict(row, identity, doc.relative_path)
         prior_payload = _parse_payload_json(str(row["payload_json"]))
+        self._check_active_conflict(
+            row,
+            identity,
+            doc.relative_path,
+            incoming_payload=payload,
+            prior_payload=prior_payload,
+        )
         if _canonical_payload_json(prior_payload) == _canonical_payload_json(payload):
             return _ApplyResult(
                 outcome="skipped",
@@ -559,10 +565,15 @@ class VaultReconciler:
         row: Row,
         identity: MemoryIdentity,
         vault_path: str,
+        *,
+        incoming_payload: dict[str, object],
+        prior_payload: dict[str, object],
     ) -> None:
         db_updated_at = str(row["updated_at"])
         if identity.sync_base_updated_at is not None:
             if db_updated_at != identity.sync_base_updated_at:
+                if _canonical_payload_json(prior_payload) == _canonical_payload_json(incoming_payload):
+                    return
                 raise _SkipNoteError(_conflict_warning(row, identity, vault_path))
             return
         if identity.memory_id is not None:

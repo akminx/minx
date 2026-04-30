@@ -4,6 +4,7 @@ import pytest
 
 from minx_mcp.contracts import InvalidInputError
 from minx_mcp.core.memory_secret_scanning import (
+    MemorySecretScanResult,
     prepare_validated_memory_write,
     raise_secret_detected,
     redaction_event_payload,
@@ -139,3 +140,25 @@ def test_prepare_validated_memory_write_blocks_secret_in_identity_fields() -> No
 
     assert excinfo.value.data["kind"] == "secret_detected"
     assert secret not in str(excinfo.value.data)
+
+
+def test_redaction_event_payload_preserves_redaction_kind_without_audit_fields() -> None:
+    result = MemorySecretScanResult(
+        verdict=SecretVerdictKind.REDACTED,
+        memory_type="preference",
+        scope="core",
+        subject="api",
+        source="user",
+        reason="manual",
+        payload={},
+        detected_kinds=("github_token",),
+        error_locations=(),
+        audit_locations=(),
+    )
+
+    assert redaction_event_payload(result) == {
+        "secret_redacted": {
+            "detected_kinds": ["github_token"],
+            "fields": [],
+        }
+    }
