@@ -2,24 +2,36 @@
 
 Minx is a local-first personal operating system built around four MCP servers and a separate agentic harness. The boundary is the core design choice: durable data and deterministic domain logic stay in `minx`; conversation, scheduling, tool choice, and final prose stay in `minx-hermes` or another MCP harness.
 
-## System Map
+## System Context
 
 ```mermaid
-flowchart LR
-    user["User interfaces"] --> hermes["minx-hermes or another harness"]
-    hermes --> model["Configured OpenAI-compatible model endpoint"]
-    hermes --> core["Core MCP"]
-    hermes --> finance["Finance MCP"]
-    hermes --> meals["Meals MCP"]
-    hermes --> training["Training MCP"]
-    finance --> sqlite["SQLite"]
+flowchart TB
+    user["User"] --> interfaces["Discord / CLI / Obsidian"]
+    interfaces --> harness["minx-hermes or another MCP harness"]
+
+    harness --> model["OpenAI-compatible model endpoint"]
+    harness --> policy["Tool policy, budgets, confirmations, final prose"]
+
+    harness --> core["Core MCP :8001"]
+    harness --> finance["Finance MCP :8000"]
+    harness --> meals["Meals MCP :8002"]
+    harness --> training["Training MCP :8003"]
+
+    core --> sqlite["SQLite"]
+    finance --> sqlite
     meals --> sqlite
     training --> sqlite
-    core --> sqlite
-    core --> vault["Obsidian vault"]
+
+    core <--> vault["Obsidian vault"]
+    meals <--> vault
+
+    core --> safety["Validation, fingerprints, secret scanning"]
+    finance --> safety
+    meals --> safety
+    training --> safety
 ```
 
-The harness can ask questions, choose read tools, and compose the answer. The MCP servers own the records and return structured data. Core also stores the audit trail for playbooks and investigations, so runs remain inspectable after the model turn is gone.
+Read this as an ownership map. The harness can ask questions, choose tools, request confirmations, call the model, and compose the answer. The MCP servers own deterministic domain logic, validation, migrations, durable records, render hints, and audit trails. SQLite is the structured source of truth; the vault is a human-readable/editable surface projected from, and reconciled back into, structured state.
 
 ## Repositories
 
@@ -40,13 +52,81 @@ The harness can ask questions, choose read tools, and compose the answer. The MC
 
 Each server can run over stdio for local MCP clients or HTTP for the Hermes stack. `scripts/start_hermes_stack.sh` starts the four HTTP servers together.
 
-## Data Flow
+## Runtime Tool Flow
 
-1. Domain tools write structured rows to SQLite and project selected records into the vault when appropriate.
-2. Core builds cross-domain read models from finance, meals, training, goals, and memory.
-3. Hermes or another harness asks questions and calls read tools through MCP.
-4. Investigation runs append digest-only steps to Core: tool name, argument digest, result digest, latency, and small render slots.
-5. Hermes writes the final user-facing answer; Core stores durable facts, citations, lifecycle state, and render hints.
+```mermaid
+sequenceDiagram
+    actor User
+    participant Harness as minx-hermes / MCP harness
+    participant Model as Model endpoint
+    participant Core as Core MCP
+    participant Domain as Finance / Meals / Training MCP
+    participant DB as SQLite
+
+    User->>Harness: Ask a question or request an action
+    Harness->>Model: Plan next step within budgets
+    Model-->>Harness: Tool call intent
+    Harness->>Core: Cross-domain reads, memory, goals, audits
+    Harness->>Domain: Domain-specific tool calls
+    Core->>DB: Read/write structured state
+    Domain->>DB: Read/write structured state
+    Core-->>Harness: Structured facts and render hints
+    Domain-->>Harness: Structured domain results
+    Harness->>Core: Store digest-only investigation/playbook step
+    Harness-->>User: Final prose and confirmations
+```
+
+The runtime path is intentionally split. Minx returns structured data, stable template ids, citations, and small render slots; the harness turns that into user-facing language. Investigation and playbook runs keep digest-only audit records in Core so later review does not depend on the original model context.
+
+## Persistence And Sync Flow
+
+```mermaid
+flowchart LR
+    subgraph MCP["MCP servers"]
+        core["Core tools"]
+        finance["Finance tools"]
+        meals["Meals tools"]
+        training["Training tools"]
+    end
+
+    subgraph Gates["Safety gates"]
+        validation["Schema and business validation"]
+        secrets["Secret blocking / redaction"]
+        fingerprints["Canonical memory fingerprints"]
+    end
+
+    subgraph Store["Durable local state"]
+        sqlite["SQLite"]
+        vault["Obsidian vault"]
+    end
+
+    core --> validation
+    finance --> validation
+    meals --> validation
+    training --> validation
+    validation --> secrets
+    secrets --> fingerprints
+    fingerprints --> sqlite
+    validation --> sqlite
+
+    sqlite --> scanner["Vault scanner"]
+    vault --> scanner
+    scanner --> secrets
+    scanner --> sqlite
+
+    sqlite --> reconciler["Vault reconciler"]
+    vault --> reconciler
+    reconciler --> secrets
+    reconciler --> writer["Vault writer"]
+    writer --> vault
+    reconciler --> sqlite
+
+    meals --> recipes["Recipe vault indexing"]
+    recipes <--> vault
+    recipes --> sqlite
+```
+
+Structured rows live in SQLite. The vault is useful because humans can read and edit notes, but vault changes still pass through parsing, validation, secret scanning, fingerprinting, and conflict handling before becoming canonical memory state. SQLite plus filesystem writes are recoverable but not globally atomic, so scanner/reconciler paths prefer per-note warnings, retries, and explicit conflict records over aborting whole runs.
 
 ## Render Boundary
 

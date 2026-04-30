@@ -37,26 +37,33 @@ The harness-side integration lives in [minx-hermes](https://github.com/akminx/mi
 ## Architecture
 
 ```mermaid
-flowchart LR
-    U["User interfaces"] --> H["Hermes or MCP harness"]
-    H --> F["Finance MCP"]
-    H --> M["Meals MCP"]
-    H --> T["Training MCP"]
-    H --> C["Minx Core"]
-    C --> R["Read models and snapshots"]
-    C --> G["Goals and trajectories"]
-    C --> MEM["Durable memory and search"]
-    C --> A["Playbook and investigation audit"]
-    C --> V["Obsidian vault primitives"]
-    F --> DB["SQLite"]
-    M --> DB
-    T --> DB
-    C --> DB
-    C --> VAULT["Obsidian vault"]
-    H --> LLM["Configured OpenAI-compatible model endpoint"]
+flowchart TB
+    U["User"] --> UI["Discord / CLI / Obsidian"]
+    UI --> H["minx-hermes or MCP harness"]
+
+    H --> LLM["OpenAI-compatible model endpoint"]
+    H --> POLICY["Tool policy, budgets, confirmations, final prose"]
+
+    H --> CORE["Core MCP :8001"]
+    H --> FIN["Finance MCP :8000"]
+    H --> MEALS["Meals MCP :8002"]
+    H --> TRAIN["Training MCP :8003"]
+
+    CORE --> DB["SQLite"]
+    FIN --> DB
+    MEALS --> DB
+    TRAIN --> DB
+
+    CORE <--> VAULT["Obsidian vault"]
+    MEALS <--> VAULT
+
+    CORE --> SAFETY["Validation, fingerprints, secret scanning"]
+    FIN --> SAFETY
+    MEALS --> SAFETY
+    TRAIN --> SAFETY
 ```
 
-Core exposes structured facts and render hints, not final coaching prose. That keeps the system inspectable, testable, and resilient when the model layer changes.
+Minx keeps deterministic MCP tools, validation, migrations, and durable data in this repo. The harness owns conversation, scheduling, tool choice, confirmations, model calls, and final wording. SQLite is the structured source of truth; the vault is the human-readable/editable surface.
 
 ## 60-second quick start
 
