@@ -19,6 +19,7 @@ Reference material for running and maintaining Minx. For end-to-end setup and sm
 | `MINX_DB_PATH` | SQLite database path |
 | `MINX_VAULT_PATH` | Obsidian-style vault root |
 | `MINX_STAGING_PATH` | Allowed import staging root |
+| `MINX_LITEPARSE_BIN` | LiteParse executable path/name for PDF text extraction (default `lit`) |
 | `MINX_HTTP_HOST` | Default HTTP host (default `127.0.0.1`) |
 | `MINX_HTTP_PORT` | Default HTTP port |
 | `MINX_FINANCE_PORT` | Finance HTTP port used by the launcher (default `8000`) |
@@ -26,6 +27,7 @@ Reference material for running and maintaining Minx. For end-to-end setup and sm
 | `MINX_MEALS_PORT` | Meals HTTP port used by the launcher (default `8002`) |
 | `MINX_TRAINING_PORT` | Training HTTP port used by the launcher (default `8003`) |
 | `MINX_DEFAULT_TRANSPORT` | `stdio` or `http` |
+| `MINX_VAULT_SCAN_ON_SNAPSHOT` | Optional boolean to scan the vault while building snapshots (default `false`) |
 | `MINX_OPENROUTER_API_KEY` | Enables memory embedding jobs |
 | `MINX_EMBEDDING_MODEL` | Embedding model (default `openai/text-embedding-3-small`) |
 | `MINX_EMBEDDING_DIMENSIONS` | Optional embedding dimensions truncation |
@@ -115,10 +117,10 @@ By default the script operates on a temporary database copy. Add `--in-place` on
 ```bash
 uv run ruff check minx_mcp tests scripts
 uv run mypy minx_mcp
-uv run pytest tests/ -x -q
+uv run pytest tests/ -q
 ```
 
-Strict mypy on source; broad pytest coverage across domain services, migrations, MCP tools, transport smoke, and historical regressions.
+Strict mypy on source; broad pytest coverage across domain services, migrations, MCP tools, transport smoke, and historical regressions. Add `-x` during local edit loops when you want pytest to stop at the first failure.
 
 ## Operational invariants
 

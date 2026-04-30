@@ -209,6 +209,7 @@ Save runner output as a log per smoke so you can diff "good" vs "bad":
 
 ```bash
 mkdir -p ~/.minx/smokes
+cd /path/to/minx-hermes
 uv run scripts/minx-investigate.py --kind investigate --question "..." 2>&1 \
   | tee ~/.minx/smokes/$(date +%Y%m%dT%H%M%S).json
 ```
@@ -241,6 +242,8 @@ uv run pytest tests/ -q
 cd /path/to/minx-hermes
 PYTHONPATH=$PWD uv run pytest tests/ -q
 ```
+
+Use the full commands above before handoff. For a local edit loop, adding `-x` to pytest is fine when you want to stop at the first failure.
 
 ## What's next after smoke is boring
 

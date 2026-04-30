@@ -29,12 +29,14 @@ All four go through the same agentic loop in `hermes_loop/runtime.py`. They diff
 ## Canonical commands
 
 ```bash
-# Bring the system up
-./scripts/start_hermes_stack.sh                 # MCP servers on 8000-8003
+# Configure and bring the Minx servers up from the minx repo
+cd /path/to/minx
 uv run scripts/configure-openrouter.py --model google/gemini-2.5-flash
+./scripts/start_hermes_stack.sh                 # MCP servers on 8000-8003
 
-# Verify
+# Verify each repo from its own checkout
 uv run pytest tests/ -q                         # minx
+cd /path/to/minx-hermes
 PYTHONPATH=. uv run pytest tests/ -q            # minx-hermes
 
 # Drive an investigation (production runner)

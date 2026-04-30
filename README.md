@@ -98,7 +98,7 @@ minx_mcp/
   finance/     Finance import / read / report tools
   meals/       Meal, pantry, recipe, nutrition tools
   training/    Workout and progression tools
-  schema/      Packaged SQLite migrations (single source of truth)
+  schema/migrations/ Packaged SQLite migrations (single source of truth)
 scripts/       Setup, maintenance, smoke helpers
 tests/         Regression coverage for domain services, migrations, MCP tools, transports, and safety edges
 docs/
