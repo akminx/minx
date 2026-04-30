@@ -41,7 +41,8 @@ Minx MCP is implemented through Slice 9 investigation storage/read/re-query surf
 - Render template registry (`minx_mcp/core/render_templates.py`) — 18 IDs covering finance_query, goal_parse, memory_capture, and investigation surfaces. Fulfills the MCP render contract and template-registry specs.
 - Soft tool-call cap in `append_investigation_step` (`MINX_MAX_TOOL_CALLS_PER_INVESTIGATION`, default 1000) as defense in depth against runaway harnesses.
 - Bounded `memory_list(include_cited_investigations=true)` (last 200 investigations, max 20 citations per memory).
-- Live Hermes overlay skills for `/minx-investigate`, `/minx-plan`, `/minx-retro`, `/minx-onboard-entity`, plus a budget-enforcing reference runtime loop in the minx-hermes repo (`hermes_loop/runtime.py`) with hard `max_tool_calls` / wall-clock caps, a read-only tool allowlist, and terminal-status guarantee.
+- Live Hermes overlay skills for `/minx-investigate`, `/minx-plan`, `/minx-retro`, `/minx-onboard-entity`, all driven end-to-end by the production runner `scripts/minx-investigate.py` in the minx-hermes repo. Stack: budget-enforcing agentic loop (`hermes_loop/runtime.py`), OpenAI tool-calling policy (`hermes_loop/policies.py`) on Nemotron-3-Super-120B-A12B via OpenRouter with `data_collection: deny` no-logging routing, MCP fan-out dispatcher and Core client (`hermes_loop/mcp_clients.py`) over `streamablehttp_client`.
+- LLM provider config: OpenRouter for both chat (Nemotron-3-Super, no-logging providers, fp8/bf16 only, reasoning_effort: medium) and embeddings (`openai/text-embedding-3-small`, `OpenRouterEmbedder` shipped in `memory_embeddings.py:69`). One-shot setup: `uv run scripts/configure-openrouter.py`.
 
 ## Current Architecture Boundary
 
@@ -56,9 +57,9 @@ Do not move harness responsibilities into Core unless the architecture is intent
 
 ## Next Work
 
-1. Add repeatable smoke/eval scenarios for dining spend, goal drift, memory context, and budget exhaustion.
-2. Add lightweight health views for stuck or failed playbooks and investigations.
-3. Build richer dashboard/inspection surfaces for goals, memories, playbooks, and investigations.
+1. Run the system with real data: import statements, sync vault recipes, log workouts, drive `/minx-investigate` against actual questions. First pass will surface real-world bugs that unit tests cannot predict.
+2. Build dashboard/inspection surfaces for goals, memories, playbooks, and investigations (lightweight read-only first; mutating actions stay in MCP/Hermes).
+3. Add repeatable eval scenarios (dining spend drift, goal drift, memory context, budget exhaustion) so regressions are caught between LLM/model swaps.
 4. Continue toward Slice 7 Ideas/Journal once investigation observability is understandable.
 
 ## Known Limitations

@@ -8,7 +8,8 @@ This file is the short working handoff for the next development session. For a p
 - Current migration head: `027_investigations.sql`
 - Slice 9 is wired through Core and Hermes overlay surfaces. Core owns durable lifecycle/history/re-query storage; Hermes owns tool choice, budget discipline, confirmation UX, and final prose.
 - Render template registry shipped (`minx_mcp/core/render_templates.py`); call sites in `investigations.py`, `goal_models.py`, `tools/memory.py` import named constants. New tests in `tests/test_render_template_registry.py` lock the contract.
-- Hermes runtime loop shipped at `hermes_loop/runtime.py` in the active overlay worktree below. Production Hermes must adopt this contract or reimplement against `docs/hermes-investigation-runtime-contract.md`.
+- Hermes runtime loop shipped at `hermes_loop/runtime.py` in the active overlay worktree below; production runner at `scripts/minx-investigate.py` ties together the loop, the OpenAI tool-calling policy on Nemotron-3-Super via OpenRouter (no-logging providers only), the MCP fan-out dispatcher, and the Core MCP client. The four `/minx-*` SKILL.md files invoke this runner directly.
+- LLM and embedding provider: OpenRouter for both. `scripts/configure-openrouter.py` writes the `core/llm_config` preference; `OpenRouterEmbedder` (already shipped in `minx_mcp/core/memory_embeddings.py`) handles the embeddings path. Set `OPENROUTER_API_KEY` and `MINX_OPENROUTER_API_KEY` in the environment where Core / sweepers / Hermes run.
 - Active Hermes overlay worktree: `/Users/akmini/.config/superpowers/worktrees/minx-hermes/codex-hermes-investigation-loop` on branch `codex/hermes-investigation-loop`.
 - Latest Hermes-agent reference worktree: `/Users/akmini/.config/superpowers/worktrees/hermes-agent/codex-minx-slice9-latest` on branch `codex/minx-slice9-latest`.
 - Live Hermes config in `/Users/akmini/.hermes/config.yaml` exposes `/minx-investigate`, `/minx-plan`, `/minx-retro`, and `/minx-onboard-entity` plus underscore aliases.
@@ -31,4 +32,10 @@ Run the normal checks before merging or handing off:
 uv run ruff check minx_mcp tests scripts
 uv run mypy minx_mcp
 uv run pytest tests/ -x -q
+```
+
+For the Hermes side (in the worktree referenced above):
+
+```bash
+PYTHONPATH=$PWD uv run pytest tests/ -x -q
 ```
