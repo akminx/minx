@@ -244,12 +244,13 @@ def _validate_canonical_names(
         return
     if not isinstance(names, list) or not all(isinstance(item, str) for item in names):
         raise InvalidInputError(f"{kind} must be a list of strings")
-    for name in names:
+    for index, name in enumerate(names):
         if name not in valid_names:
             if resolve and finance_api is not None:
                 from minx_mcp.core.goal_capture_nl import _resolve_exact_subject
 
                 resolved = _resolve_exact_subject("merchant", name, finance_api)
                 if resolved is not None:
+                    names[index] = resolved
                     continue
             raise InvalidInputError(f"{kind} must contain canonical names only")

@@ -408,4 +408,54 @@ def test_goal_parse_tool_accepts_exact_canonical_merchant_name(tmp_path) -> None
     assert result["data"]["result_type"] == "create"
 
 
+def test_goal_parse_structured_create_canonicalizes_noncanonical_merchant(tmp_path) -> None:
+    """A non-canonical merchant that resolves via normalization must be rewritten
+    to its canonical form in the returned payload — otherwise downstream goal
+    storage holds the user's raw text and progress queries miss the merchant.
+    """
+    db_path = tmp_path / "minx.db"
+    conn = get_connection(db_path)
+    conn.execute(
+        "INSERT INTO finance_import_batches (id, account_id, source_type, source_ref, raw_fingerprint) "
+        "VALUES (1, 1, 'csv', 'seed.csv', 'seed')"
+    )
+    conn.execute(
+        """
+        INSERT INTO finance_transactions
+            (account_id, batch_id, posted_at, description, merchant, amount_cents, category_source)
+        VALUES (1, 1, '2026-03-15', 'Joe''s Cafe charge', 'Joe''s Cafe', -1000, 'manual')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    server = create_core_server(_TestConfig(db_path, tmp_path / "vault"))
+    goal_parse = get_tool(server, "goal_parse").fn
+
+    result = _call_tool_sync(
+        goal_parse,
+        structured_input={
+            "action": "goal_create",
+            "payload": {
+                "goal_type": "spending_cap",
+                "title": "Coffee Cap",
+                "metric_type": "sum_below",
+                "target_value": 5000,
+                "period": "monthly",
+                "domain": "finance",
+                "category_names": [],
+                "merchant_names": ["SQ *JOES CAFE 1234"],
+                "account_names": [],
+                "starts_on": "2026-03-01",
+                "ends_on": None,
+                "notes": None,
+            },
+        },
+        review_date="2026-03-15",
+    )
+
+    assert result["success"] is True
+    assert result["data"]["payload"]["merchant_names"] == ["Joe's Cafe"]
+
+
 _TestConfig = MinxTestConfig

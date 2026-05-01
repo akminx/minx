@@ -4,6 +4,17 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Auto-create runtime dirs (DB + import staging). Idempotent.
+mkdir -p "${HOME}/.minx/data" "${HOME}/.minx/staging"
+
+# Load local secrets if present (OPENROUTER_API_KEY, model, embedding dims, etc.)
+if [[ -f "${HOME}/.minx/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${HOME}/.minx/.env"
+  set +a
+fi
+
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
   if [[ -x ".venv/bin/python" ]]; then
