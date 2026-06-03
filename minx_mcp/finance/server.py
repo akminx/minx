@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 from typing import Protocol, Self
 
@@ -17,7 +19,7 @@ from minx_mcp.core.interpretation.finance_query import interpret_finance_query
 from minx_mcp.core.llm import LLMProviderError, create_llm
 from minx_mcp.core.models import JSONLLMInterface
 from minx_mcp.db import scoped_connection
-from minx_mcp.finance.importers import SUPPORTED_SOURCE_KINDS
+from minx_mcp.finance.importers import SUPPORTED_SOURCE_KINDS, detect_source_kind
 from minx_mcp.money import cents_to_display_dollars
 from minx_mcp.transport import health_payload
 from minx_mcp.validation import (
@@ -39,6 +41,7 @@ from minx_mcp.validation import (
 SAFE_TOOLS = [
     "safe_finance_summary",
     "safe_finance_accounts",
+    "finance_stage_email_statement",
     "finance_import",
     "finance_import_preview",
     "finance_categorize",
@@ -90,6 +93,8 @@ class _ScopingFinanceQueryReadAPI:
 
 
 class FinanceServiceLike(Protocol):
+    import_root: Path
+
     @property
     def db_path(self) -> Path: ...
 
@@ -177,6 +182,26 @@ def create_finance_server(
         return wrap_tool_call(
             lambda: _safe_finance_accounts(service),
             tool_name="safe_finance_accounts",
+        )
+
+    @mcp.tool(name="finance_stage_email_statement")
+    def finance_stage_email_statement(
+        issuer: str,
+        query: str | None = None,
+        himalaya_account: str = "minx",
+        folder: str = "INBOX",
+        limit: StrictInt = 5,
+    ) -> ToolResponse:
+        return wrap_tool_call(
+            lambda: _finance_stage_email_statement(
+                service,
+                issuer=issuer,
+                query=query,
+                himalaya_account=himalaya_account,
+                folder=folder,
+                limit=limit,
+            ),
+            tool_name="finance_stage_email_statement",
         )
 
     @mcp.tool(name="finance_import")
@@ -268,6 +293,16 @@ def create_finance_server(
         account_name: str | None = None,
         description_contains: str | None = None,
     ) -> ToolResponse:
+        """Read-only, audit-logged query over the user's own transaction records.
+
+        Returns transaction-level rows filtered by the supplied date range,
+        category, merchant, account, or description text (capped at
+        MAX_SENSITIVE_QUERY_LIMIT). It only reads local finance data and never
+        writes, exports, or transmits it; every call is recorded under
+        audit_tool_name for the audit trail. Marked "sensitive" because the rows
+        include detailed personal spending, so results should stay within the
+        user's own session.
+        """
         return wrap_tool_call(
             lambda: _sensitive_finance_query(
                 service,
@@ -326,6 +361,60 @@ def _safe_finance_accounts(service: FinanceServiceLike) -> dict[str, object]:
         return service.list_accounts()
 
 
+def _finance_stage_email_statement(
+    service: FinanceServiceLike,
+    *,
+    issuer: str,
+    query: str | None,
+    himalaya_account: str,
+    folder: str,
+    limit: int,
+) -> dict[str, object]:
+    issuer_key = _normalize_email_issuer(issuer)
+    _require_non_empty("himalaya_account", himalaya_account)
+    _require_non_empty("folder", folder)
+    limit = validate_limit(limit, maximum=25)
+    search_query = query.strip() if query and query.strip() else _default_email_query(issuer_key)
+    staging_root = service.import_root / "email" / resolve_date_or_today(None)
+    envelopes = _himalaya_envelope_search(
+        account=himalaya_account,
+        folder=folder,
+        query=search_query,
+        limit=limit,
+    )
+    staged_files: list[dict[str, object]] = []
+    for envelope in envelopes[:limit]:
+        message_id = _message_id(envelope)
+        message_dir = staging_root / _safe_path_part(message_id)
+        before = _files_under(message_dir)
+        message_dir.mkdir(parents=True, exist_ok=True)
+        _himalaya_download_attachments(
+            account=himalaya_account,
+            folder=folder,
+            message_id=message_id,
+            downloads_dir=message_dir,
+        )
+        for path in sorted(_files_under(message_dir) - before):
+            if path.suffix.lower() not in {".csv", ".pdf"}:
+                continue
+            staged_files.append(
+                {
+                    "path": str(path),
+                    "filename": path.name,
+                    "message_id": message_id,
+                    "source_kind": _detect_stage_source_kind(path),
+                    "account_name": _account_name_for_issuer(issuer_key),
+                }
+            )
+    return {
+        "issuer": issuer_key,
+        "query": search_query,
+        "message_count": len(envelopes),
+        "staged_files": staged_files,
+        "next_step": "Run finance_import_preview for each staged file before importing.",
+    }
+
+
 def _finance_import(
     service: FinanceServiceLike,
     source_ref: str,
@@ -364,6 +453,124 @@ def _finance_import_preview(
             source_kind=source_kind,
             mapping=mapping,
         )
+
+
+def _normalize_email_issuer(value: str) -> str:
+    _require_non_empty("issuer", value)
+    issuer = value.strip().casefold().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "robinhood": "robinhood",
+        "robinhood_gold": "robinhood",
+        "discover": "discover",
+        "dcu": "dcu",
+        "digital_federal_credit_union": "dcu",
+    }
+    if issuer not in aliases:
+        raise InvalidInputError("issuer must be one of: robinhood, discover, dcu")
+    return aliases[issuer]
+
+
+def _default_email_query(issuer: str) -> str:
+    if issuer == "robinhood":
+        return "from robinhood order by date desc"
+    if issuer == "discover":
+        return "from discover order by date desc"
+    if issuer == "dcu":
+        return "from dcu order by date desc"
+    raise InvalidInputError("issuer must be one of: robinhood, discover, dcu")
+
+
+def _account_name_for_issuer(issuer: str) -> str:
+    return {
+        "robinhood": "Robinhood Gold",
+        "discover": "Discover",
+        "dcu": "DCU",
+    }[issuer]
+
+
+def _himalaya_envelope_search(
+    *,
+    account: str,
+    folder: str,
+    query: str,
+    limit: int,
+) -> list[dict[str, object]]:
+    cmd = [
+        "himalaya",
+        "envelope",
+        "list",
+        "--account",
+        account,
+        "--folder",
+        folder,
+        "--page-size",
+        str(limit),
+        "--output",
+        "json",
+        *query.split(),
+    ]
+    result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise InvalidInputError(f"himalaya envelope search failed: {result.stderr.strip()}")
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise InvalidInputError("himalaya envelope search returned invalid JSON") from exc
+    if not isinstance(payload, list):
+        raise InvalidInputError("himalaya envelope search returned an unexpected payload")
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def _himalaya_download_attachments(
+    *,
+    account: str,
+    folder: str,
+    message_id: str,
+    downloads_dir: Path,
+) -> None:
+    cmd = [
+        "himalaya",
+        "attachment",
+        "download",
+        "--account",
+        account,
+        "--folder",
+        folder,
+        "--downloads-dir",
+        str(downloads_dir),
+        "--output",
+        "json",
+        message_id,
+    ]
+    result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise InvalidInputError(f"himalaya attachment download failed: {result.stderr.strip()}")
+
+
+def _message_id(envelope: dict[str, object]) -> str:
+    for key in ("id", "uid", "message_id"):
+        value = envelope.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    raise InvalidInputError("himalaya envelope was missing an id")
+
+
+def _safe_path_part(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in value)
+    return safe[:80] or "message"
+
+
+def _files_under(path: Path) -> set[Path]:
+    if not path.exists():
+        return set()
+    return {item for item in path.rglob("*") if item.is_file()}
+
+
+def _detect_stage_source_kind(path: Path) -> str | None:
+    try:
+        return detect_source_kind(path)
+    except InvalidInputError:
+        return None
 
 
 def _finance_categorize(

@@ -57,15 +57,17 @@ def _load(path: Path) -> list[dict[str, object]]:
 
 async def _run(meals: list[dict[str, object]]) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
-    async with streamablehttp_client(_endpoint()) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            for i, meal in enumerate(meals):
-                if "meal_kind" not in meal or "occurred_at" not in meal:
-                    print(f"error: meal #{i} missing meal_kind/occurred_at", file=sys.stderr)
-                    sys.exit(2)
-                response = await session.call_tool("meal_log", meal)
-                results.append(response.structuredContent or {})
+    async with (
+        streamablehttp_client(_endpoint()) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        for i, meal in enumerate(meals):
+            if "meal_kind" not in meal or "occurred_at" not in meal:
+                print(f"error: meal #{i} missing meal_kind/occurred_at", file=sys.stderr)
+                sys.exit(2)
+            response = await session.call_tool("meal_log", meal)
+            results.append(response.structuredContent or {})
     return results
 
 

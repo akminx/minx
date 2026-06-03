@@ -1,5 +1,6 @@
 import argparse
 import json
+import subprocess
 
 import pytest
 from mcp.server.fastmcp import FastMCP
@@ -31,6 +32,7 @@ def test_finance_server_registers_expected_tool_names(tmp_path):
     assert SAFE_TOOLS == [
         "safe_finance_summary",
         "safe_finance_accounts",
+        "finance_stage_email_statement",
         "finance_import",
         "finance_import_preview",
         "finance_categorize",
@@ -53,6 +55,49 @@ def test_finance_server_registers_phase2_safe_tool_names(tmp_path):
     schemas = {tool.name: tool.inputSchema for tool in tools}
     assert schemas["sensitive_finance_query"]["properties"]["limit"]["type"] == "integer"
     assert schemas["finance_query"]["properties"]["limit"]["type"] == "integer"
+
+
+def test_finance_stage_email_statement_downloads_supported_attachments(monkeypatch, tmp_path):
+    service = FinanceService(tmp_path / "minx.db", tmp_path / "vault", import_root=tmp_path / "imports")
+    server = create_finance_server(service)
+    stage_email = get_tool(server, "finance_stage_email_statement").fn
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["himalaya", "envelope", "list"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps([{"id": "42", "subject": "Robinhood statement"}]),
+                stderr="",
+            )
+        if cmd[:3] == ["himalaya", "attachment", "download"]:
+            downloads_dir = tmp_path / "imports" / "email" / "2026-05-01" / "42"
+            downloads_dir.mkdir(parents=True, exist_ok=True)
+            (downloads_dir / "april_robinhood_transactions.csv").write_text(
+                "Date,Time,Cardholder,Card,Amount,Description\n"
+            )
+            (downloads_dir / "ignore.txt").write_text("not importable")
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(finance_server_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(finance_server_module, "resolve_date_or_today", lambda value=None: "2026-05-01")
+
+    result = stage_email(issuer="robinhood")
+
+    assert result["success"] is True
+    assert result["data"]["message_count"] == 1
+    assert result["data"]["staged_files"] == [
+        {
+            "path": str(
+                tmp_path / "imports" / "email" / "2026-05-01" / "42" / "april_robinhood_transactions.csv"
+            ),
+            "filename": "april_robinhood_transactions.csv",
+            "message_id": "42",
+            "source_kind": "robinhood_csv",
+            "account_name": "Robinhood Gold",
+        }
+    ]
 
 
 def test_streamable_http_app_is_available(tmp_path):

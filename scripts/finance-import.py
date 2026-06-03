@@ -41,11 +41,13 @@ async def _run(
     args: dict[str, object] = {"source_ref": source_ref, "account_name": account_name}
     if source_kind:
         args["source_kind"] = source_kind
-    async with streamablehttp_client(_endpoint()) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool(tool, args)
-            return result.structuredContent or {}
+    async with (
+        streamablehttp_client(_endpoint()) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        result = await session.call_tool(tool, args)
+        return result.structuredContent or {}
 
 
 def main() -> int:

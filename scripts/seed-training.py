@@ -61,15 +61,17 @@ def _load(path: Path) -> list[dict[str, object]]:
 
 async def _run(sessions: list[dict[str, object]]) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
-    async with streamablehttp_client(_endpoint()) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            for i, item in enumerate(sessions):
-                if "occurred_at" not in item or "sets" not in item:
-                    print(f"error: session #{i} missing occurred_at/sets", file=sys.stderr)
-                    sys.exit(2)
-                response = await session.call_tool("training_session_log", item)
-                results.append(response.structuredContent or {})
+    async with (
+        streamablehttp_client(_endpoint()) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        for i, item in enumerate(sessions):
+            if "occurred_at" not in item or "sets" not in item:
+                print(f"error: session #{i} missing occurred_at/sets", file=sys.stderr)
+                sys.exit(2)
+            response = await session.call_tool("training_session_log", item)
+            results.append(response.structuredContent or {})
     return results
 
 
